@@ -1,0 +1,87 @@
+package server
+
+import (
+	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
+
+	"github.com/hua-ri/coxswain/internal/action"
+	"github.com/hua-ri/coxswain/internal/clients"
+)
+
+// maxBody bounds an action's JSON arguments.
+const maxBody = 1 << 20
+
+// ActionInfo is one entry of GET /api/v1/actions.
+type ActionInfo struct {
+	ID          string             `json:"id"`
+	Summary     string             `json:"summary"`
+	Description string             `json:"description"`
+	Input       map[string]any     `json:"input"`
+	Positional  []string           `json:"positional,omitempty"`
+	RestArgs    bool               `json:"rest_args,omitempty"`
+	Annotations action.Annotations `json:"annotations"`
+}
+
+func (s *server) listActions(w http.ResponseWriter, _ *http.Request) {
+	out := []ActionInfo{}
+	for _, a := range s.cfg.Engine.Registry.List() {
+		out = append(out, ActionInfo{
+			ID: a.ID, Summary: a.Summary, Description: a.Description, Input: a.Input,
+			Positional: a.Positional, RestArgs: a.RestArgs, Annotations: a.Annotations,
+		})
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// invoke runs one action for the calling client. Agent clients must be
+// authorized by the user first.
+func (s *server) invoke(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if _, ok := s.cfg.Engine.Registry.Get(id); !ok {
+		fail(w, http.StatusNotFound, "unknown action "+id, "")
+		return
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBody))
+	if err != nil {
+		fail(w, http.StatusBadRequest, "read arguments: "+err.Error(), "")
+		return
+	}
+	if len(body) == 0 {
+		body = []byte("{}")
+	}
+	if !json.Valid(body) {
+		fail(w, http.StatusBadRequest, "arguments must be JSON", "")
+		return
+	}
+	client := clientName(r)
+	if ok, _ := s.cfg.Clients.Authorize(r.Context(), client); !ok {
+		fail(w, http.StatusForbidden, NotAuthorized, NotAuthorizedHint(client))
+		return
+	}
+	writeJSON(w, http.StatusOK, s.cfg.Engine.Invoke(r.Context(), Actor(client), id, body))
+}
+
+func (s *server) listClients(w http.ResponseWriter, _ *http.Request) {
+	list, err := s.cfg.Clients.Store.List()
+	if err != nil {
+		fail(w, http.StatusInternalServerError, err.Error(), "")
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+func (s *server) revokeClient(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	switch err := s.cfg.Clients.Revoke(name); {
+	case err == nil:
+		w.WriteHeader(http.StatusNoContent)
+	case errors.Is(err, clients.ErrNotFound):
+		fail(w, http.StatusNotFound, err.Error(), "")
+	case clients.BuiltIn(name):
+		fail(w, http.StatusBadRequest, err.Error(), "")
+	default:
+		fail(w, http.StatusInternalServerError, err.Error(), "")
+	}
+}
