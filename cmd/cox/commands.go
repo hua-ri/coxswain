@@ -19,7 +19,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func mcpCommand(coxHome string) *cobra.Command {
+func mcpCommand(coxHome, userHome string) *cobra.Command {
 	var name string
 	cmd := &cobra.Command{
 		Use:   "mcp",
@@ -29,7 +29,10 @@ func mcpCommand(coxHome string) *cobra.Command {
 			if !clients.ValidName(name) {
 				return fmt.Errorf("--client must name the agent (claude-code, codex, kimi), got %q", name)
 			}
-			return mcpbridge.Run(cmd.Context(), os.Stdin, os.Stdout, coxHome, name)
+			return mcpbridge.Run(cmd.Context(), mcpbridge.Options{
+				Stdin: os.Stdin, Stdout: os.Stdout, Home: coxHome, Client: name, Version: version,
+				Registry: newEngine(coxHome, userHome, nil).Registry, // tools offered while the server is down
+			})
 		},
 	}
 	cmd.Flags().StringVar(&name, "client", "", "agent name: claude-code, codex or kimi")

@@ -65,7 +65,7 @@ func run() int {
 	}
 	root := cli.NewRoot(app, version,
 		serverCommand(coxHome, userHome),
-		mcpCommand(coxHome),
+		mcpCommand(coxHome, userHome),
 		initCommand(coxHome, userHome),
 		clientsCommand(coxHome),
 		versionCommand(),

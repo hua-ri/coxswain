@@ -35,22 +35,56 @@ func NewServer(e *engine.Engine, actor action.Actor, version string, gate Gate) 
 			go gate(context.Background(), req.Session)
 		}
 	}
+	return build(e.Registry, version, opts, func(a *action.Action) sdk.ToolHandler {
+		return func(ctx context.Context, req *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+			if gate != nil && !gate(ctx, req.Session) {
+				return result(engine.Outcome{Status: engine.StatusError, Error: clients.NotAuthorized,
+					Hint: clients.NotAuthorizedHint(actor.Name)}), nil
+			}
+			return result(e.Invoke(ctx, actor, a.ID, req.Params.Arguments)), nil
+		}
+	})
+}
+
+// NewOffline builds a server with the same tools and instructions whose
+// tool calls all fail with message. `cox mcp` answers with it while the
+// real server is not running, so the agent's handshake still succeeds.
+func NewOffline(reg *action.Registry, version, message string) *sdk.Server {
+	return build(reg, version, &sdk.ServerOptions{Instructions: instructions}, func(*action.Action) sdk.ToolHandler {
+		return func(context.Context, *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+			return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: message}}, IsError: true}, nil
+		}
+	})
+}
+
+// sessionless is the first MCP protocol version without sessions. Coxswain
+// authorizes, revokes and (in `cox mcp`) re-establishes per session, so
+// it offers only the session-based versions.
+const sessionless = "2026-07-28"
+
+// protocolVersions are the SDK's versions older than sessionless.
+func protocolVersions() []string {
+	var out []string
+	for _, v := range sdk.SupportedProtocolVersions() {
+		if v < sessionless {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// build registers one tool per Action with the given handlers.
+func build(reg *action.Registry, version string, opts *sdk.ServerOptions, handler func(*action.Action) sdk.ToolHandler) *sdk.Server {
+	opts.SupportedProtocolVersions = protocolVersions()
 	s := sdk.NewServer(&sdk.Implementation{Name: "cox", Version: version}, opts)
-	for _, a := range e.Registry.List() {
-		a := a
+	for _, a := range reg.List() {
 		s.AddTool(&sdk.Tool{
 			Name:        ToolName(a.ID),
 			Title:       a.Summary,
 			Description: a.Description,
 			InputSchema: a.Input,
 			Annotations: annotations(a),
-		}, func(ctx context.Context, req *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
-			if gate != nil && !gate(ctx, req.Session) {
-				return result(engine.Outcome{Status: engine.StatusError, Error: clients.NotAuthorized,
-					Hint: clients.NotAuthorizedHint(actor.Name)}), nil
-			}
-			return result(e.Invoke(ctx, actor, a.ID, req.Params.Arguments)), nil
-		})
+		}, handler(a))
 	}
 	return s
 }

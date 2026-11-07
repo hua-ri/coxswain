@@ -155,6 +155,7 @@ func (s sandbox) mcp(t *testing.T, client string) *sdk.ClientSession {
 }
 
 type outcome struct {
+	Text   string // the raw tool result
 	Status string
 	Error  string
 	Result struct {
@@ -168,8 +169,8 @@ func callExec(t *testing.T, cs *sdk.ClientSession, host, cmd string) (outcome, e
 	if err != nil {
 		return outcome{}, err
 	}
-	var out outcome
-	json.Unmarshal([]byte(res.Content[0].(*sdk.TextContent).Text), &out)
+	out := outcome{Text: res.Content[0].(*sdk.TextContent).Text}
+	json.Unmarshal([]byte(out.Text), &out)
 	return out, nil
 }
 
@@ -270,8 +271,8 @@ func TestEndToEnd(t *testing.T) {
 	if out, code := s.cox(t, "ssh", "exec", "dev", "--", "true"); code != 2 || out != notRunning {
 		t.Fatalf("after stop: %d %q", code, out)
 	}
-	if _, err := callExec(t, kimi, "dev", "true"); err == nil || !strings.Contains(err.Error(), strings.TrimSpace(notRunning)) {
-		t.Fatalf("mcp after stop: %v", err)
+	if out, err := callExec(t, kimi, "dev", "true"); err != nil || out.Text != strings.TrimSpace(notRunning) {
+		t.Fatalf("mcp after stop: %+v %v", out, err)
 	}
 }
 

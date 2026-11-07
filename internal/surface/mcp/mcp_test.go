@@ -113,3 +113,34 @@ func TestGate(t *testing.T) {
 		t.Fatal("gate not consulted")
 	}
 }
+
+func TestOffline(t *testing.T) {
+	e, online := setup(t)
+	ct, st := sdk.NewInMemoryTransports()
+	ctx := context.Background()
+	if _, err := NewOffline(e.Registry, "test", "server is down").Connect(ctx, st, nil); err != nil {
+		t.Fatal(err)
+	}
+	cs, err := sdk.NewClient(&sdk.Implementation{Name: "t", Version: "0"}, nil).Connect(ctx, ct, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cs.Close()
+	if cs.InitializeResult().Instructions != online.InitializeResult().Instructions || cs.InitializeResult().Instructions == "" {
+		t.Fatal("offline instructions differ")
+	}
+	want, _ := online.ListTools(ctx, nil)
+	got, err := cs.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, _ := json.Marshal(want.Tools)
+	b, _ := json.Marshal(got.Tools)
+	if string(a) != string(b) {
+		t.Fatalf("offline tools differ:\n%s\n%s", a, b)
+	}
+	res, err := cs.CallTool(ctx, &sdk.CallToolParams{Name: "demo_do"})
+	if err != nil || !res.IsError || res.Content[0].(*sdk.TextContent).Text != "server is down" {
+		t.Fatalf("%+v %v", res, err)
+	}
+}

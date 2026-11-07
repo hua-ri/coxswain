@@ -1,7 +1,6 @@
 package mcpbridge
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"io"
@@ -19,30 +18,57 @@ import (
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// startServer runs a real server in home with demo.echo and codex trusted.
-// The returned func stops it and waits.
-func startServer(t *testing.T, home string) func() {
-	t.Helper()
+// blocker lets a test watch demo.block: started when it runs, cancelled
+// when its context ends.
+type blocker struct {
+	started, cancelled chan struct{}
+}
+
+func newBlocker() *blocker {
+	return &blocker{started: make(chan struct{}, 10), cancelled: make(chan struct{}, 10)}
+}
+
+// registry has demo.echo (returns msg) and demo.block (waits for its
+// context to end).
+func registry(b *blocker) *action.Registry {
 	reg := action.NewRegistry()
+	label := func(context.Context, json.RawMessage) (action.Assessment, error) { return action.Assessment{}, nil }
 	reg.Register(&action.Action{
 		ID: "demo.echo", Summary: "echo", Description: "echo",
-		Input: map[string]any{"type": "object", "properties": map[string]any{"msg": map[string]any{"type": "string"}}},
-		Label: func(context.Context, json.RawMessage) (action.Assessment, error) { return action.Assessment{}, nil },
+		Input:       map[string]any{"type": "object", "properties": map[string]any{"msg": map[string]any{"type": "string"}}},
+		Annotations: action.Annotations{ReadOnly: true},
+		Label:       label,
 		Run: func(_ context.Context, raw json.RawMessage) (any, error) {
 			var in struct{ Msg string }
 			action.Decode(raw, &in)
 			return in.Msg, nil
 		},
 	})
+	reg.Register(&action.Action{
+		ID: "demo.block", Summary: "block", Input: map[string]any{"type": "object"}, Label: label,
+		Run: func(ctx context.Context, _ json.RawMessage) (any, error) {
+			b.started <- struct{}{}
+			<-ctx.Done()
+			b.cancelled <- struct{}{}
+			return nil, ctx.Err()
+		},
+	})
+	return reg
+}
+
+// startServer runs a real server in home with codex trusted. The returned
+// func stops it and waits.
+func startServer(t *testing.T, home string, b *blocker) func() {
+	t.Helper()
 	store := clients.NewStore(filepath.Join(home, "clients.json"))
 	store.Trust("codex")
+	ready := make(chan struct{})
 	cfg := server.Config{
-		Engine:  &engine.Engine{Registry: reg, Events: eventlog.Open(filepath.Join(home, "events"))},
+		Engine:  &engine.Engine{Registry: registry(b), Events: eventlog.Open(filepath.Join(home, "events"))},
 		Clients: &clients.Authorizer{Store: store},
 		Version: "test",
+		Ready:   func(instance.Info) { close(ready) },
 	}
-	ready := make(chan struct{})
-	cfg.Ready = func(instance.Info) { close(ready) }
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- server.Run(ctx, cfg, home) }()
@@ -65,14 +91,17 @@ func startServer(t *testing.T, home string) func() {
 	return stop
 }
 
-// startBridge runs the bridge on pipes; it returns the agent's ends.
-func startBridge(t *testing.T, home string) (io.WriteCloser, io.ReadCloser) {
+// agentSession runs the bridge on pipes and connects an SDK client to it.
+func agentSession(t *testing.T, home string) *sdk.ClientSession {
 	t.Helper()
 	inR, inW := io.Pipe()
 	outR, outW := io.Pipe()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- Run(ctx, inR, outW, home, "codex") }()
+	go func() {
+		done <- Run(ctx, Options{Stdin: inR, Stdout: outW, Home: home, Client: "codex", Version: "test",
+			Registry: registry(newBlocker())})
+	}()
 	t.Cleanup(func() {
 		inW.Close()
 		cancel()
@@ -82,14 +111,8 @@ func startBridge(t *testing.T, home string) (io.WriteCloser, io.ReadCloser) {
 			t.Error("bridge did not stop")
 		}
 	})
-	return inW, outR
-}
-
-func agentSession(t *testing.T, home string) *sdk.ClientSession {
-	t.Helper()
-	in, out := startBridge(t, home)
 	cs, err := sdk.NewClient(&sdk.Implementation{Name: "agent", Version: "0"}, nil).
-		Connect(context.Background(), &sdk.IOTransport{Reader: out, Writer: in}, nil)
+		Connect(context.Background(), &sdk.IOTransport{Reader: outR, Writer: inW}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,102 +120,133 @@ func agentSession(t *testing.T, home string) *sdk.ClientSession {
 	return cs
 }
 
-func echo(cs *sdk.ClientSession, msg string) (string, error) {
+// echo calls demo_echo and returns the result text and whether it is an error.
+func echo(t *testing.T, cs *sdk.ClientSession, msg string) (string, bool) {
+	t.Helper()
 	res, err := cs.CallTool(context.Background(), &sdk.CallToolParams{Name: "demo_echo", Arguments: map[string]any{"msg": msg}})
 	if err != nil {
-		return "", err
+		t.Fatalf("call: %v", err)
 	}
+	text := res.Content[0].(*sdk.TextContent).Text
 	var out engine.Outcome
-	json.Unmarshal([]byte(res.Content[0].(*sdk.TextContent).Text), &out)
-	s, _ := out.Result.(string)
-	return s, nil
+	if json.Unmarshal([]byte(text), &out) == nil {
+		if s, ok := out.Result.(string); ok {
+			text = s
+		}
+	}
+	return text, res.IsError
+}
+
+func toolsJSON(t *testing.T, cs *sdk.ClientSession) string {
+	t.Helper()
+	res, err := cs.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(res.Tools)
+	return string(b)
 }
 
 func TestRoundTrip(t *testing.T) {
 	home := t.TempDir()
-	startServer(t, home)
+	startServer(t, home, newBlocker())
 	cs := agentSession(t, home)
-	tools, err := cs.ListTools(context.Background(), nil)
-	if err != nil || len(tools.Tools) != 1 {
-		t.Fatalf("%+v %v", tools, err)
+	if got, isErr := echo(t, cs, "hi"); isErr || got != "hi" {
+		t.Fatalf("%q %v", got, isErr)
 	}
-	if got, err := echo(cs, "hi"); err != nil || got != "hi" {
-		t.Fatalf("%q %v", got, err)
+}
+
+// TestStartsWhileServerDown: the agent's handshake succeeds without a
+// server, tools are listed, calls report that the server is down, and the
+// same session works once the server starts.
+func TestStartsWhileServerDown(t *testing.T) {
+	home := t.TempDir()
+	cs := agentSession(t, home) // initialize while down
+	if cs.InitializeResult().ServerInfo.Name != "cox" || cs.InitializeResult().Capabilities.Tools == nil {
+		t.Fatalf("%+v", cs.InitializeResult())
+	}
+	offline := toolsJSON(t, cs)
+	if !strings.Contains(offline, "demo_echo") || !strings.Contains(offline, "demo_block") {
+		t.Fatalf("tools: %s", offline)
+	}
+	if got, isErr := echo(t, cs, "down"); !isErr || got != instance.ErrNotRunning.Error() {
+		t.Fatalf("down: %q %v", got, isErr)
+	}
+
+	startServer(t, home, newBlocker())
+	if got, isErr := echo(t, cs, "up"); isErr || got != "up" {
+		t.Fatalf("up: %q %v", got, isErr)
+	}
+	if online := toolsJSON(t, cs); online != offline {
+		t.Fatalf("offline tools differ from the server's:\n%s\n%s", offline, online)
 	}
 }
 
 func TestServerRestart(t *testing.T) {
 	home := t.TempDir()
-	stop := startServer(t, home)
+	stop := startServer(t, home, newBlocker())
 	cs := agentSession(t, home)
-	if got, err := echo(cs, "one"); err != nil || got != "one" {
-		t.Fatalf("%q %v", got, err)
+	if got, isErr := echo(t, cs, "one"); isErr || got != "one" {
+		t.Fatalf("%q %v", got, isErr)
 	}
 	stop()
-	if _, err := echo(cs, "down"); err == nil || !strings.Contains(err.Error(), instance.ErrNotRunning.Error()) {
-		t.Fatalf("server down: %v", err)
+	if got, isErr := echo(t, cs, "down"); !isErr || got != instance.ErrNotRunning.Error() {
+		t.Fatalf("server down: %q %v", got, isErr)
 	}
-	startServer(t, home) // new token, new session
-	if got, err := echo(cs, "two"); err != nil || got != "two" {
-		t.Fatalf("after restart: %q %v", got, err)
+	startServer(t, home, newBlocker()) // new token, new session
+	if got, isErr := echo(t, cs, "two"); isErr || got != "two" {
+		t.Fatalf("after restart: %q %v", got, isErr)
 	}
 }
 
-type rpc struct {
-	ID     any             `json:"id"`
-	Result json.RawMessage `json:"result"`
-	Error  *struct {
-		Code    int    `json:"code"`
-		Message string `json:"message"`
-	} `json:"error"`
-}
-
-func TestNoServerThenServer(t *testing.T) {
+// TestServerDiesDuringCall: a call in flight when the server stops ends
+// promptly with an error instead of hanging.
+func TestServerDiesDuringCall(t *testing.T) {
 	home := t.TempDir()
-	in, out := startBridge(t, home)
-	lines := bufio.NewScanner(out)
-	send := func(s string) {
-		if _, err := io.WriteString(in, s+"\n"); err != nil {
-			t.Fatal(err)
+	b := newBlocker()
+	stop := startServer(t, home, b)
+	cs := agentSession(t, home)
+	type res struct {
+		r   *sdk.CallToolResult
+		err error
+	}
+	got := make(chan res, 1)
+	go func() {
+		r, err := cs.CallTool(context.Background(), &sdk.CallToolParams{Name: "demo_block"})
+		got <- res{r, err}
+	}()
+	<-b.started
+	stop()
+	select {
+	case r := <-got:
+		if r.err == nil && !r.r.IsError {
+			t.Fatalf("call succeeded: %+v", r.r)
 		}
-	}
-	recv := func() rpc {
-		t.Helper()
-		got := make(chan rpc, 1)
-		go func() {
-			var r rpc
-			if lines.Scan() {
-				json.Unmarshal(lines.Bytes(), &r)
-			}
-			got <- r
-		}()
-		select {
-		case r := <-got:
-			return r
-		case <-time.After(5 * time.Second):
-			t.Fatal("no reply")
+		if r.err != nil && !strings.Contains(r.err.Error(), instance.ErrNotRunning.Error()) {
+			t.Fatalf("error: %v", r.err)
 		}
-		return rpc{}
+	case <-time.After(10 * time.Second):
+		t.Fatal("call hung after the server stopped")
 	}
-	initialize := func(id int) string {
-		return `{"jsonrpc":"2.0","id":` + string(rune('0'+id)) + `,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"raw","version":"0"}}}`
-	}
+}
 
-	send(initialize(1))
-	r := recv()
-	if r.Error == nil || r.Error.Code != -32000 || r.Error.Message != instance.ErrNotRunning.Error() || r.ID != float64(1) {
-		t.Fatalf("%+v", r)
+// TestCancelThroughBridge: cancelling a call in the agent cancels the
+// action on the server.
+func TestCancelThroughBridge(t *testing.T) {
+	home := t.TempDir()
+	b := newBlocker()
+	startServer(t, home, b)
+	cs := agentSession(t, home)
+	ctx, cancel := context.WithCancel(context.Background())
+	go cs.CallTool(ctx, &sdk.CallToolParams{Name: "demo_block"})
+	<-b.started
+	cancel()
+	select {
+	case <-b.cancelled:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the action was not cancelled")
 	}
-	send(`{"jsonrpc":"2.0","method":"notifications/initialized"}`) // dropped while down
-
-	startServer(t, home)
-	send(initialize(2))
-	if r := recv(); r.Error != nil || r.ID != float64(2) || !strings.Contains(string(r.Result), `"cox"`) {
-		t.Fatalf("%+v %s", r, r.Result)
-	}
-	send(`{"jsonrpc":"2.0","method":"notifications/initialized"}`)
-	send(`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"demo_echo","arguments":{"msg":"up"}}}`)
-	if r := recv(); r.Error != nil || r.ID != float64(3) || !strings.Contains(string(r.Result), `up`) {
-		t.Fatalf("%+v %s", r, r.Result)
+	if got, isErr := echo(t, cs, "after"); isErr || got != "after" {
+		t.Fatalf("%q %v", got, isErr)
 	}
 }

@@ -79,7 +79,10 @@ func Run(ctx context.Context, cfg Config, home string) error {
 	case <-ctx.Done():
 	}
 	stop() // ends event streams and other long requests
-	shut, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// Requests are already cancelled; a short grace period covers
+	// responses being written. (Unused client connections would otherwise
+	// hold Shutdown for 5s.)
+	shut, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	if err := srv.Shutdown(shut); err != nil {
 		srv.Close()
