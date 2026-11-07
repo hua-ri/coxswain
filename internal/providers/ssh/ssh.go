@@ -30,6 +30,7 @@ var humanLimits = shaper.Limits{MaxBytes: captureLimit, MaxLines: 1 << 30}
 type Provider struct {
 	Hosts     *inventory.Store
 	Dialer    *sshx.Dialer
+	Pool      *sshx.Pool // reuses connections if set (in `cox server`)
 	Artifacts *shaper.Artifacts
 	UserHome  string // for ~ expansion and the default ~/.ssh/config
 }
@@ -357,12 +358,12 @@ func (p *Provider) exec() *action.Action {
 			defer cancel()
 
 			start := time.Now()
-			conn, err := p.Dialer.Dial(ctx, h)
+			conn, release, err := p.connect(ctx, h)
 			if err != nil {
 				return nil, err
 			}
-			defer conn.Close()
 			res, err := sshx.Exec(ctx, conn.Client, in.Command, captureLimit)
+			release(err != nil)
 			if err != nil {
 				return nil, err
 			}
@@ -381,6 +382,19 @@ func (p *Provider) exec() *action.Action {
 			return out, nil
 		},
 	}
+}
+
+// connect returns a connection to h from the pool, or a fresh one that
+// release closes.
+func (p *Provider) connect(ctx context.Context, h inventory.Host) (*sshx.Conn, func(broken bool), error) {
+	if p.Pool != nil {
+		return p.Pool.Get(ctx, h)
+	}
+	conn, err := p.Dialer.Dial(ctx, h)
+	if err != nil {
+		return nil, nil, err
+	}
+	return conn, func(bool) { conn.Close() }, nil
 }
 
 // address is user@host:port as an import would connect to it.

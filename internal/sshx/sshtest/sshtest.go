@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/skeema/knownhosts"
@@ -29,6 +30,20 @@ type Server struct {
 	KeyFile    string // client private key (OpenSSH PEM, unencrypted)
 	KnownHosts string // known_hosts file containing this server's key
 	Commands   chan string
+	Accepts    atomic.Int32 // TCP connections accepted
+
+	mu    sync.Mutex
+	conns []net.Conn
+}
+
+// DropAll closes every accepted connection, as if the network failed.
+func (s *Server) DropAll() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, c := range s.conns {
+		c.Close()
+	}
+	s.conns = nil
 }
 
 // Start starts a server that lives until the test ends.
@@ -82,6 +97,10 @@ func Start(t *testing.T) *Server {
 			if err != nil {
 				return
 			}
+			s.Accepts.Add(1)
+			s.mu.Lock()
+			s.conns = append(s.conns, c)
+			s.mu.Unlock()
 			go s.serve(c, cfg)
 		}
 	}()

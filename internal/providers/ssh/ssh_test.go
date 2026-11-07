@@ -26,6 +26,11 @@ var (
 )
 
 func setup(t *testing.T) (*engine.Engine, *sshtest.Server) {
+	return setupWith(t, false)
+}
+
+// setupWith registers the provider, with a connection pool if pooled.
+func setupWith(t *testing.T, pooled bool) (*engine.Engine, *sshtest.Server) {
 	t.Helper()
 	srv := sshtest.Start(t)
 	dir := t.TempDir()
@@ -41,12 +46,17 @@ func setup(t *testing.T) (*engine.Engine, *sshtest.Server) {
 		return nil
 	})
 	reg := action.NewRegistry()
-	(&Provider{
+	p := &Provider{
 		Hosts:     hosts,
 		Dialer:    &sshx.Dialer{Hosts: hosts, KnownHosts: []string{srv.KnownHosts}},
 		Artifacts: shaper.NewArtifacts(filepath.Join(dir, "artifacts")),
 		UserHome:  dir,
-	}).Register(reg)
+	}
+	if pooled {
+		p.Pool = &sshx.Pool{Dialer: p.Dialer}
+		t.Cleanup(func() { p.Pool.Close() })
+	}
+	p.Register(reg)
 	return &engine.Engine{Registry: reg, Events: eventlog.Open(filepath.Join(dir, "events"))}, srv
 }
 
@@ -202,5 +212,17 @@ func TestExecReturnsHostNoteAndTags(t *testing.T) {
 	b, _ := json.Marshal(res)
 	if !strings.Contains(string(b), `"host_note":"read only"`) || !strings.Contains(string(b), `"host_tags":{"env":"prod"}`) {
 		t.Fatalf("json: %s", b)
+	}
+}
+
+func TestExecUsesPool(t *testing.T) {
+	e, srv := setupWith(t, true)
+	for range 2 {
+		if out := e.Invoke(context.Background(), agent, "ssh.exec", execArgs("dev", "true")); out.Status != engine.StatusOK {
+			t.Fatalf("%+v", out)
+		}
+	}
+	if n := srv.Accepts.Load(); n != 1 {
+		t.Fatalf("%d connections, want 1", n)
 	}
 }
