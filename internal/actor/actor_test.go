@@ -36,7 +36,29 @@ func TestFromAncestors(t *testing.T) {
 
 func TestEnvOverrideMakesAgent(t *testing.T) {
 	t.Setenv("COX_ACTOR", "agent:kimi")
-	if a := Detect(); a.Kind != action.Agent || a.Name != "kimi" {
+	if a := Detect(true); a.Kind != action.Agent || a.Name != "kimi" {
 		t.Fatalf("got %+v", a)
+	}
+}
+
+// TestClassify: a caller without an interactive terminal is an agent
+// ("unknown") unless something says otherwise (review C2).
+func TestClassify(t *testing.T) {
+	t.Setenv("USER", "king")
+	cases := []struct {
+		env, ancestor string
+		ok, tty       bool
+		want          action.Actor
+	}{
+		{"agent:kimi", "", false, true, action.Actor{Kind: action.Agent, Name: "kimi"}},
+		{"codex", "", false, false, action.Actor{Kind: action.Agent, Name: "codex"}},
+		{"", "claude-code", true, true, action.Actor{Kind: action.Agent, Name: "claude-code"}},
+		{"", "", false, false, action.Actor{Kind: action.Agent, Name: "unknown"}},
+		{"", "", false, true, action.Actor{Kind: action.Human, Name: "king"}},
+	}
+	for _, c := range cases {
+		if got := classify(c.env, c.ancestor, c.ok, c.tty); got != c.want {
+			t.Errorf("classify(%q, %q, %v, %v) = %+v, want %+v", c.env, c.ancestor, c.ok, c.tty, got, c.want)
+		}
 	}
 }

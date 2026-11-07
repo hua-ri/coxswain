@@ -88,7 +88,7 @@ func TestCLIEndToEnd(t *testing.T) {
 func TestMCPEndToEnd(t *testing.T) {
 	srv := sshtest.Start(t)
 	e := env(t, srv)
-	if out, code := cox(t, e, "init", "--skip-agents"); code != 0 {
+	if out, code := cox(t, append(e, "COX_ACTOR=agent:e2e"), "init", "--skip-agents"); code != 0 {
 		t.Fatalf("init: %s", out)
 	}
 	c := exec.Command(coxBin, "mcp", "--actor", "claude-code")

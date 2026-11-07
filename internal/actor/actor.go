@@ -18,15 +18,29 @@ var agentNames = map[string]string{
 	"kimi":   "kimi",
 }
 
-// Detect returns an agent actor if COX_ACTOR names one or any ancestor
-// process is a known agent; otherwise a human actor. COX_ACTOR can only
-// make the caller an agent, never a human.
-func Detect() action.Actor {
-	if v := os.Getenv("COX_ACTOR"); v != "" {
-		return action.Actor{Kind: action.Agent, Name: strings.TrimPrefix(v, "agent:")}
+// Detect works out the actor: COX_ACTOR names an agent; else a known
+// agent ancestor makes the caller that agent; else a caller without an
+// interactive terminal on stdin is the agent "unknown". A person must be
+// at an interactive terminal to act as human. COX_ACTOR can only make the
+// caller an agent, never a human.
+func Detect(stdinTTY bool) action.Actor {
+	env := os.Getenv("COX_ACTOR")
+	name, ok := "", false
+	if env == "" {
+		name, ok = FromAncestors(os.Getppid(), parent)
 	}
-	if name, ok := FromAncestors(os.Getppid(), parent); ok {
-		return action.Actor{Kind: action.Agent, Name: name}
+	return classify(env, name, ok, stdinTTY)
+}
+
+// classify is Detect's decision, free of process and environment lookups.
+func classify(env, ancestor string, isAgent, tty bool) action.Actor {
+	switch {
+	case env != "":
+		return action.Actor{Kind: action.Agent, Name: strings.TrimPrefix(env, "agent:")}
+	case isAgent:
+		return action.Actor{Kind: action.Agent, Name: ancestor}
+	case !tty:
+		return action.Actor{Kind: action.Agent, Name: "unknown"}
 	}
 	u := os.Getenv("USER")
 	if u == "" {

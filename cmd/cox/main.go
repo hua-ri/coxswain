@@ -53,8 +53,8 @@ func run() int {
 	}
 	e := newEngine(coxHome, userHome)
 
-	who := actor.Detect()
 	tty := term.IsTerminal(int(os.Stdin.Fd()))
+	who := actor.Detect(tty)
 	var ask engine.Confirmer
 	switch {
 	case who.Kind == action.Agent:
