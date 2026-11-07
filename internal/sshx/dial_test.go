@@ -2,13 +2,18 @@ package sshx
 
 import (
 	"context"
+	"net"
+	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/hua-ri/coxswain/internal/inventory"
 	"github.com/hua-ri/coxswain/internal/sshx/sshtest"
+	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/agent"
 )
 
 func TestDialAndExec(t *testing.T) {
@@ -40,9 +45,63 @@ func TestExecCancel(t *testing.T) {
 	defer c.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
+	marker := filepath.Join(t.TempDir(), "ran")
 	start := time.Now()
-	if _, err := Exec(ctx, c.Client, "sleep 10", 1024); err == nil || time.Since(start) > 3*time.Second {
+	if _, err := Exec(ctx, c.Client, "sleep 2; touch "+marker, 1024); err == nil || time.Since(start) > time.Second {
 		t.Fatalf("err = %v after %v", err, time.Since(start))
+	}
+	time.Sleep(3 * time.Second)
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("cancelled command kept running on the host")
+	}
+}
+
+// TestAgentConnectionClosed: the ssh-agent connection opened for a Dial
+// is closed with the Conn.
+func TestAgentConnectionClosed(t *testing.T) {
+	srv := sshtest.Start(t)
+	b, _ := os.ReadFile(srv.KeyFile)
+	key, err := ssh.ParseRawPrivateKey(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyring := agent.NewKeyring()
+	keyring.Add(agent.AddedKey{PrivateKey: key})
+	dir, _ := os.MkdirTemp("/tmp", "coxag") // unix socket paths must be short
+	defer os.RemoveAll(dir)
+	sock := filepath.Join(dir, "s")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	var open atomic.Int32
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			open.Add(1)
+			go func() { agent.ServeAgent(keyring, c); c.Close(); open.Add(-1) }()
+		}
+	}()
+
+	d := &Dialer{KnownHosts: []string{srv.KnownHosts}, AgentSocket: sock}
+	c, err := d.Dial(context.Background(), inventory.Host{Name: "box", HostName: srv.Host, Port: srv.Port})
+	if err != nil {
+		t.Fatal(err) // no IdentityFile: only the agent can authenticate
+	}
+	if _, err := Exec(context.Background(), c.Client, "true", 1024); err != nil {
+		t.Fatal(err)
+	}
+	c.Close()
+	deadline := time.Now().Add(2 * time.Second)
+	for open.Load() != 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if n := open.Load(); n != 0 {
+		t.Fatalf("%d agent connections left open", n)
 	}
 }
 

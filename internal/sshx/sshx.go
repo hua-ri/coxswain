@@ -7,9 +7,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/user"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -28,10 +30,12 @@ type Dialer struct {
 	Timeout     time.Duration
 }
 
-// Conn is a connection to a host plus the jump connections under it.
+// Conn is a connection to a host plus the jump connections under it and
+// the ssh-agent connection used to sign for them.
 type Conn struct {
 	*ssh.Client
 	jumps []*ssh.Client
+	agent io.Closer
 }
 
 func (c *Conn) Close() error {
@@ -39,14 +43,28 @@ func (c *Conn) Close() error {
 	for i := len(c.jumps) - 1; i >= 0; i-- {
 		c.jumps[i].Close()
 	}
+	if c.agent != nil {
+		c.agent.Close()
+	}
 	return err
 }
 
-// Dial connects to h, through h.ProxyJump if set.
+// maxHops bounds ProxyJump chains.
+const maxHops = 8
+
+// Dial connects to h, through h.ProxyJump if set. One ssh-agent
+// connection serves all hops and is closed with the returned Conn.
 func (d *Dialer) Dial(ctx context.Context, h inventory.Host) (*Conn, error) {
 	hops, err := d.chain(h)
 	if err != nil {
 		return nil, err
+	}
+	var ag agent.ExtendedAgent
+	var agConn net.Conn
+	if d.AgentSocket != "" {
+		if c, err := net.Dial("unix", d.AgentSocket); err == nil {
+			agConn, ag = c, agent.NewClient(c)
+		}
 	}
 	var clients []*ssh.Client
 	for _, hop := range hops {
@@ -54,21 +72,50 @@ func (d *Dialer) Dial(ctx context.Context, h inventory.Host) (*Conn, error) {
 		if n := len(clients); n > 0 {
 			via = clients[n-1]
 		}
-		c, err := d.dialHop(ctx, via, hop)
+		c, err := d.dialHop(ctx, via, hop, ag)
 		if err != nil {
 			for i := len(clients) - 1; i >= 0; i-- {
 				clients[i].Close()
+			}
+			if agConn != nil {
+				agConn.Close()
 			}
 			return nil, fmt.Errorf("%s: %w", hop.Name, err)
 		}
 		clients = append(clients, c)
 	}
 	n := len(clients)
-	return &Conn{Client: clients[n-1], jumps: clients[:n-1]}, nil
+	conn := &Conn{Client: clients[n-1], jumps: clients[:n-1]}
+	if agConn != nil {
+		conn.agent = agConn
+	}
+	return conn, nil
 }
 
-// chain returns the hops to reach h, h last.
+// chain returns the hops to reach h, h last. A host that appears twice
+// is a loop.
 func (d *Dialer) chain(h inventory.Host) ([]inventory.Host, error) {
+	hops, err := d.chainVia(h, []string{h.Name})
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]bool{}
+	var names []string
+	for _, hop := range hops {
+		names = append(names, hop.Name)
+		if seen[hop.Name] {
+			return nil, fmt.Errorf("ProxyJump loop: %s", strings.Join(names, " -> "))
+		}
+		seen[hop.Name] = true
+	}
+	return hops, nil
+}
+
+// chainVia resolves h's jumps; path is the chain of names that led to h.
+func (d *Dialer) chainVia(h inventory.Host, path []string) ([]inventory.Host, error) {
+	if len(path) > maxHops+1 {
+		return nil, fmt.Errorf("ProxyJump chain longer than %d hops", maxHops)
+	}
 	var hops []inventory.Host
 	if h.ProxyJump != "" {
 		for _, spec := range strings.Split(h.ProxyJump, ",") {
@@ -76,8 +123,11 @@ func (d *Dialer) chain(h inventory.Host) ([]inventory.Host, error) {
 			if err != nil {
 				return nil, err
 			}
+			if slices.Contains(path, hop.Name) {
+				return nil, fmt.Errorf("ProxyJump loop: %s -> %s", strings.Join(path, " -> "), hop.Name)
+			}
 			if hop.ProxyJump != "" && len(hops) == 0 {
-				inner, err := d.chain(hop)
+				inner, err := d.chainVia(hop, append(slices.Clip(path), hop.Name))
 				if err != nil {
 					return nil, err
 				}
@@ -87,8 +137,8 @@ func (d *Dialer) chain(h inventory.Host) ([]inventory.Host, error) {
 			hops = append(hops, hop)
 		}
 	}
-	if len(hops) > 8 {
-		return nil, errors.New("ProxyJump chain longer than 8 hops")
+	if len(hops) > maxHops {
+		return nil, fmt.Errorf("ProxyJump chain longer than %d hops", maxHops)
 	}
 	return append(hops, h), nil
 }
@@ -113,13 +163,13 @@ func (d *Dialer) resolveJump(spec string) (inventory.Host, error) {
 	return h, nil
 }
 
-func (d *Dialer) dialHop(ctx context.Context, via *ssh.Client, h inventory.Host) (*ssh.Client, error) {
+func (d *Dialer) dialHop(ctx context.Context, via *ssh.Client, h inventory.Host, ag agent.ExtendedAgent) (*ssh.Client, error) {
 	port := h.Port
 	if port == 0 {
 		port = 22
 	}
 	addr := net.JoinHostPort(h.HostName, strconv.Itoa(port))
-	cfg, err := d.clientConfig(h, addr)
+	cfg, err := d.clientConfig(h, addr, ag)
 	if err != nil {
 		return nil, err
 	}
@@ -143,7 +193,7 @@ func (d *Dialer) dialHop(ctx context.Context, via *ssh.Client, h inventory.Host)
 	return ssh.NewClient(c, chans, reqs), nil
 }
 
-func (d *Dialer) clientConfig(h inventory.Host, addr string) (*ssh.ClientConfig, error) {
+func (d *Dialer) clientConfig(h inventory.Host, addr string, ag agent.ExtendedAgent) (*ssh.ClientConfig, error) {
 	var files []string
 	for _, f := range d.KnownHosts {
 		if _, err := os.Stat(f); err == nil {
@@ -165,22 +215,21 @@ func (d *Dialer) clientConfig(h inventory.Host, addr string) (*ssh.ClientConfig,
 	}
 	return &ssh.ClientConfig{
 		User:              name,
-		Auth:              []ssh.AuthMethod{ssh.PublicKeysCallback(d.signers(h))},
+		Auth:              []ssh.AuthMethod{ssh.PublicKeysCallback(d.signers(h, ag))},
 		HostKeyCallback:   db.HostKeyCallback(),
 		HostKeyAlgorithms: db.HostKeyAlgorithms(addr),
 		Timeout:           d.timeout(),
 	}, nil
 }
 
-// signers offers ssh-agent keys first, then unencrypted key files.
-func (d *Dialer) signers(h inventory.Host) func() ([]ssh.Signer, error) {
+// signers offers ssh-agent keys first (ag may be nil), then unencrypted
+// key files.
+func (d *Dialer) signers(h inventory.Host, ag agent.ExtendedAgent) func() ([]ssh.Signer, error) {
 	return func() ([]ssh.Signer, error) {
 		var out []ssh.Signer
-		if d.AgentSocket != "" {
-			if c, err := net.Dial("unix", d.AgentSocket); err == nil {
-				if s, err := agent.NewClient(c).Signers(); err == nil {
-					out = append(out, s...)
-				}
+		if ag != nil {
+			if s, err := ag.Signers(); err == nil {
+				out = append(out, s...)
 			}
 		}
 		files := h.IdentityFiles
@@ -251,17 +300,24 @@ func Exec(ctx context.Context, c *ssh.Client, cmd string, maxBytes int) (Result,
 	case err = <-done:
 	}
 	res := Result{Stdout: stdout.String(), Stderr: stderr.String(), Truncated: stdout.over || stderr.over}
+	res.ExitCode, err = exitCode(err)
+	return res, err
+}
+
+// exitCode maps Session.Run's error to the remote exit code: -1 if the
+// server sent no exit status; other errors are returned.
+func exitCode(err error) (int, error) {
 	var exitErr *ssh.ExitError
 	switch {
 	case err == nil:
 	case errors.As(err, &exitErr):
-		res.ExitCode = exitErr.ExitStatus()
-	case errors.Is(err, &ssh.ExitMissingError{}):
-		res.ExitCode = -1
+		return exitErr.ExitStatus(), nil
+	case errors.As(err, new(*ssh.ExitMissingError)):
+		return -1, nil
 	default:
-		return res, err
+		return 0, err
 	}
-	return res, nil
+	return 0, nil
 }
 
 type capped struct {

@@ -115,6 +115,14 @@ func (s *Server) session(nc ssh.NewChannel) {
 	defer ch.Close()
 	var mu sync.Mutex
 	var cmd *exec.Cmd
+	kill := func() {
+		mu.Lock()
+		if cmd != nil && cmd.Process != nil {
+			cmd.Process.Kill()
+		}
+		mu.Unlock()
+	}
+	defer kill() // the client closed the channel
 	for req := range reqs {
 		switch req.Type {
 		case "exec":
@@ -125,27 +133,31 @@ func (s *Server) session(nc ssh.NewChannel) {
 			case s.Commands <- p.Command:
 			default:
 			}
+			c := exec.Command("/bin/sh", "-c", p.Command)
+			c.Stdout, c.Stderr = ch, ch.Stderr()
 			mu.Lock()
-			cmd = exec.Command("/bin/sh", "-c", p.Command)
-			cmd.Stdout, cmd.Stderr = ch, ch.Stderr()
+			cmd = c
+			err := c.Start()
 			mu.Unlock()
-			code := 0
-			if err := cmd.Run(); err != nil {
-				code = 255
-				if ee, ok := err.(*exec.ExitError); ok && ee.ExitCode() >= 0 {
-					code = ee.ExitCode()
+			// Wait in the background so that "signal" requests are handled.
+			go func() {
+				if err == nil {
+					err = c.Wait()
 				}
-			}
-			status := make([]byte, 4)
-			binary.BigEndian.PutUint32(status, uint32(code))
-			ch.SendRequest("exit-status", false, status)
-			return
+				code := 0
+				if err != nil {
+					code = 255
+					if ee, ok := err.(*exec.ExitError); ok && ee.ExitCode() >= 0 {
+						code = ee.ExitCode()
+					}
+				}
+				status := make([]byte, 4)
+				binary.BigEndian.PutUint32(status, uint32(code))
+				ch.SendRequest("exit-status", false, status)
+				ch.Close()
+			}()
 		case "signal":
-			mu.Lock()
-			if cmd != nil && cmd.Process != nil {
-				cmd.Process.Kill()
-			}
-			mu.Unlock()
+			kill()
 		default:
 			req.Reply(false, nil)
 		}

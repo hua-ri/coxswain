@@ -301,7 +301,8 @@ func (p *Provider) exec() *action.Action {
 			"Good for inspection: df -h, free -m, journalctl -u X -n 200, systemctl status X, ss -lntp. " +
 			"Commands are risk-rated; changes on production or destructive commands need the user's approval — " +
 			"never try to work around a denial. Do not start interactive programs or follow logs (tail -f); " +
-			"raise timeout_sec for slow commands. Use sudo -n, never a password prompt. Respect the host's note.",
+			"raise timeout_sec for slow commands; a timed-out command may keep running on the host. " +
+			"Use sudo -n, never a password prompt. Respect the host's note.",
 		Input: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
