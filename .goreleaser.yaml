@@ -1,0 +1,54 @@
+# GoReleaser config: macOS-only universal binary, GitHub Release, Homebrew cask.
+version: 2
+project_name: coxswain
+
+before:
+  hooks:
+    - go mod tidy
+    - go test ./...
+
+builds:
+  - id: cox
+    main: ./cmd/cox
+    binary: cox
+    env: [CGO_ENABLED=0]
+    goos: [darwin]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags: ["-s -w -X main.version={{ .Version }}"]
+
+universal_binaries:
+  - id: cox
+    name_template: cox
+    replace: true
+
+archives:
+  - formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_darwin_universal"
+    files: [README.md, LICENSE]
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+  filters:
+    exclude: ["^docs:", "^test:", "^chore:"]
+
+homebrew_casks:
+  - name: coxswain
+    binaries: [cox]
+    homepage: https://github.com/hua-ri/coxswain
+    description: Ops toolbox (SSH, Kubernetes, Argo) for you and your AI agents
+    license: MIT
+    repository:
+      owner: hua-ri
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    # The binary is not notarized yet; remove the quarantine flag Homebrew adds.
+    hooks:
+      post:
+        install_steps: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/cox"]
+          end
