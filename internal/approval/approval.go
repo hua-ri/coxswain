@@ -15,10 +15,10 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/hua-ri/coxswain/internal/action"
+	"github.com/hua-ri/coxswain/internal/filelock"
 )
 
 type Status string
@@ -216,26 +216,10 @@ func (s *Store) write(ap Approval) error {
 	if err != nil {
 		return err
 	}
-	tmp := s.path(ap.ID) + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, s.path(ap.ID))
+	return filelock.WriteAtomic(s.path(ap.ID), b)
 }
 
 // withLock serialises store access across processes with flock(2).
 func (s *Store) withLock(fn func() error) error {
-	if err := os.MkdirAll(s.dir, 0o700); err != nil {
-		return err
-	}
-	f, err := os.OpenFile(filepath.Join(s.dir, ".lock"), os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
-		return err
-	}
-	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-	return fn()
+	return filelock.With(filepath.Join(s.dir, ".lock"), fn)
 }

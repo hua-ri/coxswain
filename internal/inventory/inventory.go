@@ -9,14 +9,13 @@ import (
 	"maps"
 	"net"
 	"os"
-	"path/filepath"
 	"slices"
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 
 	"github.com/hua-ri/coxswain/internal/action"
+	"github.com/hua-ri/coxswain/internal/filelock"
 	"github.com/hua-ri/coxswain/internal/policy"
 )
 
@@ -34,19 +33,28 @@ type Host struct {
 
 var ErrNotFound = errors.New("host not found")
 
-// Store keeps hosts in one JSON file (mode 0600).
+// Store keeps hosts in one JSON file (mode 0600). Access is serialised
+// across processes with a flock on <file>.lock.
 type Store struct {
 	path string
-	mu   sync.Mutex
 }
 
 func NewStore(path string) *Store { return &Store{path: path} }
 
+// locked runs fn with the host map loaded under the file lock.
+func (s *Store) locked(fn func(m map[string]Host) error) error {
+	return filelock.With(s.path+".lock", func() error {
+		m, err := s.load()
+		if err != nil {
+			return err
+		}
+		return fn(m)
+	})
+}
+
 func (s *Store) List() ([]Host, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	m, err := s.load()
-	if err != nil {
+	var m map[string]Host
+	if err := s.locked(func(hosts map[string]Host) error { m = hosts; return nil }); err != nil {
 		return nil, err
 	}
 	out := make([]Host, 0, len(m))
@@ -58,10 +66,8 @@ func (s *Store) List() ([]Host, error) {
 }
 
 func (s *Store) Get(name string) (Host, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	m, err := s.load()
-	if err != nil {
+	var m map[string]Host
+	if err := s.locked(func(hosts map[string]Host) error { m = hosts; return nil }); err != nil {
 		return Host{}, err
 	}
 	h, ok := m[name]
@@ -73,16 +79,12 @@ func (s *Store) Get(name string) (Host, error) {
 
 // Update loads the host map, lets fn change it, and saves it.
 func (s *Store) Update(fn func(hosts map[string]Host) error) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	m, err := s.load()
-	if err != nil {
-		return err
-	}
-	if err := fn(m); err != nil {
-		return err
-	}
-	return s.save(m)
+	return s.locked(func(m map[string]Host) error {
+		if err := fn(m); err != nil {
+			return err
+		}
+		return s.save(m)
+	})
 }
 
 // Merge adds imported hosts. Hosts that already exist get the imported
@@ -168,12 +170,5 @@ func (s *Store) save(m map[string]Host) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
-		return err
-	}
-	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, s.path)
+	return filelock.WriteAtomic(s.path, b)
 }

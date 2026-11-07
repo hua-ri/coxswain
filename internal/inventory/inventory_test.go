@@ -1,9 +1,11 @@
 package inventory
 
 import (
+	"fmt"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -112,5 +114,31 @@ func TestMergeNewAliasInheritsPolicy(t *testing.T) {
 	}
 	if h, _ := s.Get("tagged"); h.Tags["env"] != "" {
 		t.Fatalf("tagged import keeps its own tags: %+v", h)
+	}
+}
+
+// TestConcurrentStores: separate Store values (as in separate processes)
+// on one file must not lose each other's updates (review I5).
+func TestConcurrentStores(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hosts.json")
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			err := NewStore(path).Update(func(m map[string]Host) error {
+				name := fmt.Sprintf("h%02d", i)
+				m[name] = Host{Name: name, HostName: name}
+				return nil
+			})
+			if err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	hosts, err := NewStore(path).List()
+	if err != nil || len(hosts) != 20 {
+		t.Fatalf("got %d hosts, %v", len(hosts), err)
 	}
 }
