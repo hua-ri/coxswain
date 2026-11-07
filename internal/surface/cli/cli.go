@@ -1,6 +1,5 @@
 // Package cli builds the `cox` command tree. Every registered Action
-// becomes a command (ssh.exec → `cox ssh exec`); approval commands are
-// added by hand because only humans may use them.
+// becomes a command (ssh.exec → `cox ssh exec`).
 package cli
 
 import (
@@ -18,10 +17,8 @@ import (
 
 // Exit codes.
 const (
-	ExitOK       = 0
-	ExitFailure  = 1
-	ExitApproval = 3 // approval required or still pending
-	ExitDenied   = 4
+	ExitOK      = 0
+	ExitFailure = 1
 )
 
 // ExitError carries a process exit code out of a command.
@@ -36,23 +33,16 @@ type Printer interface {
 }
 
 type App struct {
-	Engine  *engine.Engine
-	Actor   action.Actor
-	Confirm engine.Confirmer // nil: never ask interactively
-	// Approve shows the approval dialog for `cox approve`; nil disables
-	// approving from the CLI.
-	Approve engine.Confirmer
-	// HumanTTY is true when a human is at an interactive terminal; only
-	// then may approvals be decided from the CLI.
-	HumanTTY bool
-	Stdin    io.Reader
-	Stdout   io.Writer
-	Stderr   io.Writer
-	output   string
+	Engine *engine.Engine
+	Actor  action.Actor
+	Stdin  io.Reader
+	Stdout io.Writer
+	Stderr io.Writer
+	output string
 }
 
-// NewRoot returns the root command with one command per Action plus the
-// approval commands and any extra commands.
+// NewRoot returns the root command with one command per Action plus any
+// extra commands.
 func NewRoot(app *App, version string, extra ...*cobra.Command) *cobra.Command {
 	root := &cobra.Command{
 		Use:           "cox",
@@ -74,7 +64,6 @@ func NewRoot(app *App, version string, extra ...*cobra.Command) *cobra.Command {
 		}
 		parent.AddCommand(actionCommand(app, a, parts[len(parts)-1]))
 	}
-	root.AddCommand(approvalCommands(app)...)
 	root.AddCommand(extra...)
 	return root
 }
@@ -146,7 +135,7 @@ func actionCommand(app *App, a *action.Action, name string) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		out := app.Engine.Invoke(cmd.Context(), app.Actor, a.ID, raw, app.Confirm)
+		out := app.Engine.Invoke(cmd.Context(), app.Actor, a.ID, raw)
 		return app.render(out)
 	}
 	return cmd
@@ -191,11 +180,6 @@ func (app *App) render(out engine.Outcome) error {
 			enc.SetIndent("", "  ")
 			enc.Encode(r)
 		}
-	case engine.StatusApprovalRequired, engine.StatusApprovalPending:
-		fmt.Fprintf(app.Stderr, "needs approval (%s risk): %s\napprove with: cox approve %s\nthen run:     cox approvals wait %s\n",
-			out.Risk, out.Preview, out.ApprovalID, out.ApprovalID)
-	case engine.StatusDenied:
-		fmt.Fprintln(app.Stderr, "denied: "+out.Hint)
 	default:
 		fmt.Fprintln(app.Stderr, "error: "+out.Error)
 	}
@@ -209,10 +193,6 @@ func exitCode(out engine.Outcome) int {
 			return p.PrintCLI(io.Discard, io.Discard)
 		}
 		return ExitOK
-	case engine.StatusApprovalRequired, engine.StatusApprovalPending:
-		return ExitApproval
-	case engine.StatusDenied:
-		return ExitDenied
 	}
 	return ExitFailure
 }

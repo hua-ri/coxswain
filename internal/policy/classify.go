@@ -1,5 +1,5 @@
-// Package policy decides whether an invocation may run, must be
-// confirmed by a human, or is refused.
+// Package policy rates how risky a shell command is. The rating is only a
+// label for the audit log and the activity stream; nothing is blocked.
 package policy
 
 import (

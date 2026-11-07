@@ -1,76 +1,61 @@
 package confirm
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"os/exec"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/hua-ri/coxswain/internal/action"
-	"github.com/hua-ri/coxswain/internal/approval"
-	"github.com/hua-ri/coxswain/internal/engine"
 )
 
-var ap = approval.Approval{
-	ID: "ap_0123456789ab", ActionID: "ssh.exec", Risk: "destructive",
-	Actor:   action.Actor{Kind: action.Agent, Name: "codex"},
-	Preview: `prod$ echo "hi" \ bye`,
-}
-
-func TestDialogScriptEscapes(t *testing.T) {
-	s := DialogScript(ap, 45*time.Second)
-	if !strings.Contains(s, `echo \"hi\" \\ bye`) || !strings.Contains(s, "giving up after 45") {
-		t.Fatalf("script: %s", s)
+func TestScriptEscapes(t *testing.T) {
+	s := Script("Coxswain", `codex wants "x" \ y`+"\r\x1b[2K", 60*time.Second)
+	for _, want := range []string{`codex wants \"x\" \\ y\\x0d\\x1b[2K`, `with title "Coxswain"`, "giving up after 60"} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("script missing %q: %s", want, s)
+		}
+	}
+	if strings.ContainsAny(s, "\r\x1b") {
+		t.Fatalf("control characters reached the dialog: %q", s)
 	}
 }
 
-func TestParseDialog(t *testing.T) {
+func TestParse(t *testing.T) {
 	cases := []struct {
-		out  string
-		err  error
-		want engine.Verdict
+		out     string
+		err     error
+		want    bool
+		wantErr bool
 	}{
-		{"button returned:Approve, gave up:false\n", nil, engine.Approved},
-		{"button returned:, gave up:true\n", nil, engine.Undecided},
-		{"", &exec.ExitError{Stderr: []byte("execution error: User canceled. (-128)")}, engine.Denied},
-		{"", errors.New("exec: osascript not found"), engine.Undecided},
+		{"button returned:Allow, gave up:false\n", nil, true, false},
+		{"button returned:, gave up:true\n", nil, false, false},
+		{"", &exec.ExitError{Stderr: []byte("execution error: User canceled. (-128)")}, false, false},
+		{"", errors.New("exec: osascript not found"), false, true},
 	}
 	for i, c := range cases {
-		if got := ParseDialog(c.out, c.err); got != c.want {
-			t.Errorf("case %d: got %v want %v", i, got, c.want)
+		got, err := Parse(c.out, c.err)
+		if got != c.want || (err != nil) != c.wantErr {
+			t.Errorf("case %d: got %v %v", i, got, err)
 		}
 	}
 }
 
-func TestDialogUsesRunner(t *testing.T) {
+func TestAskWithUsesRunner(t *testing.T) {
 	var script string
-	c := dialog(time.Second, func(_ context.Context, s string) (string, error) {
+	ok, err := AskWith(context.Background(), func(_ context.Context, s string) (string, error) {
 		script = s
-		return "button returned:Approve, gave up:false", nil
-	})
-	v, by := c(context.Background(), ap)
-	if v != engine.Approved || !strings.Contains(script, "ap_0123456789ab") {
-		t.Fatal("dialog runner not used")
-	}
-	if by.Kind != action.Human || by.Session != "dialog" || by.Name == "" {
-		t.Fatalf("approver: %+v", by)
+		return "button returned:Allow, gave up:false", nil
+	}, "Coxswain", "codex wants to use Coxswain", time.Second)
+	if !ok || err != nil || !strings.Contains(script, "codex wants to use Coxswain") {
+		t.Fatalf("ok=%v err=%v script=%s", ok, err, script)
 	}
 }
 
-func TestTerminal(t *testing.T) {
-	var out bytes.Buffer
-	v, by := Terminal(strings.NewReader("y\n"), &out)(context.Background(), ap)
-	if v != engine.Approved || by.Kind != action.Human || by.Session != "terminal" {
-		t.Fatalf("y must approve: %v %+v", v, by)
-	}
-	if v, _ := Terminal(strings.NewReader("\n"), &out)(context.Background(), ap); v != engine.Denied {
-		t.Fatal("empty must deny")
-	}
-	if !strings.Contains(out.String(), "Approve? [y/N]") {
-		t.Fatalf("prompt: %q", out.String())
+func TestAskDisabled(t *testing.T) {
+	t.Setenv("COX_NO_DIALOG", "1")
+	if ok, err := Ask(context.Background(), "t", "m", time.Second); ok || err != nil {
+		t.Fatalf("COX_NO_DIALOG must deny without a dialog: %v %v", ok, err)
 	}
 }
 
@@ -88,14 +73,5 @@ func TestSanitize(t *testing.T) {
 		if got := Sanitize(in); got != want {
 			t.Errorf("Sanitize(%q) = %q, want %q", in, got, want)
 		}
-	}
-}
-
-func TestMessageSanitized(t *testing.T) {
-	a := ap
-	a.Preview = "prod$ rm -rf /data #\r\x1b[2Kls -la"
-	m := Message(a)
-	if strings.ContainsAny(m, "\r\x1b") || !strings.Contains(m, `\x0d\x1b[2Kls`) {
-		t.Fatalf("message: %q", m)
 	}
 }

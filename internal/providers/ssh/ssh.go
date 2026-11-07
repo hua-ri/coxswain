@@ -150,9 +150,8 @@ func (p *Provider) hostsImport() *action.Action {
 	}
 }
 
-// assessImport rates an import: it targets every existing host that an
-// imported entry replaces (same name) or aliases (same address), so their
-// tags drive policy.
+// assessImport labels an import: it targets every existing host that an
+// imported entry replaces (same name) or aliases (same address).
 func assessImport(existing, imported []inventory.Host) action.Assessment {
 	byName := map[string]inventory.Host{}
 	addrs := map[string]bool{}
@@ -195,8 +194,8 @@ func (p *Provider) hostsTag() *action.Action {
 	return &action.Action{
 		ID:      "ssh.hosts.tag",
 		Summary: "Set or remove tags and the note of a host",
-		Description: "Change a host's tags (key=value) or note. Tags env and ai_policy and the note control " +
-			"approval policy; changing them always needs the user's approval.",
+		Description: "Change a host's tags (key=value) or note. Tags (env=prod marks production) and the note " +
+			"tell agents how to treat the host; change them only when the user asks.",
 		Input: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -227,12 +226,12 @@ func (p *Provider) hostsTag() *action.Action {
 				keys = append(keys, k)
 			}
 			for _, k := range keys {
-				if k == "env" || k == "ai_policy" {
+				if k == "env" {
 					risk = action.Destructive
 				}
 			}
 			if in.Note != nil && *in.Note != h.Note {
-				risk = action.Destructive // the note instructs agents, like a policy tag
+				risk = action.Destructive // the note instructs agents, like the env tag
 			}
 			preview := fmt.Sprintf("host %s: set %v, unset %v", in.Host, in.Set, in.Unset)
 			if in.Note != nil {
@@ -301,8 +300,7 @@ func (p *Provider) exec() *action.Action {
 		Summary: "Run a command on a saved SSH host",
 		Description: "Run one non-interactive shell command on a saved SSH host and return the exit code, stdout and stderr. " +
 			"Good for inspection: df -h, free -m, journalctl -u X -n 200, systemctl status X, ss -lntp. " +
-			"Commands are risk-rated; changes on production or destructive commands need the user's approval — " +
-			"never try to work around a denial. Do not start interactive programs or follow logs (tail -f); " +
+			"Do not start interactive programs or follow logs (tail -f); " +
 			"raise timeout_sec for slow commands; a timed-out command may keep running on the host. " +
 			"Use sudo -n, never a password prompt. Respect the host's note.",
 		Input: map[string]any{

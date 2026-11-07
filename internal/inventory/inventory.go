@@ -14,9 +14,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/hua-ri/coxswain/internal/action"
 	"github.com/hua-ri/coxswain/internal/filelock"
-	"github.com/hua-ri/coxswain/internal/policy"
 )
 
 type Host struct {
@@ -113,23 +111,29 @@ func (s *Store) Merge(imported []Host) (added, updated int, err error) {
 }
 
 // SameAddress returns the host in m at h's HostName and port (other than
-// h itself) whose policy mode is strictest; ties go to the first by name.
+// h itself), preferring a production one (env=prod or production) so an
+// alias keeps that label; ties go to the first by name.
 func SameAddress(m map[string]Host, h Host) (Host, bool) {
 	var same []Host
-	var targets []action.Target
 	for _, n := range slices.Sorted(maps.Keys(m)) {
 		if o := m[n]; n != h.Name && o.Addr() == h.Addr() {
+			if o.IsProd() {
+				return o, true
+			}
 			same = append(same, o)
-			targets = append(targets, action.Target{Tags: o.Tags})
 		}
 	}
-	strictest := policy.ModeFor(targets)
-	for _, o := range same {
-		if policy.ModeFor([]action.Target{{Tags: o.Tags}}) == strictest {
-			return o, true
-		}
+	if len(same) == 0 {
+		return Host{}, false
 	}
-	return Host{}, false
+	return same[0], true
+}
+
+// IsProd reports whether the host is tagged as production (env=prod or
+// env=production, any case).
+func (h Host) IsProd() bool {
+	env := strings.ToLower(h.Tags["env"])
+	return env == "prod" || env == "production"
 }
 
 // Addr is the host's network address, host:port (port 22 if unset).

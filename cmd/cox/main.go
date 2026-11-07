@@ -17,8 +17,6 @@ import (
 
 	"github.com/hua-ri/coxswain/internal/action"
 	"github.com/hua-ri/coxswain/internal/actor"
-	"github.com/hua-ri/coxswain/internal/approval"
-	"github.com/hua-ri/coxswain/internal/confirm"
 	"github.com/hua-ri/coxswain/internal/engine"
 	"github.com/hua-ri/coxswain/internal/eventlog"
 	"github.com/hua-ri/coxswain/internal/install"
@@ -54,23 +52,8 @@ func run() int {
 	}
 	e := newEngine(coxHome, userHome)
 
-	tty := term.IsTerminal(int(os.Stdin.Fd()))
-	who := actor.Detect(tty)
-	var ask engine.Confirmer
-	switch {
-	case who.Kind == action.Agent:
-		ask = dialog()
-	case tty:
-		ask = confirm.Terminal(os.Stdin, os.Stderr)
-	}
-	var approve engine.Confirmer
-	if os.Getenv("COX_NO_DIALOG") == "" {
-		approve = confirm.Dialog(120 * time.Second)
-	}
-	app := &cli.App{
-		Engine: e, Actor: who, Confirm: ask, Approve: approve, HumanTTY: who.Kind == action.Human && tty,
-		Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr,
-	}
+	who := actor.Detect(term.IsTerminal(int(os.Stdin.Fd())))
+	app := &cli.App{Engine: e, Actor: who, Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr}
 	root := cli.NewRoot(app, version, mcpCommand(e), initCommand(app, userHome))
 	err = root.ExecuteContext(ctx)
 	var exit cli.ExitError
@@ -97,20 +80,7 @@ func newEngine(coxHome, userHome string) *engine.Engine {
 		UserHome:  userHome,
 	}).Register(reg)
 	artifact.Register(reg, artifacts)
-	return &engine.Engine{
-		Registry:  reg,
-		Approvals: approval.NewStore(filepath.Join(coxHome, "approvals"), 30*time.Minute),
-		Events:    eventlog.Open(filepath.Join(coxHome, "events")),
-	}
-}
-
-// dialog returns the macOS approval dialog, or nil when COX_NO_DIALOG is
-// set (tests, CI). Codex times tool calls out after 60s by default.
-func dialog() engine.Confirmer {
-	if os.Getenv("COX_NO_DIALOG") != "" {
-		return nil
-	}
-	return confirm.Dialog(45 * time.Second)
+	return &engine.Engine{Registry: reg, Events: eventlog.Open(filepath.Join(coxHome, "events"))}
 }
 
 func mcpCommand(e *engine.Engine) *cobra.Command {
@@ -121,7 +91,7 @@ func mcpCommand(e *engine.Engine) *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			who := action.Actor{Kind: action.Agent, Name: name, Session: sessionID(rand.Read)}
-			return mcpsurf.NewServer(e, who, dialog(), version).Run(cmd.Context(), &sdk.StdioTransport{})
+			return mcpsurf.NewServer(e, who, version).Run(cmd.Context(), &sdk.StdioTransport{})
 		},
 	}
 	cmd.Flags().StringVar(&name, "actor", "mcp", "agent name recorded in the audit log (claude-code, codex, kimi)")
@@ -148,7 +118,7 @@ func initCommand(app *cli.App, userHome string) *cobra.Command {
 			out := cmd.OutOrStdout()
 			if !skipImport {
 				if _, err := os.Stat(filepath.Join(userHome, ".ssh", "config")); err == nil {
-					res := app.Engine.Invoke(cmd.Context(), app.Actor, "ssh.hosts.import", nil, app.Confirm)
+					res := app.Engine.Invoke(cmd.Context(), app.Actor, "ssh.hosts.import", nil)
 					if res.Status != engine.StatusOK {
 						return fmt.Errorf("import ~/.ssh/config: %s %s", res.Status, res.Error)
 					}

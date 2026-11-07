@@ -19,7 +19,6 @@ const (
 	ActionRequested = "action.requested"
 	ActionFinished  = "action.finished"
 	ActionFailed    = "action.failed"
-	ApprovalDecided = "approval.decided"
 )
 
 type Event struct {
@@ -30,8 +29,6 @@ type Event struct {
 	Args       json.RawMessage `json:"args,omitempty"`
 	Risk       string          `json:"risk,omitempty"`
 	Targets    []action.Target `json:"targets,omitempty"`
-	Decision   string          `json:"decision,omitempty"`
-	ApprovalID string          `json:"approval_id,omitempty"`
 	DurationMs int64           `json:"duration_ms,omitempty"`
 	Error      string          `json:"error,omitempty"`
 }

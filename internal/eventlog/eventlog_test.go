@@ -16,7 +16,7 @@ func TestAppendAndRead(t *testing.T) {
 	l.Now = func() time.Time { return day }
 
 	actor := &action.Actor{Kind: action.Agent, Name: "codex"}
-	if err := l.Append(Event{Type: ActionRequested, Actor: actor, Action: "ssh.exec", Decision: "allow"}); err != nil {
+	if err := l.Append(Event{Type: ActionRequested, Actor: actor, Action: "ssh.exec"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := l.Append(Event{Type: ActionFinished, Action: "ssh.exec", DurationMs: 12}); err != nil {

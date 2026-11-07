@@ -5,10 +5,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/hua-ri/coxswain/internal/action"
-	"github.com/hua-ri/coxswain/internal/approval"
 	"github.com/hua-ri/coxswain/internal/engine"
 	"github.com/hua-ri/coxswain/internal/eventlog"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -32,15 +30,10 @@ func setup(t *testing.T) (*engine.Engine, *sdk.ClientSession) {
 		},
 		Run: func(context.Context, json.RawMessage) (any, error) { return "done", nil },
 	})
-	dir := t.TempDir()
-	e := &engine.Engine{
-		Registry:  reg,
-		Approvals: approval.NewStore(dir+"/approvals", time.Minute),
-		Events:    eventlog.Open(dir + "/events"),
-	}
+	e := &engine.Engine{Registry: reg, Events: eventlog.Open(t.TempDir() + "/events")}
 	ct, st := sdk.NewInMemoryTransports()
 	ctx := context.Background()
-	if _, err := NewServer(e, agent, nil, "test").Connect(ctx, st, nil); err != nil {
+	if _, err := NewServer(e, agent, "test").Connect(ctx, st, nil); err != nil {
 		t.Fatal(err)
 	}
 	cs, err := sdk.NewClient(&sdk.Implementation{Name: "t", Version: "0"}, nil).Connect(ctx, ct, nil)
@@ -74,34 +67,17 @@ func TestListTools(t *testing.T) {
 	for _, tool := range res.Tools {
 		names = append(names, tool.Name)
 	}
-	if strings.Join(names, ",") != "cox_approval_wait,demo_do" {
+	if strings.Join(names, ",") != "demo_do" {
 		t.Fatalf("tools = %v", names)
 	}
 }
 
-func TestApprovalRoundTrip(t *testing.T) {
-	e, cs := setup(t)
+// TestDestructiveRuns: no approval round trip; the agent's own permission
+// prompt is the only one.
+func TestDestructiveRuns(t *testing.T) {
+	_, cs := setup(t)
 	out, isErr := call(t, cs, "demo_do", map[string]any{"danger": true})
-	if out.Status != engine.StatusApprovalRequired || isErr || !strings.Contains(out.Hint, "cox_approval_wait") {
-		t.Fatalf("%+v", out)
-	}
-	pending, _ := call(t, cs, "cox_approval_wait", map[string]any{"approval_id": out.ApprovalID, "timeout_sec": 1})
-	if pending.Status != engine.StatusApprovalPending {
-		t.Fatalf("%+v", pending)
-	}
-	e.Decide(out.ApprovalID, true, action.Actor{Kind: action.Human, Name: "king"})
-	done, _ := call(t, cs, "cox_approval_wait", map[string]any{"approval_id": out.ApprovalID})
-	if done.Status != engine.StatusOK || done.Result != "done" {
-		t.Fatalf("%+v", done)
-	}
-}
-
-func TestDeniedIsError(t *testing.T) {
-	e, cs := setup(t)
-	out, _ := call(t, cs, "demo_do", map[string]any{"danger": true})
-	e.Decide(out.ApprovalID, false, action.Actor{Kind: action.Human, Name: "king"})
-	denied, isErr := call(t, cs, "cox_approval_wait", map[string]any{"approval_id": out.ApprovalID})
-	if denied.Status != engine.StatusDenied || !isErr || denied.Hint != engine.DeniedHint {
-		t.Fatalf("%+v %v", denied, isErr)
+	if out.Status != engine.StatusOK || isErr || out.Result != "done" {
+		t.Fatalf("%+v %v", out, isErr)
 	}
 }

@@ -67,8 +67,8 @@ func TestCLIEndToEnd(t *testing.T) {
 	if out, code := cox(t, e, "init", "--skip-agents"); code != 0 || !strings.Contains(out, "added:2") {
 		t.Fatalf("init: %d %s", code, out)
 	}
-	if out, code := cox(t, e, "ssh", "hosts", "tag", "prod", "--set", "env=prod"); code != 3 {
-		t.Fatalf("agent tagging env must need approval: %d %s", code, out)
+	if out, code := cox(t, e, "ssh", "hosts", "tag", "prod", "--set", "env=prod"); code != 0 {
+		t.Fatalf("tag: %d %s", code, out)
 	}
 	if out, code := cox(t, e, "ssh", "exec", "dev", "--", "echo", "hi"); code != 0 || out != "hi\n" {
 		t.Fatalf("exec: %d %q", code, out)
@@ -76,12 +76,15 @@ func TestCLIEndToEnd(t *testing.T) {
 	if out, code := cox(t, e, "ssh", "exec", "dev", "--", "exit 7"); code != 7 {
 		t.Fatalf("exit code: %d %q", code, out)
 	}
-	out, code := cox(t, e, "ssh", "exec", "dev", "--", "rm", "-rf", "/tmp/cox-e2e")
-	if code != 3 || !strings.Contains(out, "cox approve ap_") {
+	dir := t.TempDir()
+	if out, code := cox(t, e, "ssh", "exec", "prod", "--", "rm", "-rf", dir); code != 0 {
 		t.Fatalf("destructive: %d %s", code, out)
 	}
-	if out, code := cox(t, e, "approve", strings.Fields(out[strings.Index(out, "ap_"):])[0]); code != 1 || !strings.Contains(out, "person at an interactive terminal") {
-		t.Fatalf("agent approved its own action: %d %s", code, out)
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("destructive command did not run: %v", err)
+	}
+	if out, code := cox(t, e, "approve", "ap_x"); code == 0 {
+		t.Fatalf("approve command still exists: %s", out)
 	}
 }
 
