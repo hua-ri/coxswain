@@ -41,10 +41,14 @@ homebrew_casks:
     homepage: https://github.com/hua-ri/coxswain
     description: Ops toolbox (SSH, Kubernetes, Argo) for you and your AI agents
     license: MIT
+    # Pushed over SSH with a deploy key that can write only to the tap repo.
     repository:
       owner: hua-ri
       name: homebrew-tap
-      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+      branch: main
+      git:
+        url: git@github.com:hua-ri/homebrew-tap.git
+        private_key: "{{ .Env.HOMEBREW_TAP_DEPLOY_KEY }}"
     # The binary is not notarized yet; remove the quarantine flag Homebrew adds.
     hooks:
       post:
