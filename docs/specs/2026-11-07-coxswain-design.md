@@ -120,7 +120,7 @@
 | Termark 的做法 | 评价 | coxswain 怎么用 |
 |---|---|---|
 | **四档审批**：`always` / `balanced`（默认）/ `auto_review` / `auto`，可按主机覆盖；路由结果 `none` / `user` / `auto_review` | 成熟，直接借用 | §4.4 改为“四档 × 环境”的策略模型 |
-| **三层风险判定**：模型自报（写类工具强制填 `explanation` + `confirmation`）+ `danger.go` 规则（shell 分词、剥离 sudo/env、rm -r 越界、mkfs/dd、`drop database`、`compose down -v`、写受保护路径）+ 敏感路径读写 | 规则清单很实用 | 规则清单作为初始规则集；coxswain 更严格：**无法解析一律 ask**；Action.Risk 由工具声明，不信任模型自报 |
+| **三层风险判定**：模型自报（写类工具强制填 `explanation` + `confirmation`）+ `danger.go` 规则（shell 分词、剥离 sudo/env、rm -r 越界、mkfs/dd、`drop database`、`compose down -v`、写受保护路径）+ 敏感路径读写 | 规则清单很实用 | 规则清单作为初始规则集；coxswain 更严格：**无法解析或运行时计算的命令一律 Destructive（总是 ask）**，不认识的命令按 Write；Action.Risk 由工具声明，不信任模型自报 |
 | **独立 AI 审查员**：可单独配置便宜模型，输出严格 JSON `{risk_level, user_authorization, outcome: allow/ask_user/deny/revise, rationale}`；`revise` 让主模型改写命令以脱敏；超时或失败转人工 | 很好的中间档 | 新增 `auto_review` 档；审查结果原样写入审计事件 |
 | **拒绝回填文本**：“不要通过变通、间接执行或绕过策略达成同一目的” | 有效的防绕过措施 | 审批被拒时返回给 agent 的标准文本 |
 | **主机备注作为提示词硬约束**（`[Current host context]`，要解除限制必须先改备注） | 便宜、用户友好 | Inventory 增加 `ai_note` 字段，在 MCP 工具描述或 Context Pack 中注入；**只作提示，硬拦截仍靠 policy** |
@@ -321,7 +321,7 @@ kimi mcp add --transport stdio cox -- cox mcp --actor kimi
 | actor | human / claude-code / codex / kimi / automation |
 | Action 风险 | Read / Write / Destructive |
 | 目标标签 | `env=prod` / `env=staging` |
-| 命令内容 | 用 shell 解析器（`mvdan.cc/sh`）拆出所有命令，与只读白名单（`cat ls df ps top journalctl ss …`）和危险模式（`rm -rf`、`reboot`、`> /etc/…`、`kubectl delete`）比对；**无法解析一律 ask** |
+| 命令内容 | 用 shell 解析器（`mvdan.cc/sh`）拆出所有命令，与只读白名单（`cat ls df ps top journalctl ss …`）和危险模式（`rm -rf`、`reboot`、`> /etc/…`、`kubectl delete`）比对；**无法解析或命令名在运行时才算出的一律 Destructive（总是 ask）**；能解析但不认识的命令按 Write |
 
 **审批档位（借鉴 Termark，按 环境标签 / 主机 / actor 覆盖）：**
 

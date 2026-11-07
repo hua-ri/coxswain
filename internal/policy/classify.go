@@ -22,7 +22,7 @@ var readOnly = set("cat", "head", "tail", "less", "more", "grep", "egrep", "fgre
 	"getent", "ping", "dig", "nslookup", "host", "traceroute", "tracepath", "md5sum", "sha1sum", "sha256sum",
 	"readlink", "realpath", "basename", "dirname", "pwd", "test", "true", "false", "seq", "column", "jq",
 	"diff", "cmp", "findmnt", "getenforce", "sestatus", "locale", "cal", "arch", "nl", "rev", "tac",
-	"strings", "od", "hexdump")
+	"strings", "od", "hexdump", "cd", "pushd", "popd")
 
 // readOnlySub: commands that are read-only only with these subcommands.
 var readOnlySub = map[string]map[string]bool{
@@ -37,15 +37,30 @@ var readOnlySub = map[string]map[string]bool{
 }
 
 // destructiveCmd are always destructive regardless of arguments.
-var destructiveCmd = set("mkfs", "wipefs", "shutdown", "reboot", "halt", "poweroff", "init", "fdisk",
+var destructiveCmd = set("mkfs", "wipefs", "shutdown", "reboot", "halt", "poweroff", "init", "telinit", "fdisk",
 	"parted", "sfdisk", "mkswap", "eval", "exec", "source", ".")
 
-// wrappers run another command; we classify the wrapped command.
-var wrappers = set("sudo", "env", "timeout", "nice", "nohup", "time", "command", "stdbuf", "ionice", "xargs")
+// systemctlDestructive are systemctl verbs that stop or switch the machine.
+var systemctlDestructive = set("reboot", "poweroff", "halt", "kexec", "isolate", "emergency", "rescue",
+	"suspend", "hibernate", "default")
 
-// protectedPrefixes may not be written without a destructive rating.
-var protectedPrefixes = []string{"/etc/", "/boot", "/usr/", "/bin/", "/sbin/", "/lib", "/proc/", "/sys/",
-	"/dev/sd", "/dev/nvme", "/dev/vd", "~/.ssh", "~/.kube", "~/.aws", "~/.gnupg"}
+// wrappers run another command; we classify the wrapped command.
+var wrappers = set("sudo", "doas", "env", "timeout", "nice", "time", "command", "builtin", "stdbuf", "ionice",
+	"xargs", "setsid")
+
+// protectedRoots may not be written, nor anything below them, without a
+// destructive rating.
+var protectedRoots = []string{"/etc", "/usr", "/boot", "/bin", "/sbin", "/lib", "/lib64", "/proc", "/sys",
+	"/root", "/var/spool/cron", "/var/lib"}
+
+// protectedDevices are block device prefixes.
+var protectedDevices = []string{"/dev/sd", "/dev/nvme", "/dev/vd", "/dev/disk"}
+
+// protectedDirs and protectedFiles are protected wherever they are.
+var (
+	protectedDirs  = set(".ssh", ".kube", ".aws", ".gnupg")
+	protectedFiles = set("authorized_keys", "sudoers")
+)
 
 func set(xs ...string) map[string]bool {
 	m := make(map[string]bool, len(xs))
@@ -55,17 +70,30 @@ func set(xs ...string) map[string]bool {
 	return m
 }
 
-// ClassifyCommand rates a shell command line. Anything it cannot fully
-// understand is rated Destructive so that it is always confirmed.
+// ClassifyCommand rates a shell command line. Anything it cannot parse
+// or whose command name is computed at run time is rated Destructive so
+// that it is always confirmed; unknown commands are Write.
 func ClassifyCommand(cmd string) action.Risk {
+	return rater{}.classify(cmd, 0)
+}
+
+// rater carries context through one classification. cd is set when the
+// command line changes directory, so relative write targets are unknown.
+type rater struct{ cd bool }
+
+func (r rater) classify(cmd string, depth int) action.Risk {
+	if depth > 4 {
+		return action.Destructive
+	}
 	f, err := syntax.NewParser().Parse(strings.NewReader(cmd), "")
 	if err != nil {
 		return action.Destructive
 	}
+	r.cd = r.cd || changesDir(f)
 	risk := action.Read
-	raise := func(r action.Risk) {
-		if r > risk {
-			risk = r
+	raise := func(x action.Risk) {
+		if x > risk {
+			risk = x
 		}
 	}
 	syntax.Walk(f, func(n syntax.Node) bool {
@@ -73,9 +101,9 @@ func ClassifyCommand(cmd string) action.Risk {
 		case *syntax.FuncDecl: // e.g. fork bombs
 			raise(action.Destructive)
 		case *syntax.Redirect:
-			raise(classifyRedirect(n))
+			raise(r.classifyRedirect(n))
 		case *syntax.CallExpr:
-			raise(classifyCall(n.Args))
+			raise(r.classifyCall(n.Args, depth))
 		case *syntax.DeclClause, *syntax.TestClause, *syntax.ArithmCmd, *syntax.LetClause:
 			// harmless on their own; nested calls are walked separately
 		}
@@ -84,20 +112,47 @@ func ClassifyCommand(cmd string) action.Risk {
 	return risk
 }
 
-func classifyRedirect(r *syntax.Redirect) action.Risk {
-	switch r.Op {
+// changesDir reports whether the line runs cd or pushd anywhere.
+func changesDir(f *syntax.File) bool {
+	found := false
+	syntax.Walk(f, func(n syntax.Node) bool {
+		if c, ok := n.(*syntax.CallExpr); ok {
+			for _, w := range c.Args {
+				s, ok := literal(w)
+				if !ok || (s != "builtin" && s != "command") {
+					found = found || (ok && (s == "cd" || s == "pushd"))
+					break
+				}
+			}
+		}
+		return !found
+	})
+	return found
+}
+
+// classifyString rates a command line found inside another command's
+// arguments (bash -c, su -c, ssh host cmd…).
+func (r rater) classifyString(cmd string, depth int) action.Risk {
+	if strings.Contains(cmd, dynamic) {
+		return action.Destructive
+	}
+	return r.classify(cmd, depth+1)
+}
+
+func (r rater) classifyRedirect(rd *syntax.Redirect) action.Risk {
+	switch rd.Op {
 	case syntax.RdrOut, syntax.AppOut, syntax.RdrAll, syntax.AppAll, syntax.RdrClob, syntax.RdrInOut, syntax.DplOut:
-		target, ok := literal(r.Word)
+		target, ok := literal(rd.Word)
 		if !ok {
 			return action.Destructive
 		}
-		if r.Op == syntax.DplOut && (target == "-" || isDigits(target)) {
+		if rd.Op == syntax.DplOut && (target == "-" || isDigits(target)) {
 			return action.Read // >&2, >&- duplicate or close a descriptor
 		}
 		if target == "/dev/null" || target == "/dev/stdout" || target == "/dev/stderr" {
 			return action.Read
 		}
-		if isProtected(target) {
+		if r.protected(target) {
 			return action.Destructive
 		}
 		return action.Write
@@ -114,7 +169,7 @@ func isDigits(s string) bool {
 	return s != ""
 }
 
-func classifyCall(words []*syntax.Word) action.Risk {
+func (r rater) classifyCall(words []*syntax.Word, depth int) action.Risk {
 	if len(words) == 0 { // pure assignment like FOO=bar
 		return action.Read
 	}
@@ -129,34 +184,49 @@ func classifyCall(words []*syntax.Word) action.Risk {
 		}
 		args = append(args, s)
 	}
-	return classifyArgs(args, 0)
+	return r.classifyArgs(args, depth)
 }
 
 // dynamic stands for an argument whose value is only known at run time.
 const dynamic = "\x00dynamic"
 
-func classifyArgs(args []string, depth int) action.Risk {
+func (r rater) classifyArgs(args []string, depth int) action.Risk {
 	if depth > 4 {
 		return action.Destructive
 	}
-	args = stripWrapper(args)
-	if len(args) == 0 {
+	w := stripWrapper(args)
+	r.cd = r.cd || w.chdir
+	args = w.args
+	switch {
+	case w.split != "": // env -S 'cmd args'
+		return atLeastWrite(r.classifyString(strings.Join(append([]string{w.split}, args...), " "), depth))
+	case len(args) == 0 && w.rootShell: // sudo -s, sudo -i
+		return action.Destructive
+	case len(args) == 0:
 		return action.Read
 	}
-	name := path.Base(args[0])
+	name := cmdName(args[0])
 	rest := args[1:]
+	if strings.Contains(name, dynamic) {
+		return action.Destructive // wrapped command name computed at run time
+	}
 	if readOnly[name] {
 		return action.Read // pure readers stay Read even with dynamic args
 	}
-	r := classifyName(name, rest, depth)
-	if r < action.Write && hasDynamic(rest) {
+	risk := r.classifyName(name, rest, depth)
+	if risk < action.Write && hasDynamic(rest) {
 		if name == "dd" {
 			return action.Destructive
 		}
 		return action.Write
 	}
-	return r
+	return risk
 }
+
+// cmdName is the command's base name without a leading backslash (\rm).
+func cmdName(s string) string { return path.Base(strings.TrimPrefix(s, `\`)) }
+
+func atLeastWrite(r action.Risk) action.Risk { return max(r, action.Write) }
 
 func hasDynamic(args []string) bool {
 	for _, a := range args {
@@ -168,7 +238,7 @@ func hasDynamic(args []string) bool {
 }
 
 // classifyName rates a command that is not a pure reader.
-func classifyName(name string, rest []string, depth int) action.Risk {
+func (r rater) classifyName(name string, rest []string, depth int) action.Risk {
 	if check, ok := argChecks[name]; ok {
 		return check(rest)
 	}
@@ -178,20 +248,70 @@ func classifyName(name string, rest []string, depth int) action.Risk {
 	case name == "sh" || name == "bash" || name == "zsh" || name == "dash":
 		for i, a := range rest {
 			if a == "-c" && i+1 < len(rest) {
-				if strings.Contains(rest[i+1], dynamic) {
-					return action.Destructive
-				}
-				return ClassifyCommand(rest[i+1])
+				return r.classifyString(rest[i+1], depth)
 			}
 		}
 		return action.Destructive // a shell reading a script or stdin
+	case name == "su" || name == "runuser":
+		if cmd, ok := flagValue(rest, "-c", "--command"); ok {
+			return atLeastWrite(r.classifyString(cmd, depth))
+		}
+		return action.Destructive // a root shell reading stdin
+	case name == "ssh":
+		words := afterFlags(rest, "bcDEeFIiJLlmOopQRSWwB", nil)
+		if len(words) < 2 {
+			return action.Write
+		}
+		return atLeastWrite(r.classifyString(strings.Join(words[1:], " "), depth))
+	case name == "docker" || name == "podman":
+		if words := afterFlags(rest, "", nil); len(words) > 0 && words[0] == "exec" {
+			inner := afterFlags(words[1:], "uwe", set("--user", "--workdir", "--env", "--env-file", "--detach-keys"))
+			if len(inner) < 2 {
+				return action.Write
+			}
+			return atLeastWrite(r.classifyArgs(inner[1:], depth+1))
+		}
+	case name == "kubectl" && hasAny(rest, "exec"):
+		for i, a := range rest {
+			if a == "--" {
+				return atLeastWrite(r.classifyArgs(rest[i+1:], depth+1))
+			}
+		}
+		return action.Destructive // old syntax: the command cannot be told from the pod
+	case name == "find":
+		return r.classifyFind(rest, depth)
+	case name == "watch":
+		words := afterFlags(rest, "nq", set("--interval"))
+		if len(words) == 0 {
+			return action.Write
+		}
+		return atLeastWrite(r.classifyString(strings.Join(words, " "), depth))
+	case name == "systemd-run":
+		words := afterFlags(rest, "upMHE", set("--unit", "--property", "--machine", "--host", "--description",
+			"--slice", "--uid", "--gid", "--nice", "--setenv", "--working-directory", "--service-type",
+			"--on-active", "--on-boot", "--on-startup", "--on-unit-active", "--on-unit-inactive", "--on-calendar",
+			"--timer-property", "--path-property", "--socket-property"))
+		return atLeastWrite(r.classifyArgs(words, depth+1))
+	case name == "nohup":
+		return atLeastWrite(r.classifyArgs(rest, depth+1))
+	case name == "flock":
+		if cmd, ok := flagValue(rest, "-c", "--command"); ok {
+			return atLeastWrite(r.classifyString(cmd, depth))
+		}
+		words := afterFlags(rest, "wE", set("--timeout", "--conflict-exit-code"))
+		if len(words) < 2 {
+			return action.Write
+		}
+		return atLeastWrite(r.classifyArgs(words[1:], depth+1))
+	case name == "systemctl" && hasAny(rest, keys(systemctlDestructive)...):
+		return action.Destructive
 	case name == "rm":
 		for _, a := range rest {
 			if a == "--recursive" || (strings.HasPrefix(a, "-") && !strings.HasPrefix(a, "--") && strings.ContainsAny(a, "rR")) {
 				return action.Destructive
 			}
 		}
-		return action.Write
+		return r.writeTargets(rest)
 	case name == "dd":
 		for _, a := range rest {
 			if strings.HasPrefix(a, "of=") && a != "of=/dev/null" {
@@ -199,20 +319,10 @@ func classifyName(name string, rest []string, depth int) action.Risk {
 			}
 		}
 		return action.Read
-	case name == "find":
-		for _, a := range rest {
-			switch a {
-			case "-delete":
-				return action.Destructive
-			case "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprintf", "-fls":
-				return action.Write
-			}
-		}
-		return action.Read
 	case name == "sed":
-		return classifySed(rest)
+		return r.classifySed(rest)
 	case name == "tee":
-		return writeTargets(rest)
+		return r.writeTargets(rest)
 	case name == "awk" || name == "gawk" || name == "mawk" || name == "nawk":
 		return classifyAwk(rest)
 	case name == "journalctl":
@@ -223,7 +333,7 @@ func classifyName(name string, rest []string, depth int) action.Risk {
 		}
 		return action.Read
 	case name == "cp" || name == "mv" || name == "install" || name == "rsync" || name == "ln" || name == "chmod" || name == "chown":
-		return writeTargets(rest)
+		return r.writeTargets(rest)
 	case name == "git":
 		return classifyGit(rest)
 	}
@@ -234,6 +344,78 @@ func classifyName(name string, rest []string, depth int) action.Risk {
 		return action.Write
 	}
 	return action.Write
+}
+
+// classifyFind rates find: -delete is Destructive, commands run by
+// -exec and friends are rated themselves (at least Write).
+func (r rater) classifyFind(args []string, depth int) action.Risk {
+	risk := action.Read
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "-delete":
+			return action.Destructive
+		case "-fprint", "-fprintf", "-fls":
+			risk = max(risk, action.Write)
+		case "-exec", "-execdir", "-ok", "-okdir":
+			j := i + 1
+			for j < len(args) && args[j] != ";" && args[j] != "+" {
+				j++
+			}
+			risk = max(risk, atLeastWrite(r.classifyArgs(args[i+1:j], depth+1)))
+			i = j
+		}
+	}
+	return risk
+}
+
+// flagValue returns the value of the first of the given flags (-c x,
+// --command x or --command=x).
+func flagValue(args []string, short, long string) (string, bool) {
+	for i, a := range args {
+		switch {
+		case (a == short || a == long) && i+1 < len(args):
+			return args[i+1], true
+		case strings.HasPrefix(a, long+"="):
+			return strings.TrimPrefix(a, long+"="), true
+		}
+	}
+	return "", false
+}
+
+// afterFlags drops leading flags and returns the args from the first
+// operand on. Short flags in valued (a cluster ending in one of them, as
+// in -p 22) and long flags in long take the next arg as value.
+func afterFlags(args []string, valued string, long map[string]bool) []string {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--":
+			return args[i+1:]
+		case long[a]:
+			i++
+		case strings.HasPrefix(a, "--"):
+		case strings.HasPrefix(a, "-") && len(a) > 1:
+			for j := 1; j < len(a); j++ {
+				if strings.IndexByte(valued, a[j]) >= 0 {
+					if j == len(a)-1 {
+						i++ // value is the next arg
+					}
+					break // otherwise the value is attached
+				}
+			}
+		default:
+			return args[i:]
+		}
+	}
+	return nil
+}
+
+func keys(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
 }
 
 // subcommand returns the first non-flag word if it is in subs (flags in
@@ -251,44 +433,113 @@ func subcommand(args []string, subs map[string]bool) string {
 }
 
 // writeTargets rates a command that writes to the paths among its args.
-func writeTargets(args []string) action.Risk {
+func (r rater) writeTargets(args []string) action.Risk {
 	for _, a := range args {
-		if isProtected(a) {
+		if r.protected(a) {
 			return action.Destructive
 		}
 	}
 	return action.Write
 }
 
+// protected reports whether writing p needs a destructive rating. After
+// a cd, any relative path may point anywhere.
+func (r rater) protected(p string) bool {
+	if strings.HasPrefix(p, "-") {
+		i := strings.IndexByte(p, '=')
+		if i < 0 {
+			return false // a flag, not a path
+		}
+		p = p[i+1:] // --target-directory=/etc
+	}
+	if r.cd && p != "" && !strings.HasPrefix(p, "/") && !strings.HasPrefix(p, "~") && !strings.HasPrefix(p, "$HOME") {
+		return true
+	}
+	return isProtected(p)
+}
+
+// isProtected reports whether p is a system path, a credential store or a
+// block device. Relative paths that climb out (../..) are protected too.
 func isProtected(p string) bool {
 	if strings.HasPrefix(p, "$HOME/") {
 		p = "~/" + p[len("$HOME/"):]
 	}
-	for _, pre := range protectedPrefixes {
-		if strings.HasPrefix(p, pre) {
+	if p == "" {
+		return false
+	}
+	c := path.Clean(p)
+	if strings.HasPrefix(c, "/") {
+		if c == "/" {
+			return true
+		}
+		for _, root := range protectedRoots {
+			if c == root || strings.HasPrefix(c, root+"/") {
+				return true
+			}
+		}
+		for _, dev := range protectedDevices {
+			if strings.HasPrefix(c, dev) {
+				return true
+			}
+		}
+	}
+	if c == ".." || strings.HasPrefix(c, "../") {
+		return true
+	}
+	for _, part := range strings.Split(c, "/") {
+		if protectedDirs[part] {
 			return true
 		}
 	}
-	return p == "/"
+	return protectedFiles[path.Base(c)]
+}
+
+// wrapped is a command with its wrappers removed.
+type wrapped struct {
+	args      []string
+	split     string // env -S string, to be parsed as a command line
+	rootShell bool   // sudo -s / -i
+	chdir     bool   // sudo -D, env -C
 }
 
 // stripWrapper removes leading wrapper commands (sudo -u x, env A=b,
 // timeout 5, xargs -0 …) and returns the wrapped command.
-func stripWrapper(args []string) []string {
-	for len(args) > 0 && wrappers[path.Base(args[0])] {
-		w := path.Base(args[0])
+func stripWrapper(args []string) wrapped {
+	var w wrapped
+	for len(args) > 0 && wrappers[cmdName(args[0])] {
+		name := cmdName(args[0])
 		args = args[1:]
 		for len(args) > 0 {
 			a := args[0]
 			switch {
-			case w == "env" && strings.Contains(a, "=") && !strings.HasPrefix(a, "-"):
+			case name == "env" && strings.Contains(a, "=") && !strings.HasPrefix(a, "-"):
 				args = args[1:]
-			case strings.HasPrefix(a, "-"):
-				args = args[1:]
-				if takesValue(w, a) && len(args) > 0 {
+			case name == "env" && (a == "-S" || a == "--split-string"):
+				if len(args) > 1 {
+					w.split, args = args[1], args[2:]
+				} else {
 					args = args[1:]
 				}
-			case w == "timeout" && len(a) > 0 && a[0] >= '0' && a[0] <= '9':
+				w.args = args
+				return w
+			case name == "env" && (strings.HasPrefix(a, "-S") || strings.HasPrefix(a, "--split-string=")):
+				w.split = strings.TrimPrefix(strings.TrimPrefix(a, "--split-string="), "-S")
+				w.args = args[1:]
+				return w
+			case strings.HasPrefix(a, "-"):
+				args = args[1:]
+				if name == "sudo" && (a == "--shell" || a == "--login" ||
+					(!strings.HasPrefix(a, "--") && strings.ContainsAny(a, "si"))) {
+					w.rootShell = true
+				}
+				if (name == "sudo" && (a == "-D" || strings.HasPrefix(a, "--chdir"))) ||
+					(name == "env" && (a == "-C" || strings.HasPrefix(a, "--chdir"))) {
+					w.chdir = true
+				}
+				if takesValue(name, a) && len(args) > 0 {
+					args = args[1:]
+				}
+			case name == "timeout" && len(a) > 0 && a[0] >= '0' && a[0] <= '9':
 				args = args[1:]
 			default:
 				goto next
@@ -296,13 +547,17 @@ func stripWrapper(args []string) []string {
 		}
 	next:
 	}
-	return args
+	w.args = args
+	return w
 }
 
 func takesValue(wrapper, flag string) bool {
 	switch wrapper {
 	case "sudo":
-		return flag == "-u" || flag == "-g" || flag == "-C" || flag == "-h" || flag == "-p" || flag == "-U"
+		return flag == "-u" || flag == "-g" || flag == "-C" || flag == "-h" || flag == "-p" || flag == "-U" ||
+			flag == "-D" || flag == "-R" || flag == "-T" || flag == "-r" || flag == "-t"
+	case "doas":
+		return flag == "-u" || flag == "-C"
 	case "env":
 		return flag == "-u" || flag == "-C"
 	case "nice", "ionice":
@@ -310,20 +565,22 @@ func takesValue(wrapper, flag string) bool {
 	case "timeout":
 		return flag == "-s" || flag == "-k" || flag == "--signal" || flag == "--kill-after"
 	case "xargs":
-		return flag == "-n" || flag == "-I" || flag == "-P" || flag == "-L" || flag == "-d" || flag == "-s" || flag == "-E"
+		return flag == "-n" || flag == "-I" || flag == "-P" || flag == "-L" || flag == "-d" || flag == "-s" ||
+			flag == "-E" || flag == "-a" || flag == "--arg-file"
 	case "stdbuf":
 		return flag == "-i" || flag == "-o" || flag == "-e"
 	}
 	return false
 }
 
-// literal returns the word's value if it contains no expansions.
+// literal returns the word's value if it contains no expansions, with
+// shell backslash escapes removed (\rm is rm, \; is ;).
 func literal(w *syntax.Word) (string, bool) {
 	var sb strings.Builder
 	for _, p := range w.Parts {
 		switch p := p.(type) {
 		case *syntax.Lit:
-			sb.WriteString(p.Value)
+			sb.WriteString(unescape(p.Value, ""))
 		case *syntax.SglQuoted:
 			sb.WriteString(p.Value)
 		case *syntax.DblQuoted:
@@ -332,7 +589,7 @@ func literal(w *syntax.Word) (string, bool) {
 				if !ok {
 					return "", false
 				}
-				sb.WriteString(lit.Value)
+				sb.WriteString(unescape(lit.Value, "$`\"\\\n"))
 			}
 		case *syntax.ParamExp:
 			// allow $HOME only, so ~/.ssh-style protection still applies
@@ -346,4 +603,23 @@ func literal(w *syntax.Word) (string, bool) {
 		}
 	}
 	return sb.String(), true
+}
+
+// unescape removes backslashes before the characters in only (any
+// character if only is empty, as outside quotes).
+func unescape(s, only string) string {
+	if !strings.Contains(s, `\`) {
+		return s
+	}
+	var sb strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+1 < len(s) && (only == "" || strings.IndexByte(only, s[i+1]) >= 0) {
+			i++
+			if s[i] == '\n' {
+				continue // line continuation
+			}
+		}
+		sb.WriteByte(s[i])
+	}
+	return sb.String()
 }

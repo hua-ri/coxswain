@@ -229,10 +229,10 @@ var sedPrint = func() *regexp.Regexp {
 
 // classifySed: Read only for scripts that print, delete or substitute
 // without the w/e flags; -i edits files in place.
-func classifySed(args []string) action.Risk {
+func (r rater) classifySed(args []string) action.Risk {
 	for _, a := range args {
 		if strings.HasPrefix(a, "--in-place") || (len(a) > 1 && a[0] == '-' && a[1] != '-' && strings.Contains(a, "i")) {
-			return writeTargets(args)
+			return r.writeTargets(args)
 		}
 	}
 	var scripts, operands []string
@@ -258,7 +258,7 @@ func classifySed(args []string) action.Risk {
 	}
 	for _, s := range scripts {
 		if !sedPrint.MatchString(s) && !sedSafeSubst(s) {
-			return sedUnsafe(scripts)
+			return r.sedUnsafe(scripts)
 		}
 	}
 	return action.Read
@@ -266,9 +266,9 @@ func classifySed(args []string) action.Risk {
 
 // sedUnsafe rates sed scripts that may write or execute: Write, or
 // Destructive if they name a protected path (e.g. w /etc/cron.d/x).
-func sedUnsafe(scripts []string) action.Risk {
+func (r rater) sedUnsafe(scripts []string) action.Risk {
 	for _, a := range scripts {
-		if writeTargets(strings.Fields(a)) == action.Destructive {
+		if r.writeTargets(strings.Fields(a)) == action.Destructive {
 			return action.Destructive
 		}
 	}

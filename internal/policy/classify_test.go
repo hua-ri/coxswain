@@ -213,3 +213,101 @@ func TestClassifyStateChanging(t *testing.T) {
 		}
 	}
 }
+
+// TestClassifyDisguisedDestructive covers destructive commands hidden
+// behind escapes, wrappers, inner commands and path tricks (review I1).
+func TestClassifyDisguisedDestructive(t *testing.T) {
+	cases := []struct {
+		cmd  string
+		want action.Risk
+	}{
+		{`\rm -rf /x`, action.Destructive},
+		{`r\m -rf /x`, action.Destructive},
+		{"builtin eval x", action.Destructive},
+		{"env -S 'rm -rf /x'", action.Destructive},
+		{"env --split-string='rm -rf /x'", action.Destructive},
+		{"env -S 'ls -l'", action.Write},
+		{"xargs -a list rm -rf", action.Destructive},
+		{"xargs --arg-file list rm -rf", action.Destructive},
+		{"xargs -E x rm -rf", action.Destructive},
+		{"sudo -D /tmp rm -rf /x", action.Destructive},
+		{"sudo -R /mnt reboot", action.Destructive},
+		{"sudo -T 5 reboot", action.Destructive},
+		{"sudo -r role -t type reboot", action.Destructive},
+		{"sudo -s", action.Destructive},
+		{"sudo -i", action.Destructive},
+		{"sudo -u root -i", action.Destructive},
+		{"sudo -n uptime", action.Read},
+		{"systemctl reboot", action.Destructive},
+		{"systemctl poweroff", action.Destructive},
+		{"systemctl --no-block halt", action.Destructive},
+		{"systemctl kexec", action.Destructive},
+		{"systemctl isolate rescue.target", action.Destructive},
+		{"systemctl emergency", action.Destructive},
+		{"systemctl rescue", action.Destructive},
+		{"systemctl suspend", action.Destructive},
+		{"systemctl hibernate", action.Destructive},
+		{"systemctl default", action.Destructive},
+		{"telinit 6", action.Destructive},
+		{"su -c 'rm -rf /x' root", action.Destructive},
+		{"su root --command 'rm -rf /x'", action.Destructive},
+		{"su -c uptime", action.Write},
+		{"runuser -u app -c 'rm -rf /x'", action.Destructive},
+		{"ssh other rm -rf /x", action.Destructive},
+		{"ssh -p 22 -i key other 'rm -rf /x'", action.Destructive},
+		{"ssh -p 22 other uptime", action.Write},
+		{"ssh other", action.Write},
+		{"docker exec api rm -rf /data", action.Destructive},
+		{"docker exec -u root -w /app -e A=b api rm -rf /x", action.Destructive},
+		{"docker exec --user root api reboot", action.Destructive},
+		{"docker exec api ls", action.Write},
+		{"podman exec api rm -rf /x", action.Destructive},
+		{"kubectl exec -n ns pod -- rm -rf /x", action.Destructive},
+		{"kubectl exec pod -- ls", action.Write},
+		{`find / -name x -exec rm -rf {} \;`, action.Destructive},
+		{`find /tmp -ok rm -r {} \;`, action.Destructive},
+		{"find . -execdir shred {} +", action.Write},
+		{`find . -exec grep -l x {} \; -print`, action.Write},
+		{"watch -n 1 rm -rf /x", action.Destructive},
+		{"watch df -h", action.Write},
+		{"systemd-run rm -rf /x", action.Destructive},
+		{"systemd-run --unit x reboot", action.Destructive},
+		{"nohup rm -rf /x", action.Destructive},
+		{"nohup ls", action.Write},
+		{"flock /tmp/l rm -rf /x", action.Destructive},
+		{"flock /tmp/l -c 'rm -rf /x'", action.Destructive},
+		{"flock -w 5 /tmp/l uptime", action.Write},
+
+		{"echo x > //etc/passwd", action.Destructive},
+		{"echo x > /etc/../etc/passwd", action.Destructive},
+		{"echo x > /tmp/../etc/passwd", action.Destructive},
+		{"cp x /etc", action.Destructive},
+		{"echo x > /root/.bashrc", action.Destructive},
+		{"echo x > /var/spool/cron/root", action.Destructive},
+		{"echo x > /lib64/x", action.Destructive},
+		{"echo x > /var/lib/mysql/x", action.Destructive},
+		{"cp k /home/u/.ssh/authorized_keys", action.Destructive},
+		{"tee /opt/x/.kube/config", action.Destructive},
+		{"echo x >> authorized_keys", action.Destructive},
+		{"cp x /usr/local/etc/sudoers", action.Destructive},
+		{"echo x > $HOME/.aws/credentials", action.Destructive},
+		{"echo x > /dev/disk0", action.Destructive},
+		{"rm /etc/passwd", action.Destructive},
+		{"echo x > /etcetera", action.Write},
+		{"echo x > ../../etc/passwd", action.Destructive},
+
+		{"cd /etc && echo x > passwd", action.Destructive},
+		{"cd /etc; cp /tmp/x passwd", action.Destructive},
+		{"cd /etc && bash -c 'echo x > passwd'", action.Destructive},
+		{"echo x > rel.txt", action.Write},
+		{"cd /tmp && ls", action.Read},
+
+		{"some-unknown-tool", action.Write},
+		{"if (", action.Destructive},
+	}
+	for _, c := range cases {
+		if got := ClassifyCommand(c.cmd); got != c.want {
+			t.Errorf("ClassifyCommand(%q) = %v, want %v", c.cmd, got, c.want)
+		}
+	}
+}
