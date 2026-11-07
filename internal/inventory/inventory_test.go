@@ -86,3 +86,31 @@ func TestStoreMergeKeepsTags(t *testing.T) {
 		t.Fatal("expected not found")
 	}
 }
+
+func TestMergeNewAliasInheritsPolicy(t *testing.T) {
+	s := NewStore(filepath.Join(t.TempDir(), "hosts.json"))
+	s.Merge([]Host{{Name: "prod", HostName: "10.0.0.5", Port: 22}, {Name: "b-prod", HostName: "10.0.0.5", Port: 22}})
+	s.Update(func(m map[string]Host) error {
+		h := m["prod"]
+		h.Tags, h.Note = map[string]string{"env": "prod"}, "read only"
+		m["prod"] = h
+		return nil
+	})
+	added, updated, err := s.Merge([]Host{
+		{Name: "alias", HostName: "10.0.0.5", Port: 22},
+		{Name: "other-port", HostName: "10.0.0.5", Port: 2222},
+		{Name: "tagged", HostName: "10.0.0.5", Port: 22, Tags: map[string]string{"x": "y"}},
+	})
+	if err != nil || added != 3 || updated != 0 {
+		t.Fatalf("%d %d %v", added, updated, err)
+	}
+	if h, _ := s.Get("alias"); h.Tags["env"] != "prod" || h.Note != "read only" {
+		t.Fatalf("alias: %+v", h)
+	}
+	if h, _ := s.Get("other-port"); h.Tags != nil {
+		t.Fatalf("other port must not inherit: %+v", h)
+	}
+	if h, _ := s.Get("tagged"); h.Tags["env"] != "" {
+		t.Fatalf("tagged import keeps its own tags: %+v", h)
+	}
+}

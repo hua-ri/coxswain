@@ -86,15 +86,29 @@ func (p *Provider) hostsList() *action.Action {
 }
 
 func (p *Provider) hostsImport() *action.Action {
+	defaultPath := filepath.Join(p.UserHome, ".ssh", "config")
 	path := func(raw json.RawMessage) (string, error) {
 		var in struct{ Path string }
 		if err := action.Decode(raw, &in); err != nil {
 			return "", err
 		}
 		if in.Path == "" {
-			return filepath.Join(p.UserHome, ".ssh", "config"), nil
+			return defaultPath, nil
 		}
 		return in.Path, nil
+	}
+	read := func(raw json.RawMessage) (string, []inventory.Host, error) {
+		f, err := path(raw)
+		if err != nil {
+			return "", nil, err
+		}
+		r, err := os.Open(f)
+		if err != nil {
+			return "", nil, err
+		}
+		defer r.Close()
+		hosts, err := inventory.ImportSSHConfig(r, p.UserHome)
+		return f, hosts, err
 	}
 	return &action.Action{
 		ID:          "ssh.hosts.import",
@@ -108,20 +122,23 @@ func (p *Provider) hostsImport() *action.Action {
 		},
 		Positional: []string{"path"},
 		Assess: func(_ context.Context, raw json.RawMessage) (action.Assessment, error) {
-			f, err := path(raw)
-			return action.Assessment{Risk: action.Write, Preview: "import SSH hosts from " + f}, err
+			f, imported, err := read(raw)
+			if err != nil {
+				return action.Assessment{}, err
+			}
+			existing, err := p.Hosts.List()
+			if err != nil {
+				return action.Assessment{}, err
+			}
+			as := assessImport(existing, imported)
+			as.Preview = "import SSH hosts from " + f + "\n" + as.Preview
+			if filepath.Clean(f) != defaultPath {
+				as.Risk = action.Destructive // a file the agent may have written
+			}
+			return as, nil
 		},
 		Run: func(_ context.Context, raw json.RawMessage) (any, error) {
-			f, err := path(raw)
-			if err != nil {
-				return nil, err
-			}
-			r, err := os.Open(f)
-			if err != nil {
-				return nil, err
-			}
-			defer r.Close()
-			hosts, err := inventory.ImportSSHConfig(r, p.UserHome)
+			f, hosts, err := read(raw)
 			if err != nil {
 				return nil, err
 			}
@@ -129,6 +146,40 @@ func (p *Provider) hostsImport() *action.Action {
 			return map[string]any{"path": f, "added": added, "updated": updated}, err
 		},
 	}
+}
+
+// assessImport rates an import: it targets every existing host that an
+// imported entry replaces (same name) or aliases (same address), so their
+// tags drive policy.
+func assessImport(existing, imported []inventory.Host) action.Assessment {
+	byName := map[string]inventory.Host{}
+	addrs := map[string]bool{}
+	for _, h := range imported {
+		addrs[h.Addr()] = true
+	}
+	var targets []action.Target
+	var changes []string
+	for _, h := range existing {
+		byName[h.Name] = h
+	}
+	importedNames := map[string]bool{}
+	for _, h := range imported {
+		importedNames[h.Name] = true
+		if _, ok := byName[h.Name]; ok {
+			changes = append(changes, "change "+h.Name)
+		} else {
+			changes = append(changes, "add "+h.Name)
+		}
+	}
+	for _, h := range existing {
+		if importedNames[h.Name] || addrs[h.Addr()] {
+			targets = append(targets, hostTarget(h))
+		}
+	}
+	if len(changes) > 20 {
+		changes = append(changes[:20], "…")
+	}
+	return action.Assessment{Risk: action.Write, Targets: targets, Preview: strings.Join(changes, ", ")}
 }
 
 type tagInput struct {
@@ -142,8 +193,8 @@ func (p *Provider) hostsTag() *action.Action {
 	return &action.Action{
 		ID:      "ssh.hosts.tag",
 		Summary: "Set or remove tags and the note of a host",
-		Description: "Change a host's tags (key=value) or note. Tags env and ai_policy control approval policy; " +
-			"changing them always needs the user's approval.",
+		Description: "Change a host's tags (key=value) or note. Tags env and ai_policy and the note control " +
+			"approval policy; changing them always needs the user's approval.",
 		Input: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -177,6 +228,9 @@ func (p *Provider) hostsTag() *action.Action {
 				if k == "env" || k == "ai_policy" {
 					risk = action.Destructive
 				}
+			}
+			if in.Note != nil && *in.Note != h.Note {
+				risk = action.Destructive // the note instructs agents, like a policy tag
 			}
 			preview := fmt.Sprintf("host %s: set %v, unset %v", in.Host, in.Set, in.Unset)
 			if in.Note != nil {

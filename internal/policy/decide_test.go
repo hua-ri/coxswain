@@ -57,3 +57,21 @@ func TestDecide(t *testing.T) {
 		}
 	}
 }
+
+func TestModeForCaseInsensitive(t *testing.T) {
+	cases := []struct {
+		tags map[string]string
+		want Mode
+	}{
+		{map[string]string{"env": "PROD"}, Always},
+		{map[string]string{"env": "production"}, Always},
+		{map[string]string{"env": "Production"}, Always},
+		{map[string]string{"ai_policy": "AUTO"}, Auto},
+		{map[string]string{"env": "Prod", "ai_policy": "Balanced"}, Balanced},
+	}
+	for _, c := range cases {
+		if got := ModeFor([]action.Target{{Tags: c.tags}}); got != c.want {
+			t.Errorf("%v: got %s, want %s", c.tags, got, c.want)
+		}
+	}
+}

@@ -114,7 +114,7 @@ func TestTagPolicyKeysAreDestructive(t *testing.T) {
 	if out.Status != engine.StatusApprovalRequired {
 		t.Fatalf("agent removing env=prod must need approval: %+v", out)
 	}
-	out = e.Invoke(context.Background(), human, "ssh.hosts.tag", json.RawMessage(`{"host":"dev","set":["team=pay"],"note":"canary"}`), nil)
+	out = e.Invoke(context.Background(), human, "ssh.hosts.tag", json.RawMessage(`{"host":"dev","set":["team=pay"],"note":"canary"}`), approveAll)
 	if out.Status != engine.StatusOK {
 		t.Fatalf("%+v", out)
 	}
@@ -127,12 +127,83 @@ func TestImportAndList(t *testing.T) {
 	e, _ := setup(t)
 	cfg := filepath.Join(t.TempDir(), "config")
 	os.WriteFile(cfg, []byte("Host bastion\n  HostName 10.0.0.1\n"), 0o600)
-	out := e.Invoke(context.Background(), human, "ssh.hosts.import", json.RawMessage(fmt.Sprintf(`{"path":%q}`, cfg)), nil)
+	out := e.Invoke(context.Background(), human, "ssh.hosts.import", json.RawMessage(fmt.Sprintf(`{"path":%q}`, cfg)), approveAll)
 	if out.Status != engine.StatusOK {
 		t.Fatalf("%+v", out)
 	}
 	list := e.Invoke(context.Background(), agent, "ssh.hosts.list", json.RawMessage(`{"tag":"env=prod"}`), nil)
 	if hs := list.Result.([]inventory.Host); len(hs) != 1 || hs[0].Name != "prod" {
 		t.Fatalf("%+v", list.Result)
+	}
+}
+
+func approveAll(context.Context, approval.Approval) engine.Verdict { return engine.Approved }
+
+func importArgs(t *testing.T, path string) json.RawMessage {
+	b, _ := json.Marshal(map[string]string{"path": path})
+	return b
+}
+
+// TestImportCannotBypassPolicy reproduces review C3: an agent must not
+// re-point or alias a prod host through import without approval.
+func TestImportCannotBypassPolicy(t *testing.T) {
+	e, srv := setup(t)
+	ctx := context.Background()
+	cfg := filepath.Join(t.TempDir(), "config")
+	alias := fmt.Sprintf("Host sneaky\n  HostName %s\n  Port %d\n  IdentityFile %s\n", srv.Host, srv.Port, srv.KeyFile)
+	os.WriteFile(cfg, []byte(alias), 0o600)
+
+	out := e.Invoke(ctx, agent, "ssh.hosts.import", importArgs(t, cfg), nil)
+	if out.Status != engine.StatusApprovalRequired || out.Risk != "destructive" || !strings.Contains(out.Preview, "sneaky") {
+		t.Fatalf("aliasing the prod address must need approval: %+v", out)
+	}
+	out = e.Invoke(ctx, agent, "ssh.hosts.import", importArgs(t, cfg), approveAll)
+	if out.Status != engine.StatusOK {
+		t.Fatalf("%+v", out)
+	}
+	out = e.Invoke(ctx, agent, "ssh.exec", execArgs("sneaky", "touch /tmp/cox-should-not-exist"), nil)
+	if out.Status != engine.StatusApprovalRequired {
+		t.Fatalf("new alias of a prod address must inherit env=prod: %+v", out)
+	}
+
+	// Re-pointing an existing prod alias also targets prod.
+	os.WriteFile(cfg, []byte("Host prod\n  HostName 192.0.2.1\n"), 0o600)
+	out = e.Invoke(ctx, agent, "ssh.hosts.import", importArgs(t, cfg), nil)
+	if out.Status != engine.StatusApprovalRequired {
+		t.Fatalf("re-pointing prod must need approval: %+v", out)
+	}
+}
+
+func TestImportAssess(t *testing.T) {
+	e, srv := setup(t)
+	a, _ := e.Registry.Get("ssh.hosts.import")
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "config")
+	os.WriteFile(cfg, []byte(fmt.Sprintf("Host dev\n  HostName %s\n  Port %d\nHost fresh\n  HostName 192.0.2.9\n", srv.Host, srv.Port)), 0o600)
+	as, err := a.Assess(context.Background(), importArgs(t, cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := []string{}
+	for _, tg := range as.Targets {
+		ids = append(ids, tg.ID)
+	}
+	if strings.Join(ids, ",") != "dev,prod" || as.Risk != action.Destructive {
+		t.Fatalf("targets %v risk %v", ids, as.Risk)
+	}
+	if !strings.Contains(as.Preview, "add fresh") || !strings.Contains(as.Preview, "change dev") {
+		t.Fatalf("preview: %s", as.Preview)
+	}
+}
+
+func TestTagNoteIsDestructive(t *testing.T) {
+	e, _ := setup(t)
+	out := e.Invoke(context.Background(), agent, "ssh.hosts.tag", json.RawMessage(`{"host":"dev","note":"anything goes"}`), nil)
+	if out.Status != engine.StatusApprovalRequired || out.Risk != "destructive" {
+		t.Fatalf("agent rewriting a note must need approval: %+v", out)
+	}
+	out = e.Invoke(context.Background(), agent, "ssh.hosts.tag", json.RawMessage(`{"host":"dev","set":["team=pay"]}`), nil)
+	if out.Status != engine.StatusOK {
+		t.Fatalf("plain tag on dev: %+v", out)
 	}
 }

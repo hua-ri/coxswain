@@ -6,10 +6,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
+	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
+
+	"github.com/hua-ri/coxswain/internal/action"
+	"github.com/hua-ri/coxswain/internal/policy"
 )
 
 type Host struct {
@@ -78,7 +86,9 @@ func (s *Store) Update(fn func(hosts map[string]Host) error) error {
 }
 
 // Merge adds imported hosts. Hosts that already exist get the imported
-// connection fields but keep their tags and note.
+// connection fields but keep their tags and note. A new alias without
+// tags inherits tags and note from the strictest existing host at the
+// same address, so an alias cannot shed env=prod.
 func (s *Store) Merge(imported []Host) (added, updated int, err error) {
 	err = s.Update(func(m map[string]Host) error {
 		for _, h := range imported {
@@ -86,6 +96,11 @@ func (s *Store) Merge(imported []Host) (added, updated int, err error) {
 				h.Tags, h.Note = old.Tags, old.Note
 				updated++
 			} else {
+				if len(h.Tags) == 0 {
+					if same, ok := SameAddress(m, h); ok {
+						h.Tags, h.Note = maps.Clone(same.Tags), same.Note
+					}
+				}
 				added++
 			}
 			m[h.Name] = h
@@ -93,6 +108,35 @@ func (s *Store) Merge(imported []Host) (added, updated int, err error) {
 		return nil
 	})
 	return
+}
+
+// SameAddress returns the host in m at h's HostName and port (other than
+// h itself) whose policy mode is strictest; ties go to the first by name.
+func SameAddress(m map[string]Host, h Host) (Host, bool) {
+	var same []Host
+	var targets []action.Target
+	for _, n := range slices.Sorted(maps.Keys(m)) {
+		if o := m[n]; n != h.Name && o.Addr() == h.Addr() {
+			same = append(same, o)
+			targets = append(targets, action.Target{Tags: o.Tags})
+		}
+	}
+	strictest := policy.ModeFor(targets)
+	for _, o := range same {
+		if policy.ModeFor([]action.Target{{Tags: o.Tags}}) == strictest {
+			return o, true
+		}
+	}
+	return Host{}, false
+}
+
+// Addr is the host's network address, host:port (port 22 if unset).
+func (h Host) Addr() string {
+	port := h.Port
+	if port == 0 {
+		port = 22
+	}
+	return net.JoinHostPort(strings.ToLower(h.HostName), strconv.Itoa(port))
 }
 
 func (s *Store) load() (map[string]Host, error) {

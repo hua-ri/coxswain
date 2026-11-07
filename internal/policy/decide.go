@@ -1,6 +1,10 @@
 package policy
 
-import "github.com/hua-ri/coxswain/internal/action"
+import (
+	"strings"
+
+	"github.com/hua-ri/coxswain/internal/action"
+)
 
 // Mode is how much an agent may do on a target without asking.
 type Mode string
@@ -22,7 +26,8 @@ const (
 )
 
 // ModeFor returns the strictest mode among the targets. A target's mode
-// is its ai_policy tag if set, else Always for env=prod, else Balanced.
+// is its ai_policy tag if set, else Always for env=prod (or production),
+// else Balanced. Tag values are compared case-insensitively.
 func ModeFor(targets []action.Target) Mode {
 	if len(targets) == 0 {
 		return Balanced
@@ -37,10 +42,10 @@ func ModeFor(targets []action.Target) Mode {
 }
 
 func targetMode(t action.Target) Mode {
-	if m := Mode(t.Tags["ai_policy"]); m == Always || m == Balanced || m == Auto {
+	if m := Mode(strings.ToLower(t.Tags["ai_policy"])); m == Always || m == Balanced || m == Auto {
 		return m
 	}
-	if t.Tags["env"] == "prod" {
+	if env := strings.ToLower(t.Tags["env"]); env == "prod" || env == "production" {
 		return Always
 	}
 	return Balanced
