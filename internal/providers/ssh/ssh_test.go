@@ -137,7 +137,9 @@ func TestImportAndList(t *testing.T) {
 	}
 }
 
-func approveAll(context.Context, approval.Approval) engine.Verdict { return engine.Approved }
+func approveAll(context.Context, approval.Approval) (engine.Verdict, action.Actor) {
+	return engine.Approved, human
+}
 
 func importArgs(t *testing.T, path string) json.RawMessage {
 	b, _ := json.Marshal(map[string]string{"path": path})

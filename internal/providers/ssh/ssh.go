@@ -131,7 +131,7 @@ func (p *Provider) hostsImport() *action.Action {
 				return action.Assessment{}, err
 			}
 			as := assessImport(existing, imported)
-			as.Preview = "import SSH hosts from " + f + "\n" + as.Preview
+			as.Preview = "import SSH hosts from " + f + ": " + as.Preview
 			if filepath.Clean(f) != defaultPath {
 				as.Risk = action.Destructive // a file the agent may have written
 			}

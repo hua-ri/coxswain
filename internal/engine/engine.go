@@ -50,8 +50,9 @@ const (
 )
 
 // Confirmer asks a human about a pending approval right away (terminal
-// prompt, macOS dialog). It returns Undecided if nobody answered.
-type Confirmer func(ctx context.Context, ap approval.Approval) Verdict
+// prompt, macOS dialog). It returns the verdict (Undecided if nobody
+// answered) and who decided, for the audit log.
+type Confirmer func(ctx context.Context, ap approval.Approval) (Verdict, action.Actor)
 
 type Engine struct {
 	Registry  *action.Registry
@@ -92,15 +93,17 @@ func (e *Engine) Invoke(ctx context.Context, actor action.Actor, id string, args
 		return Outcome{Status: StatusError, Error: err.Error()}
 	}
 	if confirm != nil {
-		switch confirm(ctx, ap) {
+		verdict, by := confirm(ctx, ap)
+		switch verdict {
 		case Approved:
-			if _, err := e.Decide(ap.ID, true, actor); err != nil {
-				return Outcome{Status: StatusError, Error: err.Error()}
+			// ErrNotPending: someone decided meanwhile; their decision stands.
+			if _, err := e.Decide(ap.ID, true, by); err != nil && !errors.Is(err, approval.ErrNotPending) {
+				return Outcome{Status: StatusError, Error: err.Error(), ApprovalID: ap.ID}
 			}
 			return e.RunApproved(ctx, actor, ap.ID)
 		case Denied:
-			if _, err := e.Decide(ap.ID, false, actor); err != nil {
-				return Outcome{Status: StatusError, Error: err.Error()}
+			if _, err := e.Decide(ap.ID, false, by); err != nil {
+				return Outcome{Status: StatusError, Error: err.Error(), ApprovalID: ap.ID}
 			}
 			return Outcome{Status: StatusDenied, ApprovalID: ap.ID, Hint: DeniedHint}
 		}
@@ -127,15 +130,17 @@ func (e *Engine) Decide(id string, approve bool, by action.Actor) (approval.Appr
 	})
 }
 
-// RunApproved runs the exact invocation stored in an approved approval.
+// RunApproved runs the exact invocation stored in an approved approval,
+// for the actor (and session, if it had one) that asked for it.
 // It reports approval_pending if the user has not decided yet.
 func (e *Engine) RunApproved(ctx context.Context, actor action.Actor, id string) Outcome {
 	ap, err := e.Approvals.Get(id)
 	if err != nil {
-		return Outcome{Status: StatusError, Error: err.Error()}
+		return Outcome{Status: StatusError, Error: err.Error(), ApprovalID: id}
 	}
-	if ap.Actor.Kind != actor.Kind || ap.Actor.Name != actor.Name {
-		return Outcome{Status: StatusError, Error: fmt.Sprintf("approval %s belongs to %s", id, ap.Actor)}
+	if ap.Actor.Kind != actor.Kind || ap.Actor.Name != actor.Name ||
+		(ap.Actor.Session != "" && ap.Actor.Session != actor.Session) {
+		return Outcome{Status: StatusError, ApprovalID: id, Error: fmt.Sprintf("approval %s belongs to another caller (%s)", id, ap.Actor)}
 	}
 	switch ap.Status {
 	case approval.Pending:
@@ -148,11 +153,11 @@ func (e *Engine) RunApproved(ctx context.Context, actor action.Actor, id string)
 	}
 	ap, err = e.Approvals.Consume(id)
 	if err != nil {
-		return Outcome{Status: StatusError, Error: err.Error()}
+		return Outcome{Status: StatusError, Error: err.Error(), ApprovalID: id}
 	}
 	a, ok := e.Registry.Get(ap.ActionID)
 	if !ok {
-		return Outcome{Status: StatusError, Error: fmt.Sprintf("unknown action %q", ap.ActionID)}
+		return Outcome{Status: StatusError, Error: fmt.Sprintf("unknown action %q", ap.ActionID), ApprovalID: id}
 	}
 	return e.run(ctx, actor, a, ap.Args, id)
 }

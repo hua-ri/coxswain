@@ -7,18 +7,53 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
+	"unicode/utf8"
 
+	"github.com/hua-ri/coxswain/internal/action"
 	"github.com/hua-ri/coxswain/internal/approval"
 	"github.com/hua-ri/coxswain/internal/engine"
 )
 
-// Message is the text shown to the human for an approval.
+// Message is the text shown to the human for an approval. Fields come
+// from the agent, so they are sanitised.
 func Message(ap approval.Approval) string {
 	return fmt.Sprintf("%s wants to run %s (%s risk):\n\n%s\n\nApproval id: %s",
-		ap.Actor, ap.ActionID, ap.Risk, ap.Preview, ap.ID)
+		Sanitize(ap.Actor.String()), Sanitize(ap.ActionID), Sanitize(ap.Risk), Sanitize(ap.Preview), Sanitize(ap.ID))
+}
+
+// Sanitize escapes characters that could hide or rewrite what a human
+// sees: C0/C1 control characters, DEL, Unicode bidi controls and invalid
+// UTF-8 (as \xNN or \uNNNN).
+func Sanitize(s string) string {
+	var sb strings.Builder
+	for i, w := 0, 0; i < len(s); i += w {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		w = size
+		switch {
+		case r == utf8.RuneError && size == 1:
+			fmt.Fprintf(&sb, `\x%02x`, s[i])
+		case r < 0x20 || r == 0x7f:
+			fmt.Fprintf(&sb, `\x%02x`, r)
+		case (r >= 0x80 && r <= 0x9f) || (r >= 0x202a && r <= 0x202e) || (r >= 0x2066 && r <= 0x2069):
+			fmt.Fprintf(&sb, `\u%04x`, r)
+		default:
+			sb.WriteRune(r)
+		}
+	}
+	return sb.String()
+}
+
+// human is the person at this Mac, as recorded for a decision.
+func human(session string) action.Actor {
+	u := os.Getenv("USER")
+	if u == "" {
+		u = "user"
+	}
+	return action.Actor{Kind: action.Human, Name: u, Session: session}
 }
 
 // Dialog shows a native dialog via osascript. Nobody answering within
@@ -31,11 +66,11 @@ func Dialog(timeout time.Duration) engine.Confirmer {
 }
 
 func dialog(timeout time.Duration, run func(context.Context, string) (string, error)) engine.Confirmer {
-	return func(ctx context.Context, ap approval.Approval) engine.Verdict {
+	return func(ctx context.Context, ap approval.Approval) (engine.Verdict, action.Actor) {
 		ctx, cancel := context.WithTimeout(ctx, timeout+5*time.Second)
 		defer cancel()
 		out, err := run(ctx, DialogScript(ap, timeout))
-		return ParseDialog(out, err)
+		return ParseDialog(out, err), human("dialog")
 	}
 }
 
@@ -71,13 +106,13 @@ func quote(s string) string {
 
 // Terminal asks on a terminal. Only an explicit "y" or "yes" approves.
 func Terminal(in io.Reader, out io.Writer) engine.Confirmer {
-	return func(_ context.Context, ap approval.Approval) engine.Verdict {
+	return func(_ context.Context, ap approval.Approval) (engine.Verdict, action.Actor) {
 		fmt.Fprintf(out, "%s\n\nApprove? [y/N] ", Message(ap))
 		line, _ := bufio.NewReader(in).ReadString('\n')
 		switch strings.ToLower(strings.TrimSpace(line)) {
 		case "y", "yes":
-			return engine.Approved
+			return engine.Approved, human("terminal")
 		}
-		return engine.Denied
+		return engine.Denied, human("terminal")
 	}
 }

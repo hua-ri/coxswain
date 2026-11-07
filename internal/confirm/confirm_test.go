@@ -51,20 +51,51 @@ func TestDialogUsesRunner(t *testing.T) {
 		script = s
 		return "button returned:Approve, gave up:false", nil
 	})
-	if c(context.Background(), ap) != engine.Approved || !strings.Contains(script, "ap_0123456789ab") {
+	v, by := c(context.Background(), ap)
+	if v != engine.Approved || !strings.Contains(script, "ap_0123456789ab") {
 		t.Fatal("dialog runner not used")
+	}
+	if by.Kind != action.Human || by.Session != "dialog" || by.Name == "" {
+		t.Fatalf("approver: %+v", by)
 	}
 }
 
 func TestTerminal(t *testing.T) {
 	var out bytes.Buffer
-	if Terminal(strings.NewReader("y\n"), &out)(context.Background(), ap) != engine.Approved {
-		t.Fatal("y must approve")
+	v, by := Terminal(strings.NewReader("y\n"), &out)(context.Background(), ap)
+	if v != engine.Approved || by.Kind != action.Human || by.Session != "terminal" {
+		t.Fatalf("y must approve: %v %+v", v, by)
 	}
-	if Terminal(strings.NewReader("\n"), &out)(context.Background(), ap) != engine.Denied {
+	if v, _ := Terminal(strings.NewReader("\n"), &out)(context.Background(), ap); v != engine.Denied {
 		t.Fatal("empty must deny")
 	}
 	if !strings.Contains(out.String(), "Approve? [y/N]") {
 		t.Fatalf("prompt: %q", out.String())
+	}
+}
+
+func TestSanitize(t *testing.T) {
+	cases := map[string]string{
+		"rm -rf /data #\rls -la":  `rm -rf /data #\x0dls -la`,
+		"\x1b[2Kls":               `\x1b[2Kls`,
+		"a\nb\tc\x7f":             `a\x0ab\x09c\x7f`,
+		"x\u0085y":                `x\u0085y`,
+		"evil\u202etxt.exe\u2066": `evil\u202etxt.exe\u2066`,
+		"中文 ok":                   "中文 ok",
+		"bad\xffbyte":             `bad\xffbyte`,
+	}
+	for in, want := range cases {
+		if got := Sanitize(in); got != want {
+			t.Errorf("Sanitize(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestMessageSanitized(t *testing.T) {
+	a := ap
+	a.Preview = "prod$ rm -rf /data #\r\x1b[2Kls -la"
+	m := Message(a)
+	if strings.ContainsAny(m, "\r\x1b") || !strings.Contains(m, `\x0d\x1b[2Kls`) {
+		t.Fatalf("message: %q", m)
 	}
 }

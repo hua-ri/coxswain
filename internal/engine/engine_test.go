@@ -92,8 +92,8 @@ func TestAgentProdWriteNeedsApproval(t *testing.T) {
 func TestConfirmerApproveAndDeny(t *testing.T) {
 	e, runs := newEngine(t)
 	ctx := context.Background()
-	yes := func(context.Context, approval.Approval) Verdict { return Approved }
-	no := func(context.Context, approval.Approval) Verdict { return Denied }
+	yes := func(context.Context, approval.Approval) (Verdict, action.Actor) { return Approved, human }
+	no := func(context.Context, approval.Approval) (Verdict, action.Actor) { return Denied, human }
 	if out := e.Invoke(ctx, agent, "test.run", args(`{"risk":"destructive"}`), yes); out.Status != StatusOK || *runs != 1 {
 		t.Fatalf("approved: %+v", out)
 	}
@@ -120,5 +120,63 @@ func TestUnknownAction(t *testing.T) {
 	e, _ := newEngine(t)
 	if out := e.Invoke(context.Background(), agent, "nope.x", nil, nil); out.Status != StatusError {
 		t.Fatalf("got %+v", out)
+	}
+}
+
+// TestDecisionRecordsApprover: the audit log names the human who decided,
+// not the agent that asked (review I2).
+func TestDecisionRecordsApprover(t *testing.T) {
+	e, _ := newEngine(t)
+	dlg := action.Actor{Kind: action.Human, Name: "king", Session: "dialog"}
+	yes := func(context.Context, approval.Approval) (Verdict, action.Actor) { return Approved, dlg }
+	if out := e.Invoke(context.Background(), agent, "test.run", args(`{"risk":"destructive"}`), yes); out.Status != StatusOK {
+		t.Fatalf("%+v", out)
+	}
+	evs, _ := e.Events.Read(time.Now())
+	for _, ev := range evs {
+		if ev.Type == eventlog.ApprovalDecided {
+			if *ev.Actor != dlg {
+				t.Fatalf("decided by %+v, want %+v", *ev.Actor, dlg)
+			}
+			return
+		}
+	}
+	t.Fatalf("no approval.decided event: %+v", evs)
+}
+
+// TestConfirmRace: if someone decides while the dialog is open, the
+// approved confirmer falls through to the stored decision.
+func TestConfirmRace(t *testing.T) {
+	e, runs := newEngine(t)
+	racer := func(_ context.Context, ap approval.Approval) (Verdict, action.Actor) {
+		e.Decide(ap.ID, true, human) // `cox approve` won the race
+		return Approved, human
+	}
+	out := e.Invoke(context.Background(), agent, "test.run", args(`{"risk":"destructive"}`), racer)
+	if out.Status != StatusOK || *runs != 1 || out.ApprovalID == "" {
+		t.Fatalf("%+v runs=%d", out, *runs)
+	}
+	denier := func(_ context.Context, ap approval.Approval) (Verdict, action.Actor) {
+		e.Decide(ap.ID, false, human)
+		return Approved, human
+	}
+	out = e.Invoke(context.Background(), agent, "test.run", args(`{"risk":"destructive"}`), denier)
+	if out.Status != StatusDenied || out.ApprovalID == "" || *runs != 1 {
+		t.Fatalf("%+v runs=%d", out, *runs)
+	}
+}
+
+func TestRunApprovedChecksSession(t *testing.T) {
+	e, runs := newEngine(t)
+	ctx := context.Background()
+	s1 := action.Actor{Kind: action.Agent, Name: "claude-code", Session: "s1"}
+	s2 := action.Actor{Kind: action.Agent, Name: "claude-code", Session: "s2"}
+	out := e.Invoke(ctx, s1, "test.run", args(`{"risk":"destructive"}`), nil)
+	e.Decide(out.ApprovalID, true, human)
+	if got := e.RunApproved(ctx, s2, out.ApprovalID); got.Status != StatusError || got.ApprovalID == "" || *runs != 0 {
+		t.Fatalf("other session ran it: %+v", got)
+	}
+	if got := e.RunApproved(ctx, s1, out.ApprovalID); got.Status != StatusOK {
+		t.Fatalf("%+v", got)
 	}
 }

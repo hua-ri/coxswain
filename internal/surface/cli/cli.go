@@ -39,6 +39,9 @@ type App struct {
 	Engine  *engine.Engine
 	Actor   action.Actor
 	Confirm engine.Confirmer // nil: never ask interactively
+	// Approve shows the approval dialog for `cox approve`; nil disables
+	// approving from the CLI.
+	Approve engine.Confirmer
 	// HumanTTY is true when a human is at an interactive terminal; only
 	// then may approvals be decided from the CLI.
 	HumanTTY bool

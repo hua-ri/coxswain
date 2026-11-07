@@ -62,8 +62,12 @@ func run() int {
 	case tty:
 		ask = confirm.Terminal(os.Stdin, os.Stderr)
 	}
+	var approve engine.Confirmer
+	if os.Getenv("COX_NO_DIALOG") == "" {
+		approve = confirm.Dialog(120 * time.Second)
+	}
 	app := &cli.App{
-		Engine: e, Actor: who, Confirm: ask, HumanTTY: who.Kind == action.Human && tty,
+		Engine: e, Actor: who, Confirm: ask, Approve: approve, HumanTTY: who.Kind == action.Human && tty,
 		Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr,
 	}
 	root := cli.NewRoot(app, version, mcpCommand(e), initCommand(app, userHome))

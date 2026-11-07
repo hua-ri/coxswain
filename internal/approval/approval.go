@@ -98,7 +98,8 @@ func (s *Store) Create(ap Approval) (Approval, error) {
 	return ap, s.withLock(func() error { return s.write(ap) })
 }
 
-// Get returns an approval; a pending one past its deadline reads as Expired.
+// Get returns an approval; a pending or approved (not yet used) one past
+// its deadline reads as Expired.
 func (s *Store) Get(id string) (Approval, error) {
 	var ap Approval
 	err := s.withLock(func() (err error) { ap, err = s.read(id); return })
@@ -139,23 +140,26 @@ func (s *Store) Decide(id string, approve bool) (Approval, error) {
 }
 
 // Consume marks an approved approval as used. It succeeds at most once,
-// so one approval can never run twice.
+// so one approval can never run twice. It first checks the stored
+// arguments against the hash taken at creation, which detects tampering
+// with the args between approval and use; it is no defence against a
+// same-user process that rewrites the whole file.
 func (s *Store) Consume(id string) (Approval, error) {
-	ap, err := s.transition(id, Approved, Consumed)
-	if err != nil {
-		return ap, err
-	}
-	h, err := Hash(ap.ActionID, ap.Args)
-	if err != nil {
-		return ap, err
-	}
-	if h != ap.ArgsHash {
-		return ap, fmt.Errorf("approval %s: arguments changed after approval", id)
-	}
-	return ap, nil
+	return s.transition(id, Approved, Consumed, func(ap Approval) error {
+		h, err := Hash(ap.ActionID, ap.Args)
+		if err != nil {
+			return err
+		}
+		if h != ap.ArgsHash {
+			return fmt.Errorf("approval %s: arguments changed after approval", id)
+		}
+		return nil
+	})
 }
 
-func (s *Store) transition(id string, from, to Status) (Approval, error) {
+// transition moves an approval from one status to another under the lock;
+// check (optional) may veto the change.
+func (s *Store) transition(id string, from, to Status, check ...func(Approval) error) (Approval, error) {
 	var ap Approval
 	err := s.withLock(func() error {
 		var err error
@@ -168,6 +172,11 @@ func (s *Store) transition(id string, from, to Status) (Approval, error) {
 				return fmt.Errorf("%w (status: %s)", ErrNotPending, ap.Status)
 			}
 			return fmt.Errorf("approval %s is %s, not %s", id, ap.Status, from)
+		}
+		for _, c := range check {
+			if err := c(ap); err != nil {
+				return err
+			}
 		}
 		now := s.Now()
 		ap.Status = to
@@ -196,7 +205,7 @@ func (s *Store) read(id string) (Approval, error) {
 	if err := json.Unmarshal(b, &ap); err != nil {
 		return Approval{}, err
 	}
-	if ap.Status == Pending && s.Now().After(ap.ExpiresAt) {
+	if (ap.Status == Pending || ap.Status == Approved) && s.Now().After(ap.ExpiresAt) {
 		ap.Status = Expired
 	}
 	return ap, nil

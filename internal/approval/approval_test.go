@@ -3,6 +3,8 @@ package approval
 import (
 	"encoding/json"
 	"errors"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -95,5 +97,36 @@ func TestListAndBadID(t *testing.T) {
 	}
 	if _, err := s.Get("../../etc/passwd"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("bad id: %v", err)
+	}
+}
+
+func TestApprovedExpires(t *testing.T) {
+	s, now := newStore(t)
+	ap := create(t, s)
+	if _, err := s.Decide(ap.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	*now = now.Add(11 * time.Minute)
+	if got, _ := s.Get(ap.ID); got.Status != Expired {
+		t.Fatalf("approved past ExpiresAt must read as expired: %s", got.Status)
+	}
+	if _, err := s.Consume(ap.ID); err == nil {
+		t.Fatal("expired approval consumed")
+	}
+}
+
+func TestConsumeChecksHashFirst(t *testing.T) {
+	s, _ := newStore(t)
+	ap := create(t, s)
+	if _, err := s.Decide(ap.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(s.path(ap.ID))
+	os.WriteFile(s.path(ap.ID), []byte(strings.Replace(string(b), "reboot", "halt", 1)), 0o600)
+	if _, err := s.Consume(ap.ID); err == nil {
+		t.Fatal("tampered args consumed")
+	}
+	if got, _ := s.Get(ap.ID); got.Status != Approved {
+		t.Fatalf("a failed hash check must not consume: %s", got.Status)
 	}
 }

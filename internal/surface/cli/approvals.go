@@ -3,17 +3,23 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/hua-ri/coxswain/internal/action"
 	"github.com/hua-ri/coxswain/internal/approval"
 	"github.com/hua-ri/coxswain/internal/confirm"
+	"github.com/hua-ri/coxswain/internal/engine"
 	"github.com/spf13/cobra"
 )
 
 // errNotHuman is returned when an agent (or a script) tries to decide an
 // approval. Agents must never approve their own actions.
 var errNotHuman = errors.New("approvals can only be decided by a person at an interactive terminal")
+
+// errNoDialog is returned by `cox approve` when no approval dialog is
+// available (COX_NO_DIALOG is set).
+var errNoDialog = errors.New("cox approve needs the macOS approval dialog, which is disabled (COX_NO_DIALOG)")
 
 func approvalCommands(app *App) []*cobra.Command {
 	var all bool
@@ -33,7 +39,8 @@ func approvalCommands(app *App) []*cobra.Command {
 				}
 				shown++
 				fmt.Fprintf(app.Stdout, "%s  %-9s %-8s %-11s %s\n    %s\n",
-					ap.ID, ap.Status, ap.Actor.Name, ap.Risk, ap.CreatedAt.Format("15:04:05"), ap.Preview)
+					ap.ID, ap.Status, confirm.Sanitize(ap.Actor.Name), ap.Risk, ap.CreatedAt.Format("15:04:05"),
+					confirm.Sanitize(ap.Preview))
 			}
 			if shown == 0 {
 				fmt.Fprintln(app.Stdout, "no pending approvals")
@@ -58,9 +65,11 @@ func approvalCommands(app *App) []*cobra.Command {
 	wait.Flags().DurationVar(&timeout, "timeout", 2*time.Minute, "how long to wait")
 	list.AddCommand(wait)
 
+	// Approving needs a click in the macOS dialog: a typed "y" could come
+	// from an agent driving a pseudo-terminal. Denying is always safe.
 	decide := func(approve bool) func(*cobra.Command, []string) error {
 		return func(cmd *cobra.Command, args []string) error {
-			if app.Actor.Kind != action.Human || !app.HumanTTY {
+			if app.Actor.Kind != action.Human || !app.HumanTTY || (approve && os.Getenv("COX_ACTOR") != "") {
 				return errNotHuman
 			}
 			ap, err := app.Engine.Approvals.Get(args[0])
@@ -70,16 +79,23 @@ func approvalCommands(app *App) []*cobra.Command {
 			if ap.Status != approval.Pending {
 				return fmt.Errorf("approval %s is %s", ap.ID, ap.Status)
 			}
+			by := app.Actor
 			if approve {
-				fmt.Fprintf(app.Stdout, "%s\n\nApprove? [y/N] ", confirm.Message(ap))
-				var answer string
-				fmt.Fscanln(app.Stdin, &answer)
-				if answer != "y" && answer != "yes" {
+				if app.Approve == nil {
+					return errNoDialog
+				}
+				fmt.Fprintf(app.Stdout, "%s\n\nApprove or deny in the dialog…\n", confirm.Message(ap))
+				var verdict engine.Verdict
+				verdict, by = app.Approve(cmd.Context(), ap)
+				switch verdict {
+				case engine.Undecided:
 					fmt.Fprintln(app.Stdout, "not approved")
 					return nil
+				case engine.Denied:
+					approve = false
 				}
 			}
-			if _, err := app.Engine.Decide(ap.ID, approve, app.Actor); err != nil {
+			if _, err := app.Engine.Decide(ap.ID, approve, by); err != nil {
 				return err
 			}
 			verb := map[bool]string{true: "approved", false: "denied"}[approve]
