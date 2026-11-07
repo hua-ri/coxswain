@@ -55,7 +55,7 @@ func (s *server) invoke(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, "arguments must be JSON", "")
 		return
 	}
-	writeJSON(w, http.StatusOK, s.cfg.Engine.Invoke(r.Context(), Actor(clientName(r)), id, body))
+	writeJSON(w, http.StatusOK, s.cfg.Engine.Invoke(r.Context(), actorOf(r), id, body))
 }
 
 func (s *server) listClients(w http.ResponseWriter, _ *http.Request) {

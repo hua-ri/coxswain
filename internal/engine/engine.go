@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/hua-ri/coxswain/internal/action"
@@ -31,6 +32,46 @@ type Outcome struct {
 type Engine struct {
 	Registry *action.Registry
 	Events   *eventlog.Log
+
+	mu       sync.Mutex
+	inflight map[*int]context.CancelFunc
+	wg       sync.WaitGroup
+}
+
+// Refuse records that client was not allowed to run id.
+func (e *Engine) Refuse(client action.Actor, id, reason string) {
+	e.Events.Append(eventlog.Event{Type: eventlog.ActionRefused, Actor: &client, Action: id, Reason: reason})
+}
+
+// Cancel cancels every running action and waits for them to finish (and
+// be recorded). Used on shutdown; the engine keeps working afterwards.
+func (e *Engine) Cancel() {
+	e.mu.Lock()
+	for _, cancel := range e.inflight {
+		cancel()
+	}
+	e.mu.Unlock()
+	e.wg.Wait()
+}
+
+// track makes ctx cancellable by Cancel until done is called.
+func (e *Engine) track(ctx context.Context) (context.Context, func()) {
+	ctx, cancel := context.WithCancel(ctx)
+	key := new(int)
+	e.mu.Lock()
+	if e.inflight == nil {
+		e.inflight = map[*int]context.CancelFunc{}
+	}
+	e.inflight[key] = cancel
+	e.wg.Add(1)
+	e.mu.Unlock()
+	return ctx, func() {
+		e.mu.Lock()
+		delete(e.inflight, key)
+		e.mu.Unlock()
+		cancel()
+		e.wg.Done()
+	}
 }
 
 // Invoke runs one Action for a client. The request is audited (with its
@@ -55,6 +96,8 @@ func (e *Engine) Invoke(ctx context.Context, client action.Actor, id string, arg
 		return Outcome{Status: StatusError, Error: "audit log unavailable, refusing to run: " + err.Error()}
 	}
 
+	ctx, done := e.track(ctx)
+	defer done()
 	start := time.Now()
 	res, err := a.Run(action.WithActor(ctx, client), args)
 	ev := eventlog.Event{

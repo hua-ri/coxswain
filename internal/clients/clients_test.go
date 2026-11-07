@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/hua-ri/coxswain/internal/eventlog"
 )
 
 func newStore(t *testing.T) *Store {
@@ -253,5 +255,27 @@ func TestDialogDisabled(t *testing.T) {
 	}
 	if m := Message("codex\r\x1b[2K"); m != `codex\x0d\x1b[2K wants to use Coxswain to operate your servers.` {
 		t.Fatalf("message %q", m)
+	}
+}
+
+func TestDecisionsAudited(t *testing.T) {
+	dir := t.TempDir()
+	log := eventlog.Open(filepath.Join(dir, "events"))
+	answer := true
+	a := &Authorizer{Store: NewStore(filepath.Join(dir, "clients.json")), Events: log,
+		Ask: func(context.Context, string) (bool, error) { return answer, nil }}
+	a.Authorize(context.Background(), "codex")
+	answer = false
+	a.Authorize(context.Background(), "kimi")
+	a.Revoke("codex")
+	a.Allow("codex")
+	evs, _ := log.Read(time.Now())
+	var got []string
+	for _, ev := range evs {
+		got = append(got, ev.Type+" "+ev.Client)
+	}
+	want := "client.authorized codex,client.denied kimi,client.revoked codex,client.allowed codex"
+	if strings.Join(got, ",") != want {
+		t.Fatalf("got %v", got)
 	}
 }

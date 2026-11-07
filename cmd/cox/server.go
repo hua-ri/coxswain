@@ -42,8 +42,9 @@ func serverCommand(coxHome, userHome string) *cobra.Command {
 			err := server.Run(cmd.Context(), server.Config{
 				Engine: e,
 				Clients: &clients.Authorizer{
-					Store: clients.NewStore(filepath.Join(coxHome, "clients.json")),
-					Ask:   clients.Dialog(authorizeTimeout),
+					Store:  clients.NewStore(filepath.Join(coxHome, "clients.json")),
+					Ask:    clients.Dialog(authorizeTimeout),
+					Events: e.Events,
 				},
 				Version: version,
 				Port:    port,
@@ -75,13 +76,18 @@ func printEvents(w io.Writer, events <-chan eventlog.Event) {
 // "15:04:05 agent:codex ssh.exec requested destructive dev {"command":"…"}".
 func eventLine(ev eventlog.Event) string {
 	parts := []string{ev.Time.Local().Format("15:04:05")}
+	if c, ok := strings.CutPrefix(ev.Type, "client."); ok {
+		parts = append(parts, "client", ev.Client, c)
+		return confirm.Sanitize(strings.Join(parts, " "))
+	}
 	if ev.Actor != nil {
 		parts = append(parts, ev.Actor.String())
 	}
-	parts = append(parts, ev.Action, strings.TrimPrefix(ev.Type, "action."))
+	parts = append(parts, ev.Action)
+	phase := strings.TrimPrefix(ev.Type, "action.")
 	switch ev.Type {
 	case eventlog.ActionRequested:
-		parts = append(parts, ev.Risk)
+		parts = append(parts, phase, ev.Risk)
 		for _, t := range ev.Targets {
 			parts = append(parts, t.ID)
 		}
@@ -91,10 +97,12 @@ func eventLine(ev eventlog.Event) string {
 			}
 			parts = append(parts, a)
 		}
+	case eventlog.ActionRefused:
+		parts = append(parts, phase+": "+ev.Reason)
 	case eventlog.ActionFailed:
-		parts = append(parts, fmt.Sprintf("%dms: %s", ev.DurationMs, ev.Error))
+		parts = append(parts, phase, fmt.Sprintf("%dms: %s", ev.DurationMs, ev.Error))
 	default:
-		parts = append(parts, fmt.Sprintf("%dms", ev.DurationMs))
+		parts = append(parts, phase, fmt.Sprintf("%dms", ev.DurationMs))
 	}
 	return confirm.Sanitize(strings.Join(parts, " "))
 }

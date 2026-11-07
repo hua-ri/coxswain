@@ -38,13 +38,18 @@ func NewServer(e *engine.Engine, actor action.Actor, version string, gate Gate) 
 	}
 	return build(e.Registry, version, opts, func(a *action.Action) sdk.ToolHandler {
 		return func(ctx context.Context, req *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+			who := actor
+			if req.Session != nil {
+				who.Session = req.Session.ID()
+			}
 			if gate != nil {
 				if ok, reason := gate(ctx, req.Session); !ok {
+					e.Refuse(who, a.ID, reason)
 					return result(engine.Outcome{Status: engine.StatusError, Error: clients.NotAuthorized,
 						Hint: clients.NotAuthorizedHint(actor.Name, reason)}), nil
 				}
 			}
-			return result(e.Invoke(ctx, actor, a.ID, req.Params.Arguments)), nil
+			return result(e.Invoke(ctx, who, a.ID, req.Params.Arguments)), nil
 		}
 	})
 }

@@ -98,3 +98,48 @@ func TestUnknownAction(t *testing.T) {
 		t.Fatalf("got %+v", out)
 	}
 }
+
+func TestRefuse(t *testing.T) {
+	e, runs := newEngine(t)
+	e.Refuse(agent, "test.run", "revoked")
+	evs, _ := e.Events.Read(time.Now())
+	if len(evs) != 1 || evs[0].Type != eventlog.ActionRefused || evs[0].Reason != "revoked" || *evs[0].Actor != agent || *runs != 0 {
+		t.Fatalf("%+v", evs)
+	}
+}
+
+// TestCancelInFlight: on shutdown, running actions are cancelled and
+// recorded as failed.
+func TestCancelInFlight(t *testing.T) {
+	e, _ := newEngine(t)
+	started := make(chan struct{})
+	e.Registry.Register(&action.Action{
+		ID: "test.block", Input: map[string]any{"type": "object"},
+		Label: func(context.Context, json.RawMessage) (action.Assessment, error) { return action.Assessment{}, nil },
+		Run: func(ctx context.Context, _ json.RawMessage) (any, error) {
+			close(started)
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	})
+	done := make(chan Outcome, 1)
+	go func() { done <- e.Invoke(context.Background(), agent, "test.block", nil) }()
+	<-started
+	e.Cancel()
+	select {
+	case out := <-done:
+		if out.Status != StatusError || out.Error != "context canceled" {
+			t.Fatalf("%+v", out)
+		}
+	default:
+		t.Fatal("Cancel returned before the action ended")
+	}
+	evs, _ := e.Events.Read(time.Now())
+	if last := evs[len(evs)-1]; last.Type != eventlog.ActionFailed || last.Error != "context canceled" {
+		t.Fatalf("%+v", last)
+	}
+	// The engine keeps working afterwards.
+	if out := e.Invoke(context.Background(), agent, "test.run", args(`{"risk":"read"}`)); out.Status != StatusOK {
+		t.Fatalf("%+v", out)
+	}
+}

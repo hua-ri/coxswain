@@ -154,3 +154,27 @@ func TestMCPRevokeAllow(t *testing.T) {
 		t.Fatalf("after allow: %+v %v", out, err)
 	}
 }
+
+func TestMCPAudit(t *testing.T) {
+	f := newConfig(t)
+	f.cfg.Clients.Store.Trust("codex")
+	f.cfg.Clients.Revoke("kimi")
+	srv := httptest.NewServer(New(f.cfg))
+	t.Cleanup(srv.Close)
+	codex := connectMCP(t, srv.URL, "codex")
+	callTool(t, codex, "demo_echo", nil)
+	callTool(t, connectMCP(t, srv.URL, "kimi"), "demo_echo", nil)
+	evs, _ := f.cfg.Events.Read(time.Now())
+	var session, refused bool
+	for _, ev := range evs {
+		if ev.Type == "action.requested" && ev.Actor.Name == "codex" && ev.Actor.Session == codex.ID() && ev.Actor.Session != "" {
+			session = true
+		}
+		if ev.Type == "action.refused" && ev.Actor.Name == "kimi" && ev.Reason == clients.ReasonRevoked {
+			refused = true
+		}
+	}
+	if !session || !refused {
+		t.Fatalf("session=%v refused=%v: %+v", session, refused, evs)
+	}
+}

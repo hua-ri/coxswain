@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"os"
+	"regexp"
 	"time"
 
 	"github.com/hua-ri/coxswain/internal/action"
@@ -19,6 +20,12 @@ import (
 
 // ClientHeader names the calling client (cli, desktop, claude-code, …).
 const ClientHeader = "X-Cox-Client"
+
+// SessionHeader optionally identifies the caller's session (e.g. one cox
+// process) in the audit log.
+const SessionHeader = "X-Cox-Session"
+
+var sessionPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
 // Config is what the server runs on.
 type Config struct {
@@ -101,10 +108,14 @@ func (s *server) authenticated(next http.Handler) http.Handler {
 }
 
 // authorized lets through built-in clients and agents the user allowed.
+// Refused action calls are audited.
 func (s *server) authorized(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		client := clientName(r)
 		if ok, reason := s.cfg.Clients.Authorize(r.Context(), client); !ok {
+			if id := r.PathValue("id"); id != "" {
+				s.cfg.Engine.Refuse(actorOf(r), id, reason)
+			}
 			fail(w, http.StatusForbidden, clients.NotAuthorized, clients.NotAuthorizedHint(client, reason))
 			return
 		}
@@ -124,6 +135,15 @@ func (s *server) builtInOnly(next http.HandlerFunc) http.HandlerFunc {
 }
 
 func clientName(r *http.Request) string { return r.Header.Get(ClientHeader) }
+
+// actorOf is the request's client as recorded in the audit log.
+func actorOf(r *http.Request) action.Actor {
+	a := Actor(clientName(r))
+	if s := r.Header.Get(SessionHeader); sessionPattern.MatchString(s) {
+		a.Session = s
+	}
+	return a
+}
 
 // Actor is who a client is in the audit log: the user's own entry points
 // are the human, anything else is an agent.

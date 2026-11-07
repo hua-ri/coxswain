@@ -21,6 +21,12 @@ const (
 	ActionRequested = "action.requested"
 	ActionFinished  = "action.finished"
 	ActionFailed    = "action.failed"
+	ActionRefused   = "action.refused" // the client is not allowed
+
+	ClientAuthorized = "client.authorized" // the user allowed it in the dialog
+	ClientDenied     = "client.denied"     // denied, or the dialog went unanswered
+	ClientRevoked    = "client.revoked"
+	ClientAllowed    = "client.allowed" // allowed with `cox clients allow`
 )
 
 type Event struct {
@@ -32,6 +38,8 @@ type Event struct {
 	Risk       string          `json:"risk,omitempty"`
 	Targets    []action.Target `json:"targets,omitempty"`
 	DurationMs int64           `json:"duration_ms,omitempty"`
+	Client     string          `json:"client,omitempty"` // client.* events
+	Reason     string          `json:"reason,omitempty"` // why it was refused
 	Error      string          `json:"error,omitempty"`
 }
 

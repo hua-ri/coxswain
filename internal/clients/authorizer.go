@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/hua-ri/coxswain/internal/confirm"
+	"github.com/hua-ri/coxswain/internal/eventlog"
 )
 
 // NotAuthorized is the error returned to a client the user has not allowed.
@@ -44,6 +45,8 @@ type Authorizer struct {
 	// (default 60s).
 	DenyFor time.Duration
 	Now     func() time.Time
+	// Events, if set, records the user's decisions about clients.
+	Events *eventlog.Log
 
 	mu       sync.Mutex
 	inflight map[string]*prompt
@@ -114,6 +117,11 @@ func (a *Authorizer) ask(ctx context.Context, name string, p *prompt) {
 	if p.ok {
 		p.ok = a.Store.Trust(name) == nil
 	}
+	if p.ok {
+		a.audit(eventlog.ClientAuthorized, name)
+	} else {
+		a.audit(eventlog.ClientDenied, name)
+	}
 	a.mu.Lock()
 	delete(a.inflight, name)
 	if !p.ok {
@@ -137,7 +145,14 @@ func (a *Authorizer) Allow(name string) error {
 	a.mu.Lock()
 	delete(a.deniedAt, name)
 	a.mu.Unlock()
+	a.audit(eventlog.ClientAllowed, name)
 	return nil
+}
+
+func (a *Authorizer) audit(typ, name string) {
+	if a.Events != nil {
+		a.Events.Append(eventlog.Event{Type: typ, Client: name})
+	}
 }
 
 // OnRevoke registers fn to run after a client is revoked, e.g. to close
@@ -156,6 +171,7 @@ func (a *Authorizer) Revoke(name string) error {
 	if err := a.Store.Revoke(name); err != nil {
 		return err
 	}
+	a.audit(eventlog.ClientRevoked, name)
 	a.mu.Lock()
 	fns := append([]func(string){}, a.onRevoke...)
 	a.mu.Unlock()

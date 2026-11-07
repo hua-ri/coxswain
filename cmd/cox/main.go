@@ -4,13 +4,17 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"syscall"
+	"time"
 
 	"github.com/hua-ri/coxswain/internal/action"
 	"github.com/hua-ri/coxswain/internal/actor"
@@ -66,6 +70,7 @@ func run() int {
 		// local commands exist.
 		c, err := client.Discover(ctx, coxHome, clientName())
 		if err == nil {
+			c.Session = sessionID(rand.Read)
 			app.Client = c
 			app.Actions, err = c.Actions(ctx)
 		}
@@ -81,6 +86,16 @@ func run() int {
 		versionCommand(),
 	)
 	return report(root.ExecuteContext(ctx))
+}
+
+// sessionID returns a random id for one cox process, or a timestamp-based
+// one if the random source fails.
+func sessionID(read func([]byte) (int, error)) string {
+	var b [4]byte
+	if _, err := read(b[:]); err != nil {
+		return strconv.FormatInt(time.Now().UnixNano(), 36)
+	}
+	return hex.EncodeToString(b[:])
 }
 
 // report prints err (unless a command already did) and returns the exit code.

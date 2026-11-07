@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/hua-ri/coxswain/internal/clients"
+	"github.com/hua-ri/coxswain/internal/eventlog"
 	"github.com/hua-ri/coxswain/internal/instance"
 	"github.com/hua-ri/coxswain/internal/sshx/sshtest"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -286,10 +287,19 @@ func TestEndToEnd(t *testing.T) {
 			t.Fatalf("server output lacks %q:\n%s", want, srv.stderr)
 		}
 	}
-	events, _ := filepath.Glob(filepath.Join(s.coxHome, "events", "*.jsonl"))
-	b, _ := os.ReadFile(events[0])
-	if !strings.Contains(string(b), `"name":"codex"`) || !strings.Contains(string(b), `"risk":"destructive"`) {
-		t.Fatalf("events: %s", b)
+	var agentRisk, cliSession, revoked bool
+	for _, ev := range readEvents(t, s.coxHome) {
+		switch {
+		case ev.Type == "action.requested" && ev.Actor.Name == "codex" && ev.Risk == "read" && ev.Actor.Session != "":
+			agentRisk = true
+		case ev.Type == "action.requested" && ev.Actor.Name == "unknown" && ev.Actor.Session != "":
+			cliSession = true
+		case ev.Type == "client.revoked" && ev.Client == "codex":
+			revoked = true
+		}
+	}
+	if !agentRisk || !cliSession || !revoked {
+		t.Fatalf("audit log: agent risk %v, cli session %v, revoked %v", agentRisk, cliSession, revoked)
 	}
 
 	// Ctrl-C stops the server and removes server.json.
@@ -337,5 +347,23 @@ func TestCLIAsAgent(t *testing.T) {
 	}
 	if out, code := s.coxEnv(t, codex, "clients", "list"); code == 0 {
 		t.Fatalf("an agent managed clients: %s", out)
+	}
+}
+
+func readEvents(t *testing.T, coxHome string) []eventlog.Event {
+	t.Helper()
+	evs, err := eventlog.Open(filepath.Join(coxHome, "events")).Read(time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return evs
+}
+
+func TestSessionID(t *testing.T) {
+	if id := sessionID(func(b []byte) (int, error) { return 0, fmt.Errorf("no entropy") }); id == "" || id == "00000000" {
+		t.Fatalf("fallback id %q", id)
+	}
+	if id := sessionID(func(b []byte) (int, error) { copy(b, []byte{1, 2, 3, 4}); return 4, nil }); id != "01020304" {
+		t.Fatalf("id %q", id)
 	}
 }

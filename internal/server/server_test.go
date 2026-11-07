@@ -472,3 +472,68 @@ func TestAgentAccess(t *testing.T) {
 		t.Fatalf("authorized agent: %d %s", w.Code, w.Body)
 	}
 }
+
+func lastEvents(t *testing.T, f fixture) []eventlog.Event {
+	t.Helper()
+	evs, err := f.cfg.Events.Read(time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return evs
+}
+
+func TestAuditRefusedAndSession(t *testing.T) {
+	f := newConfig(t)
+	f.cfg.Clients.Revoke("codex")
+	h := New(f.cfg)
+	request(t, h, "POST", "/api/v1/actions/demo.echo", "{}", map[string]string{"X-Cox-Client": "codex"})
+	request(t, h, "POST", "/api/v1/actions/demo.echo", "{}", map[string]string{SessionHeader: "a1b2"})
+	evs := lastEvents(t, f)
+	var refused, requested *eventlog.Event
+	for i, ev := range evs {
+		switch ev.Type {
+		case eventlog.ActionRefused:
+			refused = &evs[i]
+		case eventlog.ActionRequested:
+			requested = &evs[i]
+		}
+	}
+	if refused == nil || refused.Actor.Name != "codex" || refused.Action != "demo.echo" || refused.Reason != clients.ReasonRevoked {
+		t.Fatalf("refused: %+v", refused)
+	}
+	if requested == nil || requested.Actor.Session != "a1b2" {
+		t.Fatalf("requested: %+v", requested)
+	}
+}
+
+// TestShutdownCancelsActions: stopping the server cancels running
+// actions; they are recorded as failed.
+func TestShutdownCancelsActions(t *testing.T) {
+	f := newConfig(t)
+	started := make(chan struct{})
+	f.cfg.Engine.Registry.Register(&action.Action{
+		ID: "demo.block", Input: map[string]any{"type": "object"},
+		Label: func(context.Context, json.RawMessage) (action.Assessment, error) { return action.Assessment{}, nil },
+		Run: func(ctx context.Context, _ json.RawMessage) (any, error) {
+			close(started)
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	})
+	f.cfg.Token = ""
+	info, stop := runReady(t, f.cfg, t.TempDir())
+	go func() {
+		req, _ := http.NewRequest("POST", "http://"+info.Addr+"/api/v1/actions/demo.block", strings.NewReader("{}"))
+		req.Header.Set("Authorization", "Bearer "+info.Token)
+		req.Header.Set(ClientHeader, "cli")
+		if resp, err := http.DefaultClient.Do(req); err == nil {
+			resp.Body.Close()
+		}
+	}()
+	<-started
+	stop()
+	evs := lastEvents(t, f)
+	if last := evs[len(evs)-1]; last.Type != eventlog.ActionFailed || last.Action != "demo.block" || last.Error != "context canceled" {
+		t.Fatalf("%+v", last)
+	}
+}

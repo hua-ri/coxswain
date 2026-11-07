@@ -20,9 +20,10 @@ import (
 
 // Client calls one server as one client name (cli, desktop).
 type Client struct {
-	Info instance.Info
-	Name string
-	HTTP *http.Client
+	Info    instance.Info
+	Name    string
+	Session string // optional, recorded in the audit log
+	HTTP    *http.Client
 }
 
 // Outcome is an action's result with the result left as JSON.
@@ -54,6 +55,9 @@ func (c *Client) do(ctx context.Context, method, path string, body []byte) (*htt
 	}
 	req.Header.Set("Authorization", "Bearer "+c.Info.Token)
 	req.Header.Set(server.ClientHeader, c.Name)
+	if c.Session != "" {
+		req.Header.Set(server.SessionHeader, c.Session)
+	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
