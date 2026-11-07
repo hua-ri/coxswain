@@ -9,6 +9,16 @@ import (
 	"github.com/hua-ri/coxswain/internal/confirm"
 )
 
+// NotAuthorized is the error returned to a client the user has not allowed.
+const NotAuthorized = "client_not_authorized"
+
+// NotAuthorizedHint tells an agent what to do when the user has not
+// allowed it.
+func NotAuthorizedHint(client string) string {
+	return "The user has not allowed " + client + " to use Coxswain. Tell the user; they can allow it " +
+		"in the dialog that appears when you reconnect. Do not try to reach the servers another way."
+}
+
 // BuiltIn reports whether name is one of the user's own entry points
 // (`cox` commands and the desktop app), which never need authorization.
 func BuiltIn(name string) bool { return name == "cli" || name == "desktop" }

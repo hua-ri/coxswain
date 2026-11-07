@@ -57,7 +57,7 @@ func (s *server) invoke(w http.ResponseWriter, r *http.Request) {
 	}
 	client := clientName(r)
 	if ok, _ := s.cfg.Clients.Authorize(r.Context(), client); !ok {
-		fail(w, http.StatusForbidden, NotAuthorized, NotAuthorizedHint(client))
+		fail(w, http.StatusForbidden, clients.NotAuthorized, clients.NotAuthorizedHint(client))
 		return
 	}
 	writeJSON(w, http.StatusOK, s.cfg.Engine.Invoke(r.Context(), Actor(client), id, body))

@@ -20,9 +20,6 @@ import (
 // ClientHeader names the calling client (cli, desktop, claude-code, …).
 const ClientHeader = "X-Cox-Client"
 
-// NotAuthorized is the error returned to a client the user has not allowed.
-const NotAuthorized = "client_not_authorized"
-
 // Config is what the server runs on.
 type Config struct {
 	Engine  *engine.Engine
@@ -31,8 +28,6 @@ type Config struct {
 	Version string
 	Events  *eventlog.Log // activity stream source; defaults to Engine.Events
 	PID     int           // reported by /healthz; defaults to this process
-	// MCP, if set, is served at /mcp behind the same authentication.
-	MCP http.Handler
 	// Port to listen on (Run only); 0 reuses the previous port if free.
 	Port int
 	// KeepAlive is the SSE comment interval; default 15s.
@@ -64,9 +59,7 @@ func New(cfg Config) http.Handler {
 	api.HandleFunc("GET /api/v1/events", s.events)
 	api.HandleFunc("GET /api/v1/clients", s.builtInOnly(s.listClients))
 	api.HandleFunc("DELETE /api/v1/clients/{name}", s.builtInOnly(s.revokeClient))
-	if cfg.MCP != nil {
-		api.Handle("/mcp", cfg.MCP)
-	}
+	api.Handle("/mcp", newMCPHandler(cfg))
 
 	root := http.NewServeMux()
 	root.HandleFunc("GET /healthz", s.healthz)
@@ -126,13 +119,6 @@ func Actor(client string) action.Actor {
 		return action.Actor{Kind: action.Human, Name: client}
 	}
 	return action.Actor{Kind: action.Agent, Name: client}
-}
-
-// NotAuthorizedHint tells an agent what to do when the user has not
-// allowed it.
-func NotAuthorizedHint(client string) string {
-	return "The user has not allowed " + client + " to use Coxswain. Tell the user; they can allow it " +
-		"in the dialog that appears on the next call. Do not try to reach the servers another way."
 }
 
 func (s *server) healthz(w http.ResponseWriter, _ *http.Request) {

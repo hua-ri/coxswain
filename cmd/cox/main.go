@@ -91,7 +91,7 @@ func mcpCommand(e *engine.Engine) *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			who := action.Actor{Kind: action.Agent, Name: name, Session: sessionID(rand.Read)}
-			return mcpsurf.NewServer(e, who, version).Run(cmd.Context(), &sdk.StdioTransport{})
+			return mcpsurf.NewServer(e, who, version, nil).Run(cmd.Context(), &sdk.StdioTransport{})
 		},
 	}
 	cmd.Flags().StringVar(&name, "actor", "mcp", "agent name recorded in the audit log (claude-code, codex, kimi)")

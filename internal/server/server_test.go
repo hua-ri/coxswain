@@ -21,6 +21,7 @@ import (
 	"github.com/hua-ri/coxswain/internal/engine"
 	"github.com/hua-ri/coxswain/internal/eventlog"
 	"github.com/hua-ri/coxswain/internal/instance"
+	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 const token = "test-token"
@@ -331,6 +332,15 @@ func TestRun(t *testing.T) {
 	}
 	defer resp.Body.Close()
 	go io.Copy(io.Discard, resp.Body)
+	// Nor does an open MCP session (it holds a hanging GET).
+	f.cfg.Clients.Store.Trust("codex")
+	cs, err := sdk.NewClient(&sdk.Implementation{Name: "t", Version: "0"}, nil).Connect(context.Background(),
+		&sdk.StreamableClientTransport{Endpoint: "http://" + info.Addr + "/mcp",
+			HTTPClient: &http.Client{Transport: headers{info.Token, "codex"}}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cs.Close()
 
 	cancel()
 	select {

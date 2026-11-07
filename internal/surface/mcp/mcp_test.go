@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/hua-ri/coxswain/internal/action"
+	"github.com/hua-ri/coxswain/internal/clients"
 	"github.com/hua-ri/coxswain/internal/engine"
 	"github.com/hua-ri/coxswain/internal/eventlog"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -15,11 +17,16 @@ import (
 var agent = action.Actor{Kind: action.Agent, Name: "claude-code"}
 
 func setup(t *testing.T) (*engine.Engine, *sdk.ClientSession) {
+	return setupGate(t, nil)
+}
+
+func setupGate(t *testing.T, gate Gate) (*engine.Engine, *sdk.ClientSession) {
 	t.Helper()
 	reg := action.NewRegistry()
 	reg.Register(&action.Action{
 		ID: "demo.do", Summary: "demo", Description: "demo action",
-		Input: map[string]any{"type": "object", "properties": map[string]any{"danger": map[string]any{"type": "boolean"}}},
+		Input:       map[string]any{"type": "object", "properties": map[string]any{"danger": map[string]any{"type": "boolean"}}},
+		Annotations: action.Annotations{Destructive: true, Idempotent: true},
 		Label: func(_ context.Context, raw json.RawMessage) (action.Assessment, error) {
 			var in struct{ Danger bool }
 			action.Decode(raw, &in)
@@ -33,7 +40,7 @@ func setup(t *testing.T) (*engine.Engine, *sdk.ClientSession) {
 	e := &engine.Engine{Registry: reg, Events: eventlog.Open(t.TempDir() + "/events")}
 	ct, st := sdk.NewInMemoryTransports()
 	ctx := context.Background()
-	if _, err := NewServer(e, agent, "test").Connect(ctx, st, nil); err != nil {
+	if _, err := NewServer(e, agent, "test", gate).Connect(ctx, st, nil); err != nil {
 		t.Fatal(err)
 	}
 	cs, err := sdk.NewClient(&sdk.Implementation{Name: "t", Version: "0"}, nil).Connect(ctx, ct, nil)
@@ -79,5 +86,30 @@ func TestDestructiveRuns(t *testing.T) {
 	out, isErr := call(t, cs, "demo_do", map[string]any{"danger": true})
 	if out.Status != engine.StatusOK || isErr || out.Result != "done" {
 		t.Fatalf("%+v %v", out, isErr)
+	}
+}
+
+func TestAnnotations(t *testing.T) {
+	_, cs := setup(t)
+	res, err := cs.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := res.Tools[0].Annotations
+	if a == nil || a.ReadOnlyHint || !a.IdempotentHint || a.DestructiveHint == nil || !*a.DestructiveHint ||
+		a.OpenWorldHint == nil || *a.OpenWorldHint || a.Title != "demo" {
+		t.Fatalf("annotations: %+v", a)
+	}
+}
+
+func TestGate(t *testing.T) {
+	var calls atomic.Int32
+	_, cs := setupGate(t, func(context.Context, *sdk.ServerSession) bool { calls.Add(1); return false })
+	out, isErr := call(t, cs, "demo_do", nil)
+	if out.Status != engine.StatusError || out.Error != clients.NotAuthorized || out.Hint == "" || !isErr {
+		t.Fatalf("%+v", out)
+	}
+	if calls.Load() < 1 {
+		t.Fatal("gate not consulted")
 	}
 }
