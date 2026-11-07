@@ -69,7 +69,8 @@ Credentials stay in `ssh-agent` and your key files; Coxswain never stores or sho
 
 Coxswain guards against agents that make mistakes or have been prompt-injected, as long as they
 work through cox's own tools (MCP or the `cox` CLI). Every action gets a risk rating, follows the
-approval policy and is written to the audit log.
+approval policy and is written to the audit log. "Human" means a person at an interactive
+terminal that was not started by an agent; anything else counts as an agent.
 
 It is not a sandbox. An agent that has its own unrestricted shell, running as your user, can
 edit `~/.coxswain` or use `ssh` directly and skip cox entirely. Keep such agents sandboxed, and

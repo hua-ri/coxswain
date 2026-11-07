@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -165,11 +167,11 @@ func assessImport(existing, imported []inventory.Host) action.Assessment {
 	importedNames := map[string]bool{}
 	for _, h := range imported {
 		importedNames[h.Name] = true
+		verb := "add "
 		if _, ok := byName[h.Name]; ok {
-			changes = append(changes, "change "+h.Name)
-		} else {
-			changes = append(changes, "add "+h.Name)
+			verb = "change "
 		}
+		changes = append(changes, verb+h.Name+" -> "+address(h))
 	}
 	for _, h := range existing {
 		if importedNames[h.Name] || addrs[h.Addr()] {
@@ -373,6 +375,19 @@ func (p *Provider) exec() *action.Action {
 			return out, nil
 		},
 	}
+}
+
+// address is user@host:port as an import would connect to it.
+func address(h inventory.Host) string {
+	port := h.Port
+	if port == 0 {
+		port = 22
+	}
+	s := net.JoinHostPort(h.HostName, strconv.Itoa(port))
+	if h.User != "" {
+		s = h.User + "@" + s
+	}
+	return s
 }
 
 func describe(h inventory.Host) string {

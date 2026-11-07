@@ -181,7 +181,7 @@ func TestImportAssess(t *testing.T) {
 	a, _ := e.Registry.Get("ssh.hosts.import")
 	dir := t.TempDir()
 	cfg := filepath.Join(dir, "config")
-	os.WriteFile(cfg, []byte(fmt.Sprintf("Host dev\n  HostName %s\n  Port %d\nHost fresh\n  HostName 192.0.2.9\n", srv.Host, srv.Port)), 0o600)
+	os.WriteFile(cfg, []byte(fmt.Sprintf("Host dev\n  HostName %s\n  Port %d\nHost fresh\n  HostName 192.0.2.9\n  User ops\n", srv.Host, srv.Port)), 0o600)
 	as, err := a.Assess(context.Background(), importArgs(t, cfg))
 	if err != nil {
 		t.Fatal(err)
@@ -193,8 +193,20 @@ func TestImportAssess(t *testing.T) {
 	if strings.Join(ids, ",") != "dev,prod" || as.Risk != action.Destructive {
 		t.Fatalf("targets %v risk %v", ids, as.Risk)
 	}
-	if !strings.Contains(as.Preview, "add fresh") || !strings.Contains(as.Preview, "change dev") {
+	if !strings.Contains(as.Preview, "add fresh -> ops@192.0.2.9:22") ||
+		!strings.Contains(as.Preview, fmt.Sprintf("change dev -> %s:%d", srv.Host, srv.Port)) {
 		t.Fatalf("preview: %s", as.Preview)
+	}
+
+	var many strings.Builder
+	for i := 0; i < 25; i++ {
+		fmt.Fprintf(&many, "Host n%02d\n  HostName 192.0.2.%d\n", i, i)
+	}
+	os.WriteFile(cfg, []byte(many.String()), 0o600)
+	as, _ = a.Assess(context.Background(), importArgs(t, cfg))
+	if !strings.Contains(as.Preview, "add n19 -> 192.0.2.19:22") || strings.Contains(as.Preview, "n20") ||
+		!strings.HasSuffix(as.Preview, "…") {
+		t.Fatalf("capped preview: %s", as.Preview)
 	}
 }
 
