@@ -1,5 +1,5 @@
 // Package inventory stores the SSH hosts Coxswain knows about, with tags
-// (env=prod drives policy) and a free-text note shown to agents.
+// (env=prod marks production) and a free-text note shown to agents.
 package inventory
 
 import (
