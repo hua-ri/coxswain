@@ -67,14 +67,21 @@ func (s *server) listClients(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, list)
 }
 
+// revokeClient records the name as revoked and disconnects it.
 func (s *server) revokeClient(w http.ResponseWriter, r *http.Request) {
-	name := r.PathValue("name")
-	switch err := s.cfg.Clients.Revoke(name); {
+	s.decideClient(w, s.cfg.Clients.Revoke(r.PathValue("name")))
+}
+
+// allowClient lets the name use Coxswain.
+func (s *server) allowClient(w http.ResponseWriter, r *http.Request) {
+	s.decideClient(w, s.cfg.Clients.Allow(r.PathValue("name")))
+}
+
+func (s *server) decideClient(w http.ResponseWriter, err error) {
+	switch {
 	case err == nil:
 		w.WriteHeader(http.StatusNoContent)
-	case errors.Is(err, clients.ErrNotFound):
-		fail(w, http.StatusNotFound, err.Error(), "")
-	case clients.BuiltIn(name):
+	case errors.Is(err, clients.ErrInvalidName), errors.Is(err, clients.ErrBuiltIn):
 		fail(w, http.StatusBadRequest, err.Error(), "")
 	default:
 		fail(w, http.StatusInternalServerError, err.Error(), "")

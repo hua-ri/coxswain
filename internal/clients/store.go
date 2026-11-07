@@ -14,8 +14,8 @@ import (
 	"github.com/hua-ri/coxswain/internal/filelock"
 )
 
-// ErrNotFound is returned when revoking a client that is not trusted.
-var ErrNotFound = errors.New("client not authorized")
+// ErrBuiltIn is returned when allowing or revoking cli or desktop.
+var ErrBuiltIn = errors.New("built-in client")
 
 // ErrInvalidName is returned for client names outside namePattern.
 var ErrInvalidName = errors.New("invalid client name")
@@ -25,11 +25,22 @@ var namePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
 // ValidName reports whether name may identify a client (X-Cox-Client).
 func ValidName(name string) bool { return namePattern.MatchString(name) }
 
-// Client is one trusted client.
+// Client is one client the user decided about: allowed, or revoked.
 type Client struct {
 	Name         string    `json:"name"`
-	AuthorizedAt time.Time `json:"authorized_at"`
+	AuthorizedAt time.Time `json:"authorized_at,omitzero"`
+	Revoked      bool      `json:"revoked,omitempty"`
+	RevokedAt    time.Time `json:"revoked_at,omitzero"`
 }
+
+// Status is what the user decided about a client.
+type Status int
+
+const (
+	Unknown Status = iota // never decided: ask
+	Trusted
+	Revoked // refused without asking until allowed again
+)
 
 // Store keeps trusted clients in one JSON file (mode 0600). Access is
 // serialised across processes with a flock on <file>.lock.
@@ -56,16 +67,31 @@ func (s *Store) update(fn func(m map[string]Client) (bool, error)) error {
 	})
 }
 
-func (s *Store) IsTrusted(name string) (bool, error) {
-	var ok bool
-	err := s.update(func(m map[string]Client) (bool, error) { _, ok = m[name]; return false, nil })
-	return ok, err
+// Status reports what the user decided about name.
+func (s *Store) Status(name string) (Status, error) {
+	st := Unknown
+	err := s.update(func(m map[string]Client) (bool, error) {
+		if c, ok := m[name]; ok {
+			st = Trusted
+			if c.Revoked {
+				st = Revoked
+			}
+		}
+		return false, nil
+	})
+	return st, err
 }
 
-// Trust records name as authorized now (keeping an earlier time).
+func (s *Store) IsTrusted(name string) (bool, error) {
+	st, err := s.Status(name)
+	return st == Trusted, err
+}
+
+// Trust records name as allowed now (keeping an earlier time if it was
+// already allowed).
 func (s *Store) Trust(name string) error {
 	return s.update(func(m map[string]Client) (bool, error) {
-		if _, ok := m[name]; ok {
+		if c, ok := m[name]; ok && !c.Revoked {
 			return false, nil
 		}
 		m[name] = Client{Name: name, AuthorizedAt: s.Now().UTC()}
@@ -73,18 +99,20 @@ func (s *Store) Trust(name string) error {
 	})
 }
 
-// Revoke forgets name; ErrNotFound if it was not trusted.
+// Revoke records name as revoked (also a name never seen before).
 func (s *Store) Revoke(name string) error {
 	return s.update(func(m map[string]Client) (bool, error) {
-		if _, ok := m[name]; !ok {
-			return false, fmt.Errorf("%w: %s", ErrNotFound, name)
+		c := m[name]
+		if c.Revoked {
+			return false, nil
 		}
-		delete(m, name)
+		c.Name, c.Revoked, c.RevokedAt = name, true, s.Now().UTC()
+		m[name] = c
 		return true, nil
 	})
 }
 
-// List returns trusted clients sorted by name.
+// List returns every client decided about, sorted by name.
 func (s *Store) List() ([]Client, error) {
 	out := []Client{}
 	err := s.update(func(m map[string]Client) (bool, error) {

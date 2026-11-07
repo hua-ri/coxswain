@@ -55,10 +55,10 @@ func managerName() string {
 }
 
 func clientsCommand(coxHome string) *cobra.Command {
-	cmd := &cobra.Command{Use: "clients", Short: "Agents you allowed to use Coxswain"}
+	cmd := &cobra.Command{Use: "clients", Short: "Agents you allowed (or revoked)"}
 	cmd.AddCommand(&cobra.Command{
 		Use:   "list",
-		Short: "List allowed agents",
+		Short: "List agents you allowed or revoked",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			c, err := client.Discover(cmd.Context(), coxHome, managerName())
@@ -74,7 +74,11 @@ func clientsCommand(coxHome string) *cobra.Command {
 				fmt.Fprintln(out, "no agents allowed yet")
 			}
 			for _, cl := range list {
-				fmt.Fprintf(out, "%-16s allowed %s\n", cl.Name, cl.AuthorizedAt.Local().Format(time.DateTime))
+				if cl.Revoked {
+					fmt.Fprintf(out, "%-16s revoked %s\n", cl.Name, cl.RevokedAt.Local().Format(time.DateTime))
+				} else {
+					fmt.Fprintf(out, "%-16s allowed %s\n", cl.Name, cl.AuthorizedAt.Local().Format(time.DateTime))
+				}
 			}
 			return nil
 		},
@@ -90,7 +94,22 @@ func clientsCommand(coxHome string) *cobra.Command {
 			if err := c.Revoke(cmd.Context(), args[0]); err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "revoked %s\n", args[0])
+			fmt.Fprintf(cmd.OutOrStdout(), "revoked %s; allow it again with: cox clients allow %s\n", args[0], args[0])
+			return nil
+		},
+	}, &cobra.Command{
+		Use:   "allow <name>",
+		Short: "Let an agent use Coxswain without asking",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, err := client.Discover(cmd.Context(), coxHome, managerName())
+			if err != nil {
+				return err
+			}
+			if err := c.Allow(cmd.Context(), args[0]); err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "allowed %s\n", args[0])
 			return nil
 		},
 	})

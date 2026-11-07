@@ -60,24 +60,29 @@ Everything is recorded in `~/.coxswain/events/YYYY-MM-DD.jsonl`.
 
 ## Allowing agents
 
-The first time an agent connects (Claude Code, Codex, Kimi…), Coxswain shows a macOS dialog:
+The first time an agent uses Coxswain (Claude Code, Codex, Kimi…), a macOS dialog asks:
 *"codex wants to use Coxswain to operate your servers."* If you allow it, Coxswain remembers that.
-If you deny it, or nobody answers within 60 seconds, that agent's tool calls return
-`client_not_authorized` until it reconnects.
+If you deny it, or nobody answers within 60 seconds, its calls return `client_not_authorized`
+and you won't be asked about it again for a minute.
 
 ```bash
-cox clients list           # agents you allowed
-cox clients revoke codex   # withdraw access; its sessions are cut off right away
+cox clients list           # agents you allowed or revoked
+cox clients allow codex    # allow without the dialog (takes effect at once)
+cox clients revoke codex   # cut it off now; it is refused, without asking, until you allow it again
 ```
 
-The `cox` CLI and the desktop app are your own entry points and need no permission.
+This also covers agents that run `cox` through their own shell. Coxswain recognises Claude Code,
+Codex and Kimi as parent processes (or `COX_ACTOR=agent:<name>`); a `cox` run without a terminal
+counts as the agent `unknown`. Their calls need your permission, their output is shortened like
+over MCP, and the audit log names them. Only you, at a terminal, are `cli`, which needs no
+permission; agents can't use `cox clients`.
 
 ## Files
 
 | Path | What |
 |---|---|
 | `~/.coxswain/server.json` | address, pid and access token of the running server (0600) |
-| `~/.coxswain/clients.json` | agents you allowed |
+| `~/.coxswain/clients.json` | agents you allowed or revoked |
 | `~/.coxswain/hosts.json` | hosts, tags, notes |
 | `~/.coxswain/events/` | audit log |
 | `~/.coxswain/artifacts/` | full copies of truncated outputs |
@@ -93,7 +98,7 @@ agents never get them.
 
 Client authorization covers agents that use Coxswain through its own entry points (`cox mcp`, the
 `cox` CLI). It is **not** an isolation boundary. Any process running as your user can read
-`server.json`, claim any client name, or run `cox` commands, which count as you. An agent with an
+`server.json` and claim any client name, including `cli`. An agent with an
 unrestricted shell can also edit `~/.coxswain` or run `ssh` directly. Keep such agents sandboxed
 and don't let them run raw `ssh`. Your credentials still never leave the server process and
 `ssh-agent`.

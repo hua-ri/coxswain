@@ -104,7 +104,10 @@ func TestAnnotations(t *testing.T) {
 
 func TestGate(t *testing.T) {
 	var calls atomic.Int32
-	_, cs := setupGate(t, func(context.Context, *sdk.ServerSession) bool { calls.Add(1); return false })
+	_, cs := setupGate(t, func(context.Context, *sdk.ServerSession) (bool, string) {
+		calls.Add(1)
+		return false, clients.ReasonDenied
+	})
 	out, isErr := call(t, cs, "demo_do", nil)
 	if out.Status != engine.StatusError || out.Error != clients.NotAuthorized || out.Hint == "" || !isErr {
 		t.Fatalf("%+v", out)

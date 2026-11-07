@@ -267,8 +267,17 @@ func TestEndToEnd(t *testing.T) {
 	if out, code := s.cox(t, "clients", "revoke", "codex"); code != 0 {
 		t.Fatalf("revoke: %d %s", code, out)
 	}
-	if out, err := callExec(t, codex, "dev", "true"); err == nil && out.Status == "ok" {
-		t.Fatalf("revoked codex still works: %+v", out)
+	if out, err := callExec(t, codex, "dev", "true"); err != nil || out.Error != "client_not_authorized" {
+		t.Fatalf("revoked codex: %+v %v", out, err)
+	}
+	if out, code := s.cox(t, "clients", "list"); code != 0 || !strings.Contains(out, "revoked") {
+		t.Fatalf("clients list after revoke: %d %s", code, out)
+	}
+	if out, code := s.cox(t, "clients", "allow", "codex"); code != 0 {
+		t.Fatalf("allow: %d %s", code, out)
+	}
+	if out, err := callExec(t, codex, "dev", "true"); err != nil || out.Status != "ok" {
+		t.Fatalf("codex after allow: %+v %v", out, err)
 	}
 
 	// Activity on the server's stderr and in the audit log.

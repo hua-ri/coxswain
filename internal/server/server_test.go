@@ -200,21 +200,30 @@ func TestInvokeByAgentNeedsAuthorization(t *testing.T) {
 	if out := outcome(t, w); w.Code != 403 || out.Error != "client_not_authorized" || out.Hint == "" || f.asked.Load() != 1 {
 		t.Fatalf("%d %s asked=%d", w.Code, w.Body, f.asked.Load())
 	}
-	f.allow.Store(true)
+	// A denial holds for a while: no dialog storm.
+	request(t, h, "POST", "/api/v1/actions/demo.echo", `{}`, codex)
+	if f.asked.Load() != 1 {
+		t.Fatalf("asked again right after a denial: %d", f.asked.Load())
+	}
+	// The user allows it from the CLI; no dialog needed.
+	f.cfg.Clients.Allow("codex")
 	w = request(t, h, "POST", "/api/v1/actions/demo.echo", `{}`, codex)
 	out := outcome(t, w)
 	if res, _ := out.Result.(map[string]any); out.Status != "ok" || res["actor"] != "agent:codex" {
 		t.Fatalf("%d %s", w.Code, w.Body)
 	}
-	request(t, h, "POST", "/api/v1/actions/demo.echo", `{}`, codex)
-	if f.asked.Load() != 2 {
-		t.Fatalf("trusted client asked again: %d", f.asked.Load())
+	if f.asked.Load() != 1 {
+		t.Fatalf("allowed client asked: %d", f.asked.Load())
 	}
 }
 
-func TestClientsListAndRevoke(t *testing.T) {
+func TestClientsListRevokeAllow(t *testing.T) {
 	f := newConfig(t)
 	f.cfg.Clients.Store.Trust("codex")
+	f.cfg.Clients.Ask = func(context.Context, string) (bool, error) {
+		t.Error("asked about a revoked client")
+		return false, nil
+	}
 	h := New(f.cfg)
 	w := request(t, h, "GET", "/api/v1/clients", "", nil)
 	var list []clients.Client
@@ -222,20 +231,34 @@ func TestClientsListAndRevoke(t *testing.T) {
 	if w.Code != 200 || len(list) != 1 || list[0].Name != "codex" {
 		t.Fatalf("%d %s", w.Code, w.Body)
 	}
-	if w := request(t, h, "DELETE", "/api/v1/clients/codex", "", map[string]string{"X-Cox-Client": "codex"}); w.Code != 403 {
-		t.Fatalf("an agent managed clients: %d %s", w.Code, w.Body)
+	codex := map[string]string{"X-Cox-Client": "codex"}
+	for _, m := range []string{"DELETE", "PUT"} {
+		if w := request(t, h, m, "/api/v1/clients/codex", "", codex); w.Code != 403 {
+			t.Fatalf("an agent managed clients (%s): %d %s", m, w.Code, w.Body)
+		}
 	}
-	if w := request(t, h, "DELETE", "/api/v1/clients/codex", "", nil); w.Code != 204 {
-		t.Fatalf("revoke: %d %s", w.Code, w.Body)
+	for range 2 {
+		if w := request(t, h, "DELETE", "/api/v1/clients/codex", "", nil); w.Code != 204 {
+			t.Fatalf("revoke: %d %s", w.Code, w.Body)
+		}
 	}
-	if ok, _ := f.cfg.Clients.Store.IsTrusted("codex"); ok {
-		t.Fatal("still trusted")
+	w = request(t, h, "POST", "/api/v1/actions/demo.echo", "{}", codex)
+	if out := outcome(t, w); w.Code != 403 || out.Error != clients.NotAuthorized ||
+		!strings.Contains(out.Hint, "allow it again with: cox clients allow codex") {
+		t.Fatalf("revoked: %d %s", w.Code, w.Body)
 	}
-	if w := request(t, h, "DELETE", "/api/v1/clients/codex", "", nil); w.Code != 404 {
-		t.Fatalf("revoke twice: %d %s", w.Code, w.Body)
+	if w := request(t, h, "PUT", "/api/v1/clients/codex", "", nil); w.Code != 204 {
+		t.Fatalf("allow: %d %s", w.Code, w.Body)
 	}
-	if w := request(t, h, "DELETE", "/api/v1/clients/cli", "", nil); w.Code != 400 {
-		t.Fatalf("revoke built-in: %d %s", w.Code, w.Body)
+	if out := outcome(t, request(t, h, "POST", "/api/v1/actions/demo.echo", "{}", codex)); out.Status != "ok" {
+		t.Fatalf("after allow: %+v", out)
+	}
+	for _, path := range []string{"/api/v1/clients/cli", "/api/v1/clients/Bad%20Name"} {
+		for _, m := range []string{"DELETE", "PUT"} {
+			if w := request(t, h, m, path, "", nil); w.Code != 400 {
+				t.Fatalf("%s %s: %d %s", m, path, w.Code, w.Body)
+			}
+		}
 	}
 }
 
@@ -444,7 +467,7 @@ func TestAgentAccess(t *testing.T) {
 	if w := request(t, h, "GET", "/api/v1/actions", "", codex); w.Code != 403 || outcome(t, w).Error != clients.NotAuthorized {
 		t.Fatalf("unauthorized agent listed actions: %d %s", w.Code, w.Body)
 	}
-	f.allow.Store(true)
+	f.cfg.Clients.Allow("codex")
 	if w := request(t, h, "GET", "/api/v1/actions", "", codex); w.Code != 200 {
 		t.Fatalf("authorized agent: %d %s", w.Code, w.Body)
 	}

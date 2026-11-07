@@ -59,6 +59,7 @@ func New(cfg Config) http.Handler {
 	api.HandleFunc("GET /api/v1/events", s.builtInOnly(s.events))
 	api.HandleFunc("GET /api/v1/clients", s.builtInOnly(s.listClients))
 	api.HandleFunc("DELETE /api/v1/clients/{name}", s.builtInOnly(s.revokeClient))
+	api.HandleFunc("PUT /api/v1/clients/{name}", s.builtInOnly(s.allowClient))
 	api.Handle("/mcp", newMCPHandler(cfg))
 
 	root := http.NewServeMux()
@@ -103,8 +104,8 @@ func (s *server) authenticated(next http.Handler) http.Handler {
 func (s *server) authorized(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		client := clientName(r)
-		if ok, _ := s.cfg.Clients.Authorize(r.Context(), client); !ok {
-			fail(w, http.StatusForbidden, clients.NotAuthorized, clients.NotAuthorizedHint(client))
+		if ok, reason := s.cfg.Clients.Authorize(r.Context(), client); !ok {
+			fail(w, http.StatusForbidden, clients.NotAuthorized, clients.NotAuthorizedHint(client, reason))
 			return
 		}
 		next(w, r)

@@ -22,10 +22,11 @@ const instructions = `Coxswain (cox) gives you the user's ops tools: SSH hosts a
 // ToolName maps an Action ID to an MCP tool name.
 func ToolName(id string) string { return strings.ReplaceAll(id, ".", "_") }
 
-// Gate reports whether a session's client may call tools. It is first
-// called when the session is initialized (so the user is asked right
-// away) and again before every tool call; implementations cache.
-type Gate func(ctx context.Context, ss *sdk.ServerSession) bool
+// Gate reports whether a session's client may call tools, and if not,
+// why (a clients.Reason…). It is first called when the session is
+// initialized (so the user is asked right away) and again before every
+// tool call.
+type Gate func(ctx context.Context, ss *sdk.ServerSession) (bool, string)
 
 // NewServer builds the MCP server for one client. gate may be nil (allow).
 func NewServer(e *engine.Engine, actor action.Actor, version string, gate Gate) *sdk.Server {
@@ -37,9 +38,11 @@ func NewServer(e *engine.Engine, actor action.Actor, version string, gate Gate) 
 	}
 	return build(e.Registry, version, opts, func(a *action.Action) sdk.ToolHandler {
 		return func(ctx context.Context, req *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
-			if gate != nil && !gate(ctx, req.Session) {
-				return result(engine.Outcome{Status: engine.StatusError, Error: clients.NotAuthorized,
-					Hint: clients.NotAuthorizedHint(actor.Name)}), nil
+			if gate != nil {
+				if ok, reason := gate(ctx, req.Session); !ok {
+					return result(engine.Outcome{Status: engine.StatusError, Error: clients.NotAuthorized,
+						Hint: clients.NotAuthorizedHint(actor.Name, reason)}), nil
+				}
 			}
 			return result(e.Invoke(ctx, actor, a.ID, req.Params.Arguments)), nil
 		}

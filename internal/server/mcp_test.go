@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -112,13 +113,20 @@ func TestMCPUnauthorizedAskedOnce(t *testing.T) {
 	if n := f.asked.Load(); n != 1 {
 		t.Fatalf("asked %d times", n)
 	}
-	// The denial is cached for the session: no new prompt.
+	// The denial holds for a while: no new prompt.
 	if out, _ := callTool(t, a, "demo_echo", nil); out.Error != clients.NotAuthorized || f.asked.Load() != 1 {
 		t.Fatalf("%+v asked=%d", out, f.asked.Load())
 	}
+	// Allowing later revives the same session.
+	f.cfg.Clients.Allow("kimi")
+	if out, _ := callTool(t, a, "demo_echo", nil); out.Status != "ok" {
+		t.Fatalf("after allow: %+v", out)
+	}
 }
 
-func TestMCPRevokeClosesSessions(t *testing.T) {
+// TestMCPRevokeAllow: revoking closes the client's sessions; a new session
+// is refused without a dialog; allowing it works at once.
+func TestMCPRevokeAllow(t *testing.T) {
 	f := newConfig(t)
 	f.cfg.Clients.Store.Trust("codex")
 	srv := httptest.NewServer(New(f.cfg))
@@ -132,5 +140,17 @@ func TestMCPRevokeClosesSessions(t *testing.T) {
 	}
 	if out, err := callTool(t, cs, "demo_echo", nil); err == nil && out.Status == "ok" {
 		t.Fatalf("revoked session still works: %+v", out)
+	}
+	again := connectMCP(t, srv.URL, "codex")
+	out, err := callTool(t, again, "demo_echo", nil)
+	if err != nil || out.Error != clients.NotAuthorized || !strings.Contains(out.Hint, "cox clients allow codex") {
+		t.Fatalf("%+v %v", out, err)
+	}
+	if f.asked.Load() != 0 {
+		t.Fatal("asked about a revoked client")
+	}
+	f.cfg.Clients.Allow("codex")
+	if out, err := callTool(t, again, "demo_echo", nil); err != nil || out.Status != "ok" {
+		t.Fatalf("after allow: %+v %v", out, err)
 	}
 }

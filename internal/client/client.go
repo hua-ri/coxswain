@@ -119,9 +119,14 @@ func (c *Client) Clients(ctx context.Context) ([]clients.Client, error) {
 	return out, c.call(ctx, http.MethodGet, "/api/v1/clients", nil, &out)
 }
 
-// Revoke withdraws a client's authorization.
+// Revoke withdraws a client's access; it is refused until allowed again.
 func (c *Client) Revoke(ctx context.Context, name string) error {
 	return c.call(ctx, http.MethodDelete, "/api/v1/clients/"+url.PathEscape(name), nil, nil)
+}
+
+// Allow lets a client use Coxswain without asking.
+func (c *Client) Allow(ctx context.Context, name string) error {
+	return c.call(ctx, http.MethodPut, "/api/v1/clients/"+url.PathEscape(name), nil, nil)
 }
 
 // Events streams the activity stream until ctx ends; the channel then

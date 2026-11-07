@@ -84,8 +84,17 @@ func TestClients(t *testing.T) {
 	if err := c.Revoke(ctx, "codex"); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.Revoke(ctx, "codex"); err == nil || !strings.Contains(err.Error(), "not authorized") {
-		t.Fatalf("revoke twice: %v", err)
+	if st, _ := store.Status("codex"); st != clients.Revoked {
+		t.Fatalf("status %v", st)
+	}
+	if err := c.Allow(ctx, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := store.IsTrusted("codex"); !ok {
+		t.Fatal("not allowed")
+	}
+	if err := c.Revoke(ctx, "cli"); err == nil || !strings.Contains(err.Error(), "400") {
+		t.Fatalf("revoke cli: %v", err)
 	}
 }
 
