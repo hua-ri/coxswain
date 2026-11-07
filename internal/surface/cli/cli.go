@@ -1,8 +1,10 @@
-// Package cli builds the `cox` command tree. Every registered Action
-// becomes a command (ssh.exec → `cox ssh exec`).
+// Package cli builds the `cox` command tree from the running server's
+// action list (ssh.exec → `cox ssh exec`) and invokes actions through it.
 package cli
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,15 +12,17 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/hua-ri/coxswain/internal/action"
-	"github.com/hua-ri/coxswain/internal/engine"
+	"github.com/hua-ri/coxswain/internal/client"
+	"github.com/hua-ri/coxswain/internal/instance"
+	"github.com/hua-ri/coxswain/internal/server"
 	"github.com/spf13/cobra"
 )
 
 // Exit codes.
 const (
-	ExitOK      = 0
-	ExitFailure = 1
+	ExitOK         = 0
+	ExitFailure    = 1
+	ExitNotRunning = 2 // no server to talk to
 )
 
 // ExitError carries a process exit code out of a command.
@@ -32,17 +36,33 @@ type Printer interface {
 	PrintCLI(stdout, stderr io.Writer) int
 }
 
-type App struct {
-	Engine *engine.Engine
-	Actor  action.Actor
-	Stdin  io.Reader
-	Stdout io.Writer
-	Stderr io.Writer
-	output string
+// Decoder turns an action's JSON result into a Printer.
+type Decoder func(json.RawMessage) (Printer, error)
+
+// PrintAs is a Decoder for results of type T.
+func PrintAs[T Printer](raw json.RawMessage) (Printer, error) {
+	var v T
+	err := json.Unmarshal(raw, &v)
+	return v, err
 }
 
-// NewRoot returns the root command with one command per Action plus any
-// extra commands.
+// Invoker runs an action on the server.
+type Invoker interface {
+	Invoke(ctx context.Context, id string, args json.RawMessage) (client.Outcome, error)
+}
+
+type App struct {
+	Actions  []server.ActionInfo
+	Client   Invoker
+	Printers map[string]Decoder // by action ID
+	Stdin    io.Reader
+	Stdout   io.Writer
+	Stderr   io.Writer
+	output   string
+}
+
+// NewRoot returns the root command with one command per action plus any
+// extra (local) commands.
 func NewRoot(app *App, version string, extra ...*cobra.Command) *cobra.Command {
 	root := &cobra.Command{
 		Use:           "cox",
@@ -56,7 +76,7 @@ func NewRoot(app *App, version string, extra ...*cobra.Command) *cobra.Command {
 	root.SetOut(app.Stdout)
 	root.SetErr(app.Stderr)
 
-	for _, a := range app.Engine.Registry.List() {
+	for _, a := range app.Actions {
 		parent := root
 		parts := strings.Split(a.ID, ".")
 		for _, name := range parts[:len(parts)-1] {
@@ -80,7 +100,7 @@ func child(parent *cobra.Command, name string) *cobra.Command {
 	return c
 }
 
-func actionCommand(app *App, a *action.Action, name string) *cobra.Command {
+func actionCommand(app *App, a server.ActionInfo, name string) *cobra.Command {
 	props, _ := a.Input["properties"].(map[string]any)
 	use := name
 	for _, p := range a.Positional {
@@ -135,8 +155,11 @@ func actionCommand(app *App, a *action.Action, name string) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		out := app.Engine.Invoke(cmd.Context(), app.Actor, a.ID, raw)
-		return app.render(out)
+		out, err := app.Client.Invoke(cmd.Context(), a.ID, raw)
+		if err != nil {
+			return app.fail(err)
+		}
+		return app.render(a.ID, out)
 	}
 	return cmd
 }
@@ -161,40 +184,61 @@ func mapPositional(names []string, rest bool, args []string, in map[string]any) 
 	return nil
 }
 
-func (app *App) render(out engine.Outcome) error {
+// fail reports an error talking to the server.
+func (app *App) fail(err error) error {
+	if errors.Is(err, instance.ErrNotRunning) {
+		fmt.Fprintln(app.Stderr, instance.ErrNotRunning.Error())
+		return ExitError{ExitNotRunning}
+	}
+	return err
+}
+
+func (app *App) render(id string, out client.Outcome) error {
+	var p Printer
+	if dec := app.Printers[id]; dec != nil && out.Status == "ok" {
+		var err error
+		if p, err = dec(out.Result); err != nil {
+			return fmt.Errorf("decode %s result: %w", id, err)
+		}
+	}
 	if app.output == "json" {
 		enc := json.NewEncoder(app.Stdout)
 		enc.SetIndent("", "  ")
 		enc.Encode(out)
-		return ExitError{exitCode(out)}
+		return ExitError{exitCode(out, p)}
 	}
-	switch out.Status {
-	case engine.StatusOK:
-		switch r := out.Result.(type) {
-		case Printer:
-			return ExitError{r.PrintCLI(app.Stdout, app.Stderr)}
-		case string:
-			fmt.Fprintln(app.Stdout, r)
-		default:
-			enc := json.NewEncoder(app.Stdout)
-			enc.SetIndent("", "  ")
-			enc.Encode(r)
-		}
-	default:
+	switch {
+	case out.Status != "ok":
 		fmt.Fprintln(app.Stderr, "error: "+out.Error)
+		if out.Hint != "" {
+			fmt.Fprintln(app.Stderr, out.Hint)
+		}
+	case p != nil:
+		return ExitError{p.PrintCLI(app.Stdout, app.Stderr)}
+	default:
+		var s string
+		if json.Unmarshal(out.Result, &s) == nil {
+			fmt.Fprintln(app.Stdout, s)
+			break
+		}
+		var buf bytes.Buffer
+		if json.Indent(&buf, out.Result, "", "  ") != nil {
+			buf.Reset()
+			buf.Write(out.Result)
+		}
+		fmt.Fprintln(app.Stdout, buf.String())
 	}
-	return ExitError{exitCode(out)}
+	return ExitError{exitCode(out, p)}
 }
 
-func exitCode(out engine.Outcome) int {
-	switch out.Status {
-	case engine.StatusOK:
-		if p, ok := out.Result.(Printer); ok {
-			return p.PrintCLI(io.Discard, io.Discard)
-		}
-		return ExitOK
+func exitCode(out client.Outcome, p Printer) int {
+	switch {
+	case out.Status != "ok":
+		return ExitFailure
+	case p != nil:
+		return p.PrintCLI(io.Discard, io.Discard)
 	}
-	return ExitFailure
+	return ExitOK
 }
 
 // Code extracts the exit code for main.
@@ -205,6 +249,9 @@ func Code(err error) int {
 	var e ExitError
 	if errors.As(err, &e) {
 		return e.Code
+	}
+	if errors.Is(err, instance.ErrNotRunning) {
+		return ExitNotRunning
 	}
 	return ExitFailure
 }
