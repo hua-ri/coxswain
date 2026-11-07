@@ -2,6 +2,9 @@ package sshx
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -110,4 +113,67 @@ func waitClosed(t *testing.T, c *Conn) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("connection not closed")
 	}
+}
+
+func TestPoolKeyIncludesIdentity(t *testing.T) {
+	p, h, srv := poolFor(t, time.Minute)
+	execOn(t, p, h)
+	key, _ := os.ReadFile(h.IdentityFiles[0])
+	other := filepath.Join(t.TempDir(), "id_copy")
+	os.WriteFile(other, key, 0o600)
+	h2 := h
+	h2.IdentityFiles = []string{other}
+	execOn(t, p, h2)
+	if n := srv.Accepts.Load(); n != 2 {
+		t.Fatalf("%d connections: a different identity must not share one", n)
+	}
+}
+
+func TestPoolIdleCap(t *testing.T) {
+	p, h, _ := poolFor(t, time.Minute)
+	var conns []*Conn
+	var releases []func(bool)
+	for range 3 {
+		c, release, err := p.Get(context.Background(), h)
+		if err != nil {
+			t.Fatal(err)
+		}
+		conns, releases = append(conns, c), append(releases, release)
+	}
+	for _, r := range releases {
+		r(false)
+	}
+	waitClosed(t, conns[2]) // only two stay idle
+	p.mu.Lock()
+	n := len(p.idle[key(h)])
+	p.mu.Unlock()
+	if n != maxIdlePerHost {
+		t.Fatalf("%d idle", n)
+	}
+}
+
+func TestPoolConcurrentGet(t *testing.T) {
+	p, h, srv := poolFor(t, time.Minute)
+	var wg sync.WaitGroup
+	for range 10 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			c, release, err := p.Get(context.Background(), h)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			_, err = Exec(context.Background(), c.Client, "true", 1<<10)
+			release(err != nil)
+			if err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	if n := srv.Accepts.Load(); n < 1 || n > 10 {
+		t.Fatalf("%d connections", n)
+	}
+	execOn(t, p, h) // still usable
 }

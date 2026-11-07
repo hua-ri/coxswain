@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -34,9 +35,12 @@ type idleConn struct {
 	timer *time.Timer
 }
 
-// key identifies where a connection goes.
+// maxIdlePerHost bounds idle connections kept per host.
+const maxIdlePerHost = 2
+
+// key identifies where a connection goes and how it authenticates.
 func key(h inventory.Host) string {
-	return h.Name + "\x00" + h.HostName + "\x00" + strconv.Itoa(h.Port) + "\x00" + h.User + "\x00" + h.ProxyJump
+	return strings.Join(append([]string{h.Name, h.HostName, strconv.Itoa(h.Port), h.User, h.ProxyJump}, h.IdentityFiles...), "\x00")
 }
 
 // Get returns a connection to h and a release func the caller must call
@@ -78,7 +82,7 @@ func (p *Pool) release(k string, c *Conn) func(bool) {
 		once.Do(func() {
 			p.mu.Lock()
 			defer p.mu.Unlock()
-			if broken || p.closed {
+			if broken || p.closed || len(p.idle[k]) >= maxIdlePerHost {
 				c.Close()
 				return
 			}
