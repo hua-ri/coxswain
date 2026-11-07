@@ -13,6 +13,7 @@ import (
 	"syscall"
 
 	"github.com/hua-ri/coxswain/internal/action"
+	"github.com/hua-ri/coxswain/internal/actor"
 	"github.com/hua-ri/coxswain/internal/client"
 	"github.com/hua-ri/coxswain/internal/engine"
 	"github.com/hua-ri/coxswain/internal/eventlog"
@@ -27,6 +28,15 @@ import (
 
 // version is set at release time with -ldflags "-X main.version=…".
 var version = "dev"
+
+// agentAncestors turns on recognising agents by their processes. The
+// end-to-end tests build with -X main.agentAncestors=off because they run
+// under whatever agent runs the tests. (A link-time switch, not an
+// environment variable, so agents cannot turn it off.)
+var agentAncestors = "on"
+
+// clientName is who this cox process is to the server.
+func clientName() string { return actor.Client(actor.StdinTTY(), agentAncestors == "on") }
 
 // localCommands work without a running server.
 var localCommands = []string{"server", "mcp", "init", "clients", "version", "help", "completion"}
@@ -54,7 +64,7 @@ func run() int {
 	if name := commandName(os.Args[1:]); !slices.Contains(localCommands, name) {
 		// Action commands come from the server; without one, only the
 		// local commands exist.
-		c, err := client.Discover(ctx, coxHome, "cli")
+		c, err := client.Discover(ctx, coxHome, clientName())
 		if err == nil {
 			app.Client = c
 			app.Actions, err = c.Actions(ctx)

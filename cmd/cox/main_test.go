@@ -28,7 +28,7 @@ func TestMain(m *testing.M) {
 		panic(err)
 	}
 	coxBin = filepath.Join(dir, "cox")
-	if out, err := exec.Command("go", "build", "-o", coxBin, ".").CombinedOutput(); err != nil {
+	if out, err := exec.Command("go", "build", "-ldflags", "-X main.agentAncestors=off", "-o", coxBin, ".").CombinedOutput(); err != nil {
 		panic(string(out))
 	}
 	code := m.Run()
@@ -59,10 +59,26 @@ func newSandbox(t *testing.T, srv *sshtest.Server) sandbox {
 	return sandbox{env: env, coxHome: coxHome}
 }
 
+// trust allows client names, as if the user had clicked Allow.
+func (s sandbox) trust(t *testing.T, names ...string) {
+	t.Helper()
+	for _, n := range names {
+		if err := clients.NewStore(filepath.Join(s.coxHome, "clients.json")).Trust(n); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func (s sandbox) cox(t *testing.T, args ...string) (string, int) {
 	t.Helper()
+	return s.coxEnv(t, nil, args...)
+}
+
+// coxEnv runs cox with extra environment variables.
+func (s sandbox) coxEnv(t *testing.T, extra []string, args ...string) (string, int) {
+	t.Helper()
 	c := exec.Command(coxBin, args...)
-	c.Env = s.env
+	c.Env = append(append([]string{}, s.env...), extra...)
 	out, err := c.CombinedOutput()
 	code := 0
 	if ee, ok := err.(*exec.ExitError); ok {
@@ -195,6 +211,8 @@ func TestEndToEnd(t *testing.T) {
 	}
 
 	srv := s.startServer(t)
+	// These cox commands run without a terminal, as the client "unknown".
+	s.trust(t, "unknown")
 	if st, err := os.Stat(instance.Path(s.coxHome)); err != nil || st.Mode().Perm() != 0o600 {
 		t.Fatalf("server.json: %v %v", st, err)
 	}
@@ -224,9 +242,7 @@ func TestEndToEnd(t *testing.T) {
 	}
 
 	// A pre-trusted agent over `cox mcp`.
-	if err := clients.NewStore(filepath.Join(s.coxHome, "clients.json")).Trust("codex"); err != nil {
-		t.Fatal(err)
-	}
+	s.trust(t, "codex")
 	codex := s.mcp(t, "codex")
 	out, err := callExec(t, codex, "prod", "uname")
 	if err != nil || out.Status != "ok" || out.Result.Stdout.Text != "Darwin\n" {
@@ -251,7 +267,7 @@ func TestEndToEnd(t *testing.T) {
 	}
 
 	// Activity on the server's stderr and in the audit log.
-	for _, want := range []string{"agent:codex", "ssh.exec", "human:cli", "listening on " + srv.info.Addr} {
+	for _, want := range []string{"agent:codex", "ssh.exec", "human:cli", "agent:unknown", "listening on " + srv.info.Addr} {
 		if !strings.Contains(srv.stderr.String(), want) {
 			t.Fatalf("server output lacks %q:\n%s", want, srv.stderr)
 		}
@@ -281,5 +297,31 @@ func TestSecondServerRefused(t *testing.T) {
 	s.startServer(t)
 	if out, code := s.cox(t, "server", "--port", "0"); code == 0 || !strings.Contains(out, "already running") {
 		t.Fatalf("%d %s", code, out)
+	}
+}
+
+// TestCLIAsAgent: an agent running cox through its shell is that agent:
+// it must be allowed, its output is shaped and it is audited by name.
+func TestCLIAsAgent(t *testing.T) {
+	s := newSandbox(t, sshtest.Start(t))
+	if out, code := s.cox(t, "init", "--skip-agents"); code != 0 {
+		t.Fatalf("init: %s", out)
+	}
+	srv := s.startServer(t)
+	s.trust(t, "codex")
+	codex := []string{"COX_ACTOR=agent:codex"}
+	out, code := s.coxEnv(t, codex, "ssh", "exec", "dev", "--", "seq", "1", "5000")
+	if code != 0 || strings.Count(out, "\n") > 1000 || !strings.Contains(out, "1\n") {
+		t.Fatalf("agent output must be shaped: %d lines, exit %d", strings.Count(out, "\n"), code)
+	}
+	if !strings.Contains(srv.stderr.String(), "agent:codex ssh.exec requested") {
+		t.Fatalf("not audited as codex:\n%s", srv.stderr)
+	}
+	out, code = s.coxEnv(t, []string{"COX_ACTOR=agent:kimi"}, "ssh", "hosts", "list")
+	if code != 1 || !strings.Contains(out, "client_not_authorized") {
+		t.Fatalf("untrusted agent: %d %s", code, out)
+	}
+	if out, code := s.coxEnv(t, codex, "clients", "list"); code == 0 {
+		t.Fatalf("an agent managed clients: %s", out)
 	}
 }

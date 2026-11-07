@@ -42,6 +42,15 @@ func mcpCommand(coxHome, userHome string) *cobra.Command {
 	return cmd
 }
 
+// managerName is who manages clients: an agent the CLI recognises is
+// refused by the server; anyone else is the user's CLI.
+func managerName() string {
+	if name := clientName(); name != "unknown" {
+		return name
+	}
+	return "cli"
+}
+
 func clientsCommand(coxHome string) *cobra.Command {
 	cmd := &cobra.Command{Use: "clients", Short: "Agents you allowed to use Coxswain"}
 	cmd.AddCommand(&cobra.Command{
@@ -49,7 +58,7 @@ func clientsCommand(coxHome string) *cobra.Command {
 		Short: "List allowed agents",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			c, err := client.Discover(cmd.Context(), coxHome, "cli")
+			c, err := client.Discover(cmd.Context(), coxHome, managerName())
 			if err != nil {
 				return err
 			}
@@ -71,7 +80,7 @@ func clientsCommand(coxHome string) *cobra.Command {
 		Short: "Withdraw an agent's access and disconnect it",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			c, err := client.Discover(cmd.Context(), coxHome, "cli")
+			c, err := client.Discover(cmd.Context(), coxHome, managerName())
 			if err != nil {
 				return err
 			}
