@@ -1,5 +1,6 @@
 // Package eventlog is the append-only audit trail: one JSON object per
-// line, one file per day, under <home>/events/.
+// line, one file per day, under <home>/events/. Subscribers receive every
+// appended event live (the activity stream).
 package eventlog
 
 import (
@@ -9,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/hua-ri/coxswain/internal/action"
@@ -33,10 +35,16 @@ type Event struct {
 	Error      string          `json:"error,omitempty"`
 }
 
+// subscriberBuffer is how many events a subscriber may fall behind before
+// further events are dropped for it.
+const subscriberBuffer = 256
+
 type Log struct {
-	dir string
-	mu  sync.Mutex
-	Now func() time.Time
+	dir     string
+	mu      sync.Mutex
+	subs    map[chan Event]struct{}
+	dropped atomic.Int64
+	Now     func() time.Time
 }
 
 func Open(dir string) *Log { return &Log{dir: dir, Now: time.Now} }
@@ -45,8 +53,35 @@ func (l *Log) file(day time.Time) string {
 	return filepath.Join(l.dir, day.Format("2006-01-02")+".jsonl")
 }
 
-// Append writes one event. Several processes may append to the same
-// file; each event is a single write on an O_APPEND descriptor.
+// Subscribe returns a channel that receives every event appended from now
+// on, in order. A subscriber that falls behind loses events rather than
+// slowing Append down. cancel stops delivery and closes the channel.
+func (l *Log) Subscribe() (<-chan Event, func()) {
+	ch := make(chan Event, subscriberBuffer)
+	l.mu.Lock()
+	if l.subs == nil {
+		l.subs = map[chan Event]struct{}{}
+	}
+	l.subs[ch] = struct{}{}
+	l.mu.Unlock()
+	var once sync.Once
+	return ch, func() {
+		once.Do(func() {
+			l.mu.Lock()
+			delete(l.subs, ch)
+			l.mu.Unlock()
+			close(ch)
+		})
+	}
+}
+
+// Dropped reports how many events slow subscribers have missed.
+func (l *Log) Dropped() int64 { return l.dropped.Load() }
+
+// Append writes one event, then delivers it to subscribers (even if the
+// write failed, so the live view still shows it). Several processes may
+// append to the same file; each event is a single write on an O_APPEND
+// descriptor.
 func (l *Log) Append(ev Event) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -57,6 +92,7 @@ func (l *Log) Append(ev Event) error {
 	if err != nil {
 		return err
 	}
+	defer l.deliver(ev)
 	if err := os.MkdirAll(l.dir, 0o700); err != nil {
 		return err
 	}
@@ -67,6 +103,17 @@ func (l *Log) Append(ev Event) error {
 	defer f.Close()
 	_, err = f.Write(append(line, '\n'))
 	return err
+}
+
+// deliver sends ev to every subscriber without blocking. l.mu is held.
+func (l *Log) deliver(ev Event) {
+	for ch := range l.subs {
+		select {
+		case ch <- ev:
+		default:
+			l.dropped.Add(1)
+		}
+	}
 }
 
 // Read returns all events recorded on the given day.

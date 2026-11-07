@@ -45,3 +45,59 @@ func TestReadMissingDay(t *testing.T) {
 		t.Fatalf("got %v, %v", got, err)
 	}
 }
+
+func TestSubscribeInOrder(t *testing.T) {
+	l := Open(t.TempDir())
+	ch, cancel := l.Subscribe()
+	defer cancel()
+	for i := range 3 {
+		if err := l.Append(Event{Type: ActionFinished, Action: "a", DurationMs: int64(i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := range 3 {
+		select {
+		case ev := <-ch:
+			if ev.DurationMs != int64(i) || ev.Time.IsZero() {
+				t.Fatalf("event %d: %+v", i, ev)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("event %d not delivered", i)
+		}
+	}
+}
+
+func TestSlowSubscriberDoesNotBlock(t *testing.T) {
+	l := Open(t.TempDir())
+	_, cancel := l.Subscribe() // never read
+	defer cancel()
+	fast, cancelFast := l.Subscribe()
+	defer cancelFast()
+	done := make(chan struct{})
+	go func() {
+		for range subscriberBuffer + 10 {
+			l.Append(Event{Type: ActionFinished})
+			<-fast
+		}
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Append blocked on a slow subscriber")
+	}
+	if l.Dropped() != 10 {
+		t.Fatalf("dropped %d, want 10", l.Dropped())
+	}
+}
+
+func TestCancelStopsDelivery(t *testing.T) {
+	l := Open(t.TempDir())
+	ch, cancel := l.Subscribe()
+	cancel()
+	cancel() // idempotent
+	l.Append(Event{Type: ActionFinished})
+	if _, ok := <-ch; ok {
+		t.Fatal("delivered after cancel")
+	}
+}
