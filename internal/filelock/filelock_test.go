@@ -1,6 +1,7 @@
 package filelock
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -36,4 +37,21 @@ func TestWithSerialises(t *testing.T) {
 	if m, _ := filepath.Glob(filepath.Join(dir, "*.tmp")); len(m) != 0 {
 		t.Fatalf("temp files left: %v", m)
 	}
+}
+
+func TestTryLock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "x.lock")
+	unlock, err := TryLock(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := TryLock(path); !errors.Is(err, ErrLocked) {
+		t.Fatalf("second lock: %v", err)
+	}
+	unlock()
+	unlock2, err := TryLock(path)
+	if err != nil {
+		t.Fatalf("after unlock: %v", err)
+	}
+	unlock2()
 }

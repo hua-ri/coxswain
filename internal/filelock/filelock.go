@@ -3,6 +3,7 @@
 package filelock
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -24,6 +25,29 @@ func With(path string, fn func() error) error {
 	}
 	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 	return fn()
+}
+
+// ErrLocked is returned by TryLock when another holder has the lock.
+var ErrLocked = errors.New("locked by another process")
+
+// TryLock takes an exclusive flock on path without waiting and holds it
+// until unlock is called (or the process exits).
+func TryLock(path string) (unlock func(), err error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		f.Close()
+		if errors.Is(err, syscall.EWOULDBLOCK) {
+			return nil, ErrLocked
+		}
+		return nil, err
+	}
+	return func() { f.Close() }, nil // closing releases the lock
 }
 
 // WriteAtomic writes b to path via a unique temp file in the same

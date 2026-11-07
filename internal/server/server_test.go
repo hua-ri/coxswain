@@ -20,6 +20,7 @@ import (
 	"github.com/hua-ri/coxswain/internal/clients"
 	"github.com/hua-ri/coxswain/internal/engine"
 	"github.com/hua-ri/coxswain/internal/eventlog"
+	"github.com/hua-ri/coxswain/internal/filelock"
 	"github.com/hua-ri/coxswain/internal/instance"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -381,5 +382,47 @@ func TestRunFixedPortBusy(t *testing.T) {
 	f.cfg.Port = busy.Listener.Addr().(*net.TCPAddr).Port
 	if err := Run(context.Background(), f.cfg, t.TempDir()); err == nil {
 		t.Fatal("started on a busy port")
+	}
+}
+
+func runReady(t *testing.T, cfg Config, home string) (instance.Info, func()) {
+	t.Helper()
+	ready := make(chan instance.Info, 1)
+	cfg.Ready = func(i instance.Info) { ready <- i }
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- Run(ctx, cfg, home) }()
+	select {
+	case info := <-ready:
+		return info, func() { cancel(); <-done }
+	case err := <-done:
+		t.Fatal(err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("not ready")
+	}
+	return instance.Info{}, nil
+}
+
+func TestRunLockHeld(t *testing.T) {
+	home := t.TempDir()
+	unlock, err := filelock.TryLock(filepath.Join(home, "server.lock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := Run(ctx, newConfig(t).cfg, home); !errors.Is(err, ErrAlreadyRunning) {
+		t.Fatalf("%v", err)
+	}
+}
+
+func TestRunCorruptInstanceFile(t *testing.T) {
+	home := t.TempDir()
+	os.WriteFile(instance.Path(home), []byte("{garbage"), 0o600)
+	info, stop := runReady(t, newConfig(t).cfg, home)
+	defer stop()
+	if got, err := instance.Read(home); err != nil || got != info {
+		t.Fatalf("%+v %v", got, err)
 	}
 }

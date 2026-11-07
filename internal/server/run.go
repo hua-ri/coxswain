@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"time"
 
+	"github.com/hua-ri/coxswain/internal/filelock"
 	"github.com/hua-ri/coxswain/internal/instance"
 )
 
@@ -27,19 +29,24 @@ func NewToken() (string, error) {
 }
 
 // Run serves on 127.0.0.1 until ctx ends. Config.Port 0 reuses the
-// previous server's port if it is free, else picks a random one. It refuses to
-// start if another server is alive, writes <home>/server.json once
-// listening and removes it on shutdown.
+// previous server's port if it is free, else picks a random one. One
+// server runs per home: it holds a lock on <home>/server.lock while it
+// runs. It writes <home>/server.json once listening (replacing a stale or
+// corrupt one) and removes it on shutdown.
 func Run(ctx context.Context, cfg Config, home string) error {
 	cfg.defaults()
-	prev, err := instance.Read(home)
-	if err == nil {
-		if instance.Probe(ctx, prev) == nil {
+	unlock, err := filelock.TryLock(filepath.Join(home, "server.lock"))
+	if errors.Is(err, filelock.ErrLocked) {
+		if prev, err := instance.Read(home); err == nil {
 			return fmt.Errorf("%w at %s (pid %d)", ErrAlreadyRunning, prev.Addr, prev.PID)
 		}
-	} else if !errors.Is(err, instance.ErrNotRunning) {
+		return ErrAlreadyRunning
+	}
+	if err != nil {
 		return err
 	}
+	defer unlock()
+	prev, _ := instance.Read(home) // only for its port; stale or corrupt is fine
 	if cfg.Token == "" {
 		if cfg.Token, err = NewToken(); err != nil {
 			return err
