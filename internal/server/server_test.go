@@ -426,3 +426,26 @@ func TestRunCorruptInstanceFile(t *testing.T) {
 		t.Fatalf("%+v %v", got, err)
 	}
 }
+
+func TestAgentAccess(t *testing.T) {
+	f := newConfig(t)
+	h := New(f.cfg)
+	codex := map[string]string{"X-Cox-Client": "codex"}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	req := httptest.NewRequestWithContext(ctx, "GET", "/api/v1/events", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-Cox-Client", "codex")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != 403 {
+		t.Fatalf("an agent read the activity stream: %d", w.Code)
+	}
+	if w := request(t, h, "GET", "/api/v1/actions", "", codex); w.Code != 403 || outcome(t, w).Error != clients.NotAuthorized {
+		t.Fatalf("unauthorized agent listed actions: %d %s", w.Code, w.Body)
+	}
+	f.allow.Store(true)
+	if w := request(t, h, "GET", "/api/v1/actions", "", codex); w.Code != 200 {
+		t.Fatalf("authorized agent: %d %s", w.Code, w.Body)
+	}
+}

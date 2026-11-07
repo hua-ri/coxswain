@@ -29,6 +29,9 @@ func mcpCommand(coxHome, userHome string) *cobra.Command {
 			if !clients.ValidName(name) {
 				return fmt.Errorf("--client must name the agent (claude-code, codex, kimi), got %q", name)
 			}
+			if clients.BuiltIn(name) {
+				return fmt.Errorf("--client %s is built in (the cox CLI and the desktop app); name the agent instead", name)
+			}
 			return mcpbridge.Run(cmd.Context(), mcpbridge.Options{
 				Stdin: os.Stdin, Stdout: os.Stdout, Home: coxHome, Client: name, Version: version,
 				Registry: newEngine(coxHome, userHome, nil).Registry, // tools offered while the server is down

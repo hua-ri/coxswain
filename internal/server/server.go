@@ -54,9 +54,9 @@ func New(cfg Config) http.Handler {
 	cfg.defaults()
 	s := &server{cfg: cfg}
 	api := http.NewServeMux()
-	api.HandleFunc("GET /api/v1/actions", s.listActions)
-	api.HandleFunc("POST /api/v1/actions/{id}", s.invoke)
-	api.HandleFunc("GET /api/v1/events", s.events)
+	api.HandleFunc("GET /api/v1/actions", s.authorized(s.listActions))
+	api.HandleFunc("POST /api/v1/actions/{id}", s.authorized(s.invoke))
+	api.HandleFunc("GET /api/v1/events", s.builtInOnly(s.events))
 	api.HandleFunc("GET /api/v1/clients", s.builtInOnly(s.listClients))
 	api.HandleFunc("DELETE /api/v1/clients/{name}", s.builtInOnly(s.revokeClient))
 	api.Handle("/mcp", newMCPHandler(cfg))
@@ -99,11 +99,23 @@ func (s *server) authenticated(next http.Handler) http.Handler {
 	})
 }
 
+// authorized lets through built-in clients and agents the user allowed.
+func (s *server) authorized(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		client := clientName(r)
+		if ok, _ := s.cfg.Clients.Authorize(r.Context(), client); !ok {
+			fail(w, http.StatusForbidden, clients.NotAuthorized, clients.NotAuthorizedHint(client))
+			return
+		}
+		next(w, r)
+	}
+}
+
 // builtInOnly limits a route to the user's own entry points.
 func (s *server) builtInOnly(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !clients.BuiltIn(clientName(r)) {
-			fail(w, http.StatusForbidden, "only cox and the desktop app may manage clients", "")
+			fail(w, http.StatusForbidden, "only cox (run by you) and the desktop app may do this", "")
 			return
 		}
 		next(w, r)

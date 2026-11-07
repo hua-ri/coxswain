@@ -206,6 +206,11 @@ func TestEndToEnd(t *testing.T) {
 	if out, code := s.cox(t, "init", "--skip-agents"); code != 0 || !strings.Contains(out, "added 2") {
 		t.Fatalf("init without server: %d %s", code, out)
 	}
+	for _, name := range []string{"cli", "desktop"} {
+		if out, code := s.cox(t, "mcp", "--client", name); code != 1 || !strings.Contains(out, "built in") {
+			t.Fatalf("mcp --client %s: %d %s", name, code, out)
+		}
+	}
 	if out, code := s.cox(t, "version"); code != 0 || strings.TrimSpace(out) == "" {
 		t.Fatalf("version: %d %q", code, out)
 	}
