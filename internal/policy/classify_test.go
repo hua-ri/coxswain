@@ -187,7 +187,7 @@ func TestClassifyStateChanging(t *testing.T) {
 		{`awk '{print | "sh"}' f`, action.Write},
 		{`awk '{getline x < "/etc/shadow"}'`, action.Write},
 		{`gawk '{close("x")}' f`, action.Write},
-		{"mawk '$5 > 80' f", action.Write},
+		{"mawk '$5 > 80' f", action.Read}, // a comparison, not a redirection
 		{"awk '{fflush()}' f", action.Write},
 
 		{"cat $F", action.Read},
@@ -304,6 +304,84 @@ func TestClassifyDisguisedDestructive(t *testing.T) {
 
 		{"some-unknown-tool", action.Write},
 		{"if (", action.Destructive},
+	}
+	for _, c := range cases {
+		if got := ClassifyCommand(c.cmd); got != c.want {
+			t.Errorf("ClassifyCommand(%q) = %v, want %v", c.cmd, got, c.want)
+		}
+	}
+}
+
+// TestClassifyReReview covers the re-review findings N1–N3 and the
+// false positives it reported.
+func TestClassifyReReview(t *testing.T) {
+	cases := []struct {
+		cmd  string
+		want action.Risk
+	}{
+		// N1: output paths of argument-checked commands.
+		{"sort -o /etc/passwd x", action.Destructive},
+		{"sort --output=/etc/x y", action.Destructive},
+		{"sort --output /etc/x y", action.Destructive},
+		{"sort -o/etc/x y", action.Destructive},
+		{"sort -o out.txt in.txt", action.Write},
+		{"uniq in /etc/sudoers.d/x", action.Destructive},
+		{"uniq in out", action.Write},
+		{"xxd -r in /etc/sudoers", action.Destructive},
+		{"xxd -r in out", action.Write},
+		{"tree -o /etc/passwd", action.Destructive},
+		{"tree -o out.txt", action.Write},
+		{"base64 -o /etc/x in", action.Destructive},
+		{"base64 --output=/etc/x in", action.Destructive},
+		{"base64 -o out in", action.Write},
+		{"git log --output /etc/passwd", action.Destructive},
+		{"git show --output=/etc/x", action.Destructive},
+		{"git diff --output=x.patch", action.Write},
+
+		// N2: repeated -c, less/more +cmd.
+		{"bash -c 'ls' -c 'rm -rf /data'", action.Destructive},
+		{"sh -c 'rm -rf /data' -c ls", action.Destructive},
+		{"bash -c 'uptime'", action.Read},
+		{"bash -lc 'rm -rf /x'", action.Destructive},
+		{"bash -o pipefail -c 'df -h'", action.Read},
+		{"bash -c 'echo $1' _ reboot", action.Destructive},
+		{"bash -x -c 'rm -rf /x'", action.Destructive},
+		{"sh script.sh", action.Destructive},
+		{"less +!reboot /var/log/syslog", action.Write},
+		{"more +/x f", action.Write},
+		{"less /var/log/syslog", action.Read},
+
+		// N3: risky environment prefixes.
+		{"LD_PRELOAD=/tmp/x.so cat f", action.Write},
+		{"DYLD_INSERT_LIBRARIES=/tmp/x cat f", action.Write},
+		{"GIT_EXTERNAL_DIFF=/tmp/x git diff", action.Write},
+		{"PAGER='sh -c reboot' git log", action.Write},
+		{"SYSTEMD_PAGER=x systemctl status nginx", action.Write},
+		{"PATH=/tmp:$PATH ls", action.Write},
+		{"BASH_ENV=/tmp/x bash -c ls", action.Write},
+		{"IFS=x ls", action.Write},
+		{"EDITOR=x VISUAL=y ls", action.Write},
+		{"env LD_PRELOAD=/tmp/x.so cat f", action.Write},
+		{"git diff --ext-diff", action.Write},
+		{"LC_ALL=C sort f", action.Read},
+		{"LANG=C TZ=UTC date", action.Read},
+		{"FOO=bar", action.Read},
+
+		// False positives.
+		{"awk 'NR>1{print $2}' f", action.Read},
+		{"awk -F: '$3 >= 1000 {print $1}' /etc/passwd", action.Read},
+		{"awk '{if ($1 > 5) print $1}' f", action.Read},
+		{`awk '{print > "/etc/x"}'`, action.Write},
+		{`awk '{print $1 >> "out"}' f`, action.Write},
+		{`awk '{printf "%s\n", $1 > "out"}' f`, action.Write},
+		{`awk '{print $1}' > out.txt`, action.Write},
+		{"git -C /srv/app status", action.Read},
+		{"git -C /srv/app log --oneline", action.Read},
+		{"git -C /srv/app branch -D x", action.Write},
+		{"git -C /srv/app push", action.Write},
+		{"systemctl --failed", action.Read},
+		{"systemctl show-environment", action.Read},
+		{"systemctl --failed restart x", action.Write},
 	}
 	for _, c := range cases {
 		if got := ClassifyCommand(c.cmd); got != c.want {

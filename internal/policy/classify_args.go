@@ -33,6 +33,8 @@ var argChecks = map[string]func(args []string) action.Risk{
 	"tree":    func(a []string) action.Risk { return writeIf(hasPrefix(a, "-o")) },
 	"base64":  func(a []string) action.Risk { return writeIf(hasPrefix(a, "-o", "--output")) },
 	"ulimit":  func(a []string) action.Risk { return readIf(len(nonFlags(a, nil)) == 0) },
+	"less":    func(a []string) action.Risk { return writeIf(hasPrefix(a, "+")) }, // +cmd runs a less command
+	"more":    func(a []string) action.Risk { return writeIf(hasPrefix(a, "+")) },
 	"crontab": checkCrontab,
 }
 
@@ -192,23 +194,31 @@ func checkCrontab(args []string) action.Risk {
 }
 
 // classifyGit: read-only subcommands stay Read unless they write a file
-// (--output) or set config (-c), and branch/remote only list.
-func classifyGit(args []string) action.Risk {
-	sub := subcommand(args, readOnlySub["git"])
-	if sub == "" || hasPrefix(args, "--output") {
+// (--output), set config (-c) or run an external diff, and branch/remote
+// only list. -C <dir> and other location options are allowed.
+func (r rater) classifyGit(args []string) action.Risk {
+	if hasAny(args, "--ext-diff") {
 		return action.Write
 	}
 	i := 0
-	for args[i] != sub {
-		i++
+	for ; i < len(args) && strings.HasPrefix(args[i], "-"); i++ {
+		a := args[i]
+		if hasPrefix([]string{a}, "-c", "--config-env", "--exec-path") {
+			return action.Write
+		}
+		if a == "-C" || a == "--git-dir" || a == "--work-tree" || a == "--namespace" {
+			i++ // value
+		}
 	}
-	if hasPrefix(args[:i], "-c", "--config-env", "--exec-path") {
+	if i >= len(args) || !readOnlySub["git"][args[i]] {
 		return action.Write
 	}
 	after := args[i+1:]
-	switch sub {
+	switch args[i] {
 	case "branch":
-		return readIf(len(nonFlags(after, nil)) == 0)
+		if len(nonFlags(after, nil)) > 0 {
+			return action.Write
+		}
 	case "remote":
 		for _, a := range after {
 			if a != "-v" && a != "--verbose" {
@@ -216,7 +226,54 @@ func classifyGit(args []string) action.Risk {
 			}
 		}
 	}
-	return action.Read
+	return r.outputRisk("git", after)
+}
+
+// outputFlags are the flags with which argument-checked commands write a
+// file: short (separate or attached value) and long (separate or =value).
+var outputFlags = map[string][2]string{
+	"sort":   {"-o", "--output"},
+	"tree":   {"-o", ""},
+	"base64": {"-o", "--output"},
+	"git":    {"", "--output"},
+}
+
+// outputRisk rates the files an argument-checked command writes: Read if
+// none, else the rating of writing those paths (Destructive if protected).
+func (r rater) outputRisk(name string, args []string) action.Risk {
+	var paths []string
+	found := false
+	if f, ok := outputFlags[name]; ok {
+		short, long := f[0], f[1]
+		for i, a := range args {
+			next := ""
+			if i+1 < len(args) {
+				next = args[i+1]
+			}
+			switch {
+			case short != "" && a == short, long != "" && a == long:
+				found, paths = true, append(paths, next)
+			case short != "" && strings.HasPrefix(a, short) && !strings.HasPrefix(a, "--"):
+				found, paths = true, append(paths, a[len(short):])
+			case long != "" && strings.HasPrefix(a, long+"="):
+				found, paths = true, append(paths, a[len(long)+1:])
+			}
+		}
+	}
+	switch name {
+	case "uniq": // uniq in out
+		if ops := nonFlags(args, set("-f", "-s", "-w")); len(ops) > 1 {
+			found, paths = true, append(paths, ops[1:]...)
+		}
+	case "xxd": // xxd [-r] in out
+		if ops := nonFlags(args, set("-c", "-g", "-l", "-s", "-o", "-n", "-cols", "-len", "-seek")); len(ops) > 1 {
+			found, paths = true, append(paths, ops[1:]...)
+		}
+	}
+	if !found {
+		return action.Read
+	}
+	return r.writeTargets(paths)
 }
 
 // sedPrint matches print/delete/quit commands with an optional address,
@@ -302,13 +359,17 @@ func sedSafeSubst(s string) bool {
 }
 
 // classifyAwk: awk programs can run commands, write files and read other
-// files; any of that is Write.
+// files; any of that is Write. > and >> only count as output redirection
+// after print or printf, so comparisons such as NR>1 stay Read.
 func classifyAwk(args []string) action.Risk {
 	if hasPrefix(args, "-f", "--file", "-E", "--exec", "-i", "--include", "-l", "--load") {
 		return action.Write
 	}
 	for _, a := range args {
-		for _, bad := range []string{"|", "system", ">", "getline", "close(", "fflush"} {
+		if awkPrintRedirect.MatchString(a) {
+			return action.Write
+		}
+		for _, bad := range []string{"|", "system", "getline", "close(", "fflush"} {
 			if strings.Contains(a, bad) {
 				return action.Write
 			}
@@ -316,3 +377,6 @@ func classifyAwk(args []string) action.Risk {
 	}
 	return action.Read
 }
+
+// awkPrintRedirect matches print/printf followed by > within a statement.
+var awkPrintRedirect = regexp.MustCompile(`\bprintf?\b[^;{}\n]*>`)

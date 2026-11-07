@@ -14,7 +14,7 @@ import (
 // arguments. Commands that are read-only only with some subcommands are in
 // readOnlySub; commands whose arguments decide (rm, sed, find, awk, tee,
 // ip, sysctl…) are handled in classifyArgs and argChecks.
-var readOnly = set("cat", "head", "tail", "less", "more", "grep", "egrep", "fgrep", "zgrep", "zcat",
+var readOnly = set("cat", "head", "tail", "grep", "egrep", "fgrep", "zgrep", "zcat",
 	"ls", "ll", "df", "du", "free", "uptime", "uname", "whoami", "id", "groups", "w", "who", "last",
 	"ps", "pgrep", "pidof", "top", "htop", "netstat", "lsof", "vmstat", "iostat",
 	"mpstat", "sar", "stat", "file", "wc", "cut", "tr", "echo",
@@ -27,7 +27,7 @@ var readOnly = set("cat", "head", "tail", "less", "more", "grep", "egrep", "fgre
 // readOnlySub: commands that are read-only only with these subcommands.
 var readOnlySub = map[string]map[string]bool{
 	"systemctl": set("status", "is-active", "is-enabled", "is-failed", "list-units", "list-unit-files",
-		"list-timers", "show", "cat", "list-dependencies"),
+		"list-timers", "show", "cat", "list-dependencies", "show-environment"),
 	"docker": set("ps", "logs", "inspect", "images", "version", "info", "top", "port", "diff", "history"),
 	"git":    set("status", "log", "diff", "show", "branch", "remote", "rev-parse", "ls-files"),
 	"apt":    set("list", "show", "search", "policy"),
@@ -104,12 +104,39 @@ func (r rater) classify(cmd string, depth int) action.Risk {
 			raise(r.classifyRedirect(n))
 		case *syntax.CallExpr:
 			raise(r.classifyCall(n.Args, depth))
-		case *syntax.DeclClause, *syntax.TestClause, *syntax.ArithmCmd, *syntax.LetClause:
+			if riskyAssigns(n.Assigns) {
+				raise(action.Write)
+			}
+		case *syntax.DeclClause: // export PATH=…
+			if riskyAssigns(n.Args) {
+				raise(action.Write)
+			}
+		case *syntax.TestClause, *syntax.ArithmCmd, *syntax.LetClause:
 			// harmless on their own; nested calls are walked separately
 		}
 		return true
 	})
 	return risk
+}
+
+// riskyAssigns reports whether any assignment sets a variable that
+// changes what a command loads or runs (LD_PRELOAD, PATH, GIT_*, PAGER…).
+func riskyAssigns(as []*syntax.Assign) bool {
+	for _, a := range as {
+		if a.Name != nil && riskyEnv(a.Name.Value) {
+			return true
+		}
+	}
+	return false
+}
+
+func riskyEnv(name string) bool {
+	switch name {
+	case "PATH", "BASH_ENV", "ENV", "IFS", "PAGER", "EDITOR", "VISUAL":
+		return true
+	}
+	return strings.HasPrefix(name, "LD_") || strings.HasPrefix(name, "DYLD_") || strings.HasPrefix(name, "GIT_") ||
+		strings.HasSuffix(name, "_PAGER")
 }
 
 // changesDir reports whether the line runs cd or pushd anywhere.
@@ -191,12 +218,20 @@ func (r rater) classifyCall(words []*syntax.Word, depth int) action.Risk {
 const dynamic = "\x00dynamic"
 
 func (r rater) classifyArgs(args []string, depth int) action.Risk {
+	w := stripWrapper(args)
+	risk := r.classifyWrapped(w, depth)
+	if w.riskyEnv {
+		risk = max(risk, action.Write) // env LD_PRELOAD=… cmd
+	}
+	return risk
+}
+
+func (r rater) classifyWrapped(w wrapped, depth int) action.Risk {
 	if depth > 4 {
 		return action.Destructive
 	}
-	w := stripWrapper(args)
 	r.cd = r.cd || w.chdir
-	args = w.args
+	args := w.args
 	switch {
 	case w.split != "": // env -S 'cmd args'
 		return atLeastWrite(r.classifyString(strings.Join(append([]string{w.split}, args...), " "), depth))
@@ -240,18 +275,13 @@ func hasDynamic(args []string) bool {
 // classifyName rates a command that is not a pure reader.
 func (r rater) classifyName(name string, rest []string, depth int) action.Risk {
 	if check, ok := argChecks[name]; ok {
-		return check(rest)
+		return max(check(rest), r.outputRisk(name, rest))
 	}
 	switch {
 	case destructiveCmd[name], strings.HasPrefix(name, "mkfs."):
 		return action.Destructive
 	case name == "sh" || name == "bash" || name == "zsh" || name == "dash":
-		for i, a := range rest {
-			if a == "-c" && i+1 < len(rest) {
-				return r.classifyString(rest[i+1], depth)
-			}
-		}
-		return action.Destructive // a shell reading a script or stdin
+		return r.classifyShell(rest, depth)
 	case name == "su" || name == "runuser":
 		if cmd, ok := flagValue(rest, "-c", "--command"); ok {
 			return atLeastWrite(r.classifyString(cmd, depth))
@@ -335,7 +365,9 @@ func (r rater) classifyName(name string, rest []string, depth int) action.Risk {
 	case name == "cp" || name == "mv" || name == "install" || name == "rsync" || name == "ln" || name == "chmod" || name == "chown":
 		return r.writeTargets(rest)
 	case name == "git":
-		return classifyGit(rest)
+		return r.classifyGit(rest)
+	case name == "systemctl" && len(nonFlags(rest, nil)) == 0:
+		return action.Read // systemctl --failed lists units
 	}
 	if subs, ok := readOnlySub[name]; ok {
 		if sub := subcommand(rest, subs); sub != "" {
@@ -344,6 +376,39 @@ func (r rater) classifyName(name string, rest []string, depth int) action.Risk {
 		return action.Write
 	}
 	return action.Write
+}
+
+// classifyShell rates sh/bash/zsh/dash. With -c, every operand may be
+// the command string, so all are rated and the maximum taken; -c given
+// more than once is Destructive. Without -c the shell reads a script or
+// stdin, which cannot be seen: Destructive.
+func (r rater) classifyShell(args []string, depth int) action.Risk {
+	cs := 0
+	var operands []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "-o" || a == "+o" || a == "-O" || a == "+O":
+			i++ // option name
+		case len(a) > 1 && (a[0] == '-' || a[0] == '+') && a != "--":
+			if a[0] == '-' && !strings.HasPrefix(a, "--") && strings.Contains(a, "c") {
+				cs++
+			}
+		default:
+			operands = append(operands, a)
+		}
+	}
+	if cs == 0 || len(operands) == 0 {
+		return action.Destructive
+	}
+	if cs > 1 {
+		return action.Destructive
+	}
+	risk := action.Read
+	for _, op := range operands {
+		risk = max(risk, r.classifyString(op, depth))
+	}
+	return risk
 }
 
 // classifyFind rates find: -delete is Destructive, commands run by
@@ -500,6 +565,7 @@ type wrapped struct {
 	split     string // env -S string, to be parsed as a command line
 	rootShell bool   // sudo -s / -i
 	chdir     bool   // sudo -D, env -C
+	riskyEnv  bool   // env LD_PRELOAD=… and the like
 }
 
 // stripWrapper removes leading wrapper commands (sudo -u x, env A=b,
@@ -513,6 +579,9 @@ func stripWrapper(args []string) wrapped {
 			a := args[0]
 			switch {
 			case name == "env" && strings.Contains(a, "=") && !strings.HasPrefix(a, "-"):
+				if k, _, _ := strings.Cut(a, "="); riskyEnv(k) {
+					w.riskyEnv = true
+				}
 				args = args[1:]
 			case name == "env" && (a == "-S" || a == "--split-string"):
 				if len(args) > 1 {
