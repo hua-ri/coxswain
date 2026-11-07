@@ -3,6 +3,7 @@ package install
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -36,9 +37,9 @@ func TestClaudeAndCodex(t *testing.T) {
 	res := i.All()
 	want := []string{
 		"claude mcp remove -s user cox",
-		"claude mcp add -s user cox -- /usr/local/bin/cox mcp --actor claude-code",
+		"claude mcp add -s user cox -- /usr/local/bin/cox mcp --client claude-code",
 		"codex mcp remove cox",
-		"codex mcp add cox -- /usr/local/bin/cox mcp --actor codex",
+		"codex mcp add cox -- /usr/local/bin/cox mcp --client codex",
 	}
 	if strings.Join(*calls, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("calls:\n%s", strings.Join(*calls, "\n"))
@@ -71,7 +72,8 @@ func TestKimiPreservesOtherServers(t *testing.T) {
 	json.Unmarshal(b, &cfg)
 	servers := cfg["mcpServers"].(map[string]any)
 	cox := servers["cox"].(map[string]any)
-	if servers["other"] == nil || cfg["keep"] == nil || cox["command"] != "/usr/local/bin/cox" {
+	if servers["other"] == nil || cfg["keep"] == nil || cox["command"] != "/usr/local/bin/cox" ||
+		fmt.Sprint(cox["args"]) != "[mcp --client kimi]" {
 		t.Fatalf("cfg = %s", b)
 	}
 	if _, err := os.Stat(filepath.Join(i.KimiHome, "skills", "cox", "SKILL.md")); err != nil {
@@ -89,5 +91,17 @@ func TestKimiRefusesBrokenJSON(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(filepath.Join(i.KimiHome, "mcp.json")); string(b) != "{broken" {
 		t.Fatal("broken file was overwritten")
+	}
+}
+
+func TestSkillText(t *testing.T) {
+	s := string(Skill)
+	for _, want := range []string{"cox server", "not running", "env=prod", "sudo -n", "artifact_read", "~/.coxswain", "raw `ssh`"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("SKILL.md lacks %q", want)
+		}
+	}
+	if strings.Contains(strings.ToLower(s), "approv") {
+		t.Error("SKILL.md still talks about approvals")
 	}
 }

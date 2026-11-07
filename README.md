@@ -1,10 +1,10 @@
 # Coxswain (`cox`)
 
-An ops toolbox for you **and your AI agents**. Coxswain keeps your SSH hosts, credentials
-and approval policy in one place, and gives Claude Code, Codex and Kimi Code safe access to
-them over MCP — risky actions wait for your approval in a native macOS dialog.
+An ops toolbox for you **and your AI agents**. Coxswain keeps your SSH hosts and connections in
+one place and gives Claude Code, Codex and Kimi Code access to them over MCP. You and your agents
+use the same tool and see the same activity.
 
-> macOS only. Personal use. Early: M0 covers SSH hosts and remote commands.
+> macOS only. Personal use. Early: SSH hosts and remote commands.
 > Kubernetes, Argo CD / Argo Workflows and the desktop app (`cox desktop`) are next.
 
 ## Install
@@ -18,64 +18,86 @@ curl -fsSL https://raw.githubusercontent.com/hua-ri/coxswain/main/install.sh | s
 ## Quick start
 
 ```bash
-cox init                              # import ~/.ssh/config, connect Claude Code / Codex / Kimi
+cox init      # import ~/.ssh/config, connect Claude Code / Codex / Kimi
+cox server    # run Coxswain in a terminal; leave it open (Ctrl-C stops it)
+```
+
+In another terminal:
+
+```bash
 cox ssh hosts list
 cox ssh hosts tag prod-web-01 --set env=prod --note "no restarts 9:00-18:00"
 cox ssh exec prod-web-01 -- df -h
 ```
 
 Then ask your agent, e.g. *"Why is the disk on prod-web-01 filling up?"* It uses the `cox`
-tools; anything that changes a production host, or anything destructive anywhere, pops up an
-approval dialog first.
+tools. `cox server` prints one line for every action, whether you or an agent ran it.
 
-## How approvals work
+`cox server` holds all state (connections, sessions). `cox` commands and `cox mcp` (what your
+agents start) are clients of it. If it isn't running, they say:
+`Coxswain server is not running. Start it with: cox server`.
 
-| | read | write | destructive |
-|---|---|---|---|
-| you, at an interactive terminal | runs | runs | asks `[y/N]` |
-| agent, normal host | runs | runs | asks |
-| agent, `env=prod` host | runs | asks | asks |
+## Who asks before an agent changes something
 
-- Anyone without an interactive terminal (an agent, a script, a pipe) counts as the agent
-  `unknown`. You must be at a terminal to act as yourself.
-- Commands are parsed (not pattern-matched) to rate them. Commands that can't be parsed, or whose
-  name is only known at run time, count as destructive. Commands cox doesn't know count as writes.
-- Changing a host's `env` or `ai_policy` tag or its note is destructive: the note tells agents
-  what they may do.
-- Importing from a file other than `~/.ssh/config` is destructive. An import that changes a host,
-  or adds a new name for a host's address, needs that host's approval. A new name for an existing
-  address gets that host's tags and note.
-- An approval is bound to the exact command, used once, and expires after 30 minutes (whether
-  approved or not).
-- If nobody answers the dialog, run `cox approvals` to see what's waiting and `cox approve <id>`
-  to bring the dialog back. You approve by clicking the button; typing `y` doesn't work.
-  Agents can't approve their own actions.
-- Tag a host `ai_policy=always|balanced|auto` to override its mode.
+Your agent does, not Coxswain. Every cox tool tells the agent what it does: `ssh_hosts_list` and
+`artifact_read` only read; `ssh_exec` and `ssh_hosts_tag` can change things. Claude Code, Codex
+and Kimi Code then follow their own permission settings, for example asking you before each
+`ssh_exec`. Configure that in your agent.
+
+Coxswain still helps:
+
+- Hosts tagged `env=prod` are production. The tools tell agents to check with you before
+  changing them, and every `ssh_exec` result includes the host's tags and note.
+- A host note ("no restarts during business hours") is shown to agents, who are told to follow it.
+- Every command gets a risk rating (read, write or destructive) in the audit log and in
+  `cox server`'s output. The rating is a label; nothing is blocked. Commands are parsed, not
+  pattern-matched. Commands that can't be parsed, or whose name is only known at run time, count
+  as destructive. Commands cox doesn't know count as writes.
+- When an import adds a new name for an existing host address, the new name gets that host's
+  tags and note, so it can't drop `env=prod`.
 
 Everything is recorded in `~/.coxswain/events/YYYY-MM-DD.jsonl`.
+
+## Allowing agents
+
+The first time an agent connects (Claude Code, Codex, Kimi…), Coxswain shows a macOS dialog:
+*"codex wants to use Coxswain to operate your servers."* If you allow it, Coxswain remembers that.
+If you deny it, or nobody answers within 60 seconds, that agent's tool calls return
+`client_not_authorized` until it reconnects.
+
+```bash
+cox clients list           # agents you allowed
+cox clients revoke codex   # withdraw access; its sessions are cut off right away
+```
+
+The `cox` CLI and the desktop app are your own entry points and need no permission.
 
 ## Files
 
 | Path | What |
 |---|---|
+| `~/.coxswain/server.json` | address, pid and access token of the running server (0600) |
+| `~/.coxswain/clients.json` | agents you allowed |
 | `~/.coxswain/hosts.json` | hosts, tags, notes |
-| `~/.coxswain/approvals/` | pending and decided approvals |
 | `~/.coxswain/events/` | audit log |
 | `~/.coxswain/artifacts/` | full copies of truncated outputs |
 
-Credentials stay in `ssh-agent` and your key files; Coxswain never stores or shows them.
+Credentials stay in `ssh-agent` and your key files. Coxswain never stores or shows them, and
+agents never get them.
 
 ## Security model
 
-Coxswain guards against agents that make mistakes or have been prompt-injected, as long as they
-work through cox's own tools (MCP or the `cox` CLI). Every action gets a risk rating, follows the
-approval policy and is written to the audit log. "Human" means a person at an interactive
-terminal that was not started by an agent; anything else counts as an agent.
+`cox server` listens on 127.0.0.1 only. Every request needs the random token from
+`~/.coxswain/server.json`, which changes each time the server starts. Requests from web browsers
+(with an `Origin` header) are refused.
 
-It is not a sandbox. An agent that has its own unrestricted shell, running as your user, can
-edit `~/.coxswain` or use `ssh` directly and skip cox entirely. Keep such agents sandboxed, and
-don't let them run raw `ssh`. Approvals are a guardrail; they don't isolate anything.
+Client authorization covers agents that use Coxswain through its own entry points (`cox mcp`, the
+`cox` CLI). It is **not** an isolation boundary. Any process running as your user can read
+`server.json`, claim any client name, or run `cox` commands, which count as you. An agent with an
+unrestricted shell can also edit `~/.coxswain` or run `ssh` directly. Keep such agents sandboxed
+and don't let them run raw `ssh`. Your credentials still never leave the server process and
+`ssh-agent`.
 
-- Commands are saved in the audit log and in approvals exactly as typed. Secrets you put on a
-  command line end up there too.
+- Commands are saved in the audit log exactly as typed. Secrets you put on a command line end up
+  there too.
 - Full copies of truncated outputs stay in `~/.coxswain/artifacts/` until you delete them.

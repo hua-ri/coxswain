@@ -1,5 +1,6 @@
 // Package install wires cox into Claude Code, Codex and Kimi Code:
-// it registers `cox mcp` as an MCP server and installs the cox Skill.
+// it registers `cox mcp --client <agent>` as an MCP server and installs
+// the cox Skill.
 package install
 
 import (
@@ -41,7 +42,7 @@ func (i *Installer) claude() Result {
 		return r
 	}
 	i.Run("claude", "mcp", "remove", "-s", "user", "cox") // ignore "not found"
-	if r.Err = i.Run("claude", "mcp", "add", "-s", "user", "cox", "--", i.Exe, "mcp", "--actor", "claude-code"); r.Err != nil {
+	if r.Err = i.Run("claude", "mcp", "add", "-s", "user", "cox", "--", i.Exe, "mcp", "--client", "claude-code"); r.Err != nil {
 		return r
 	}
 	r.MCP = "registered (user scope)"
@@ -56,7 +57,7 @@ func (i *Installer) codex() Result {
 		return r
 	}
 	i.Run("codex", "mcp", "remove", "cox")
-	if r.Err = i.Run("codex", "mcp", "add", "cox", "--", i.Exe, "mcp", "--actor", "codex"); r.Err != nil {
+	if r.Err = i.Run("codex", "mcp", "add", "cox", "--", i.Exe, "mcp", "--client", "codex"); r.Err != nil {
 		return r
 	}
 	r.MCP = "registered"
@@ -96,7 +97,7 @@ func (i *Installer) kimi() Result {
 	if servers == nil {
 		servers = map[string]any{}
 	}
-	servers["cox"] = map[string]any{"command": i.Exe, "args": []string{"mcp", "--actor", "kimi"}}
+	servers["cox"] = map[string]any{"command": i.Exe, "args": []string{"mcp", "--client", "kimi"}}
 	cfg["mcpServers"] = servers
 	out, _ := json.MarshalIndent(cfg, "", "  ")
 	if r.Err = atomicWrite(path, append(out, '\n')); r.Err != nil {
