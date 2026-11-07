@@ -44,7 +44,7 @@ func (e *Engine) Invoke(ctx context.Context, client action.Actor, id string, arg
 	if len(args) == 0 {
 		args = json.RawMessage("{}")
 	}
-	as, err := a.Assess(ctx, args)
+	as, err := a.Label(ctx, args)
 	if err != nil {
 		return Outcome{Status: StatusError, Error: err.Error()}
 	}

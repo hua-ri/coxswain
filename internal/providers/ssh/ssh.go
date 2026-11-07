@@ -62,7 +62,8 @@ func (p *Provider) hostsList() *action.Action {
 				"tag": map[string]any{"type": "string", "description": "only hosts with this tag, as key=value"},
 			},
 		},
-		Assess: readOnly,
+		Annotations: action.Annotations{ReadOnly: true, Idempotent: true},
+		Label:       readOnly,
 		Run: func(_ context.Context, raw json.RawMessage) (any, error) {
 			var in struct{ Tag string }
 			if err := action.Decode(raw, &in); err != nil {
@@ -122,8 +123,9 @@ func (p *Provider) hostsImport() *action.Action {
 				"path": map[string]any{"type": "string", "description": "config file, default ~/.ssh/config"},
 			},
 		},
-		Positional: []string{"path"},
-		Assess: func(_ context.Context, raw json.RawMessage) (action.Assessment, error) {
+		Positional:  []string{"path"},
+		Annotations: action.Annotations{Idempotent: true},
+		Label: func(_ context.Context, raw json.RawMessage) (action.Assessment, error) {
 			f, imported, err := read(raw)
 			if err != nil {
 				return action.Assessment{}, err
@@ -206,8 +208,9 @@ func (p *Provider) hostsTag() *action.Action {
 			},
 			"required": []string{"host"},
 		},
-		Positional: []string{"host"},
-		Assess: func(_ context.Context, raw json.RawMessage) (action.Assessment, error) {
+		Positional:  []string{"host"},
+		Annotations: action.Annotations{Destructive: true, Idempotent: true},
+		Label: func(_ context.Context, raw json.RawMessage) (action.Assessment, error) {
 			var in tagInput
 			if err := action.Decode(raw, &in); err != nil {
 				return action.Assessment{}, err
@@ -279,12 +282,14 @@ type execInput struct {
 
 // ExecOutput is the result of ssh.exec.
 type ExecOutput struct {
-	Host       string        `json:"host"`
-	ExitCode   int           `json:"exit_code"`
-	Stdout     shaper.Shaped `json:"stdout"`
-	Stderr     shaper.Shaped `json:"stderr"`
-	DurationMs int64         `json:"duration_ms"`
-	Capped     bool          `json:"capture_truncated,omitempty"`
+	Host       string            `json:"host"`
+	HostNote   string            `json:"host_note,omitempty"`
+	HostTags   map[string]string `json:"host_tags,omitempty"`
+	ExitCode   int               `json:"exit_code"`
+	Stdout     shaper.Shaped     `json:"stdout"`
+	Stderr     shaper.Shaped     `json:"stderr"`
+	DurationMs int64             `json:"duration_ms"`
+	Capped     bool              `json:"capture_truncated,omitempty"`
 }
 
 // PrintCLI writes the remote output as-is and returns the remote exit code.
@@ -302,7 +307,9 @@ func (p *Provider) exec() *action.Action {
 			"Good for inspection: df -h, free -m, journalctl -u X -n 200, systemctl status X, ss -lntp. " +
 			"Do not start interactive programs or follow logs (tail -f); " +
 			"raise timeout_sec for slow commands; a timed-out command may keep running on the host. " +
-			"Use sudo -n, never a password prompt. Respect the host's note.",
+			"Use sudo -n, never a password prompt. " +
+			"Hosts tagged env=prod are production: confirm with the user before changing them. " +
+			"Respect the host note.",
 		Input: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -312,9 +319,10 @@ func (p *Provider) exec() *action.Action {
 			},
 			"required": []string{"host", "command"},
 		},
-		Positional: []string{"host", "command"},
-		RestArgs:   true,
-		Assess: func(_ context.Context, raw json.RawMessage) (action.Assessment, error) {
+		Positional:  []string{"host", "command"},
+		RestArgs:    true,
+		Annotations: action.Annotations{Destructive: true, OpenWorld: true},
+		Label: func(_ context.Context, raw json.RawMessage) (action.Assessment, error) {
 			var in execInput
 			if err := action.Decode(raw, &in); err != nil {
 				return action.Assessment{}, err
@@ -362,7 +370,7 @@ func (p *Provider) exec() *action.Action {
 			if a, ok := action.ActorFrom(ctx); ok && a.Kind == action.Human {
 				lim = humanLimits
 			}
-			out := ExecOutput{Host: h.Name, ExitCode: res.ExitCode, Capped: res.Truncated,
+			out := ExecOutput{Host: h.Name, HostNote: h.Note, HostTags: h.Tags, ExitCode: res.ExitCode, Capped: res.Truncated,
 				DurationMs: time.Since(start).Milliseconds()}
 			if out.Stdout, err = p.Artifacts.Shape(res.Stdout, lim); err != nil {
 				return nil, err

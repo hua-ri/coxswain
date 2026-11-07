@@ -32,7 +32,7 @@ func (r Risk) String() string {
 
 func (r Risk) MarshalText() ([]byte, error) { return []byte(r.String()), nil }
 
-// ActorKind tells humans and agents apart; policy treats them differently.
+// ActorKind tells humans and agents apart; agents get shaped output.
 type ActorKind string
 
 const (
@@ -49,20 +49,29 @@ type Actor struct {
 
 func (a Actor) String() string { return string(a.Kind) + ":" + a.Name }
 
-// Target is an object an invocation affects. Tags drive policy (env=prod).
+// Target is an object an invocation affects, with its tags (env=prod).
 type Target struct {
 	Kind string            `json:"kind"`
 	ID   string            `json:"id"`
 	Tags map[string]string `json:"tags,omitempty"`
 }
 
-// Assessment is what an Action reports about one concrete invocation
-// before it runs: how risky it is, what it touches, and what to show
-// a human who must approve it.
+// Assessment describes one concrete invocation before it runs: how risky
+// it is, what it touches, and a one-line preview. It is purely a label for
+// the audit log and the activity stream; nothing is blocked on it.
 type Assessment struct {
 	Risk    Risk
 	Targets []Target
 	Preview string
+}
+
+// Annotations are static hints about a tool, passed to agents (MCP tool
+// annotations) so their own permission settings can decide whether to ask.
+type Annotations struct {
+	ReadOnly    bool `json:"read_only"`   // does not modify anything
+	Destructive bool `json:"destructive"` // may change or delete state
+	Idempotent  bool `json:"idempotent"`  // repeating a call has no further effect
+	OpenWorld   bool `json:"open_world"`  // reaches outside Coxswain (remote hosts)
 }
 
 // Action is one capability.
@@ -80,9 +89,11 @@ type Action struct {
 	// RestArgs makes the last Positional (a string) collect all remaining
 	// arguments joined by spaces, e.g. `cox ssh exec web df -h`. Flags must
 	// then come before the positionals.
-	RestArgs bool
-	Assess   func(ctx context.Context, args json.RawMessage) (Assessment, error)
-	Run      func(ctx context.Context, args json.RawMessage) (any, error)
+	RestArgs    bool
+	Annotations Annotations
+	// Label describes one invocation for the audit log (risk, targets).
+	Label func(ctx context.Context, args json.RawMessage) (Assessment, error)
+	Run   func(ctx context.Context, args json.RawMessage) (any, error)
 }
 
 var idPattern = regexp.MustCompile(`^[a-z][a-z0-9]*(\.[a-z][a-z0-9_]*)+$`)
@@ -106,8 +117,8 @@ func (r *Registry) Register(a *Action) {
 	if a.Input == nil || a.Input["type"] != "object" {
 		panic(fmt.Sprintf("action %q: Input must be a JSON Schema with type object", a.ID))
 	}
-	if a.Assess == nil || a.Run == nil {
-		panic(fmt.Sprintf("action %q: Assess and Run are required", a.ID))
+	if a.Label == nil || a.Run == nil {
+		panic(fmt.Sprintf("action %q: Label and Run are required", a.ID))
 	}
 	r.actions[a.ID] = a
 }

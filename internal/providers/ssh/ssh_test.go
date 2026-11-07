@@ -14,6 +14,7 @@ import (
 	"github.com/hua-ri/coxswain/internal/engine"
 	"github.com/hua-ri/coxswain/internal/eventlog"
 	"github.com/hua-ri/coxswain/internal/inventory"
+	"github.com/hua-ri/coxswain/internal/providers/artifact"
 	"github.com/hua-ri/coxswain/internal/shaper"
 	"github.com/hua-ri/coxswain/internal/sshx"
 	"github.com/hua-ri/coxswain/internal/sshx/sshtest"
@@ -134,13 +135,13 @@ func importArgs(t *testing.T, path string) json.RawMessage {
 	return b
 }
 
-func TestImportAssess(t *testing.T) {
+func TestImportLabel(t *testing.T) {
 	e, srv := setup(t)
 	a, _ := e.Registry.Get("ssh.hosts.import")
 	dir := t.TempDir()
 	cfg := filepath.Join(dir, "config")
 	os.WriteFile(cfg, []byte(fmt.Sprintf("Host dev\n  HostName %s\n  Port %d\nHost fresh\n  HostName 192.0.2.9\n  User ops\n", srv.Host, srv.Port)), 0o600)
-	as, err := a.Assess(context.Background(), importArgs(t, cfg))
+	as, err := a.Label(context.Background(), importArgs(t, cfg))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,9 +162,45 @@ func TestImportAssess(t *testing.T) {
 		fmt.Fprintf(&many, "Host n%02d\n  HostName 192.0.2.%d\n", i, i)
 	}
 	os.WriteFile(cfg, []byte(many.String()), 0o600)
-	as, _ = a.Assess(context.Background(), importArgs(t, cfg))
+	as, _ = a.Label(context.Background(), importArgs(t, cfg))
 	if !strings.Contains(as.Preview, "add n19 -> 192.0.2.19:22") || strings.Contains(as.Preview, "n20") ||
 		!strings.HasSuffix(as.Preview, "…") {
 		t.Fatalf("capped preview: %s", as.Preview)
+	}
+}
+
+func TestAnnotations(t *testing.T) {
+	e, _ := setup(t)
+	artifact.Register(e.Registry, shaper.NewArtifacts(t.TempDir()))
+	want := map[string]action.Annotations{
+		"ssh.hosts.list":   {ReadOnly: true, Idempotent: true},
+		"ssh.hosts.import": {Idempotent: true},
+		"ssh.hosts.tag":    {Destructive: true, Idempotent: true},
+		"ssh.exec":         {Destructive: true, OpenWorld: true},
+		"artifact.read":    {ReadOnly: true, Idempotent: true},
+	}
+	for id, w := range want {
+		a, ok := e.Registry.Get(id)
+		if !ok || a.Annotations != w {
+			t.Errorf("%s: got %+v want %+v", id, a.Annotations, w)
+		}
+	}
+	if a, _ := e.Registry.Get("ssh.exec"); !strings.Contains(a.Description, "env=prod are production: confirm with the user") ||
+		!strings.Contains(a.Description, "Respect the host note.") {
+		t.Errorf("ssh.exec description: %s", a.Description)
+	}
+}
+
+func TestExecReturnsHostNoteAndTags(t *testing.T) {
+	e, _ := setup(t)
+	e.Invoke(context.Background(), human, "ssh.hosts.tag", json.RawMessage(`{"host":"prod","note":"read only"}`))
+	out := e.Invoke(context.Background(), agent, "ssh.exec", execArgs("prod", "true"))
+	res := out.Result.(ExecOutput)
+	if res.HostNote != "read only" || res.HostTags["env"] != "prod" {
+		t.Fatalf("%+v", res)
+	}
+	b, _ := json.Marshal(res)
+	if !strings.Contains(string(b), `"host_note":"read only"`) || !strings.Contains(string(b), `"host_tags":{"env":"prod"}`) {
+		t.Fatalf("json: %s", b)
 	}
 }

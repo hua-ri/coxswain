@@ -26,8 +26,9 @@ func Register(r *action.Registry, store *shaper.Artifacts) {
 			},
 			"required": []string{"id"},
 		},
-		Positional: []string{"id"},
-		Assess: func(context.Context, json.RawMessage) (action.Assessment, error) {
+		Positional:  []string{"id"},
+		Annotations: action.Annotations{ReadOnly: true, Idempotent: true},
+		Label: func(context.Context, json.RawMessage) (action.Assessment, error) {
 			return action.Assessment{Risk: action.Read}, nil
 		},
 		Run: func(_ context.Context, raw json.RawMessage) (any, error) {

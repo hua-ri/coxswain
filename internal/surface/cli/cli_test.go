@@ -27,7 +27,7 @@ func newEngine(t *testing.T) *engine.Engine {
 		}},
 		Positional: []string{"name", "words"},
 		RestArgs:   true,
-		Assess: func(context.Context, json.RawMessage) (action.Assessment, error) {
+		Label: func(context.Context, json.RawMessage) (action.Assessment, error) {
 			return action.Assessment{Risk: action.Destructive}, nil
 		},
 		Run: func(_ context.Context, raw json.RawMessage) (any, error) {
@@ -83,7 +83,7 @@ func TestFlagsAfterPositionalWithoutRest(t *testing.T) {
 		ID: "demo.tag", Input: map[string]any{"type": "object", "properties": map[string]any{
 			"host": map[string]any{"type": "string"}, "set": map[string]any{"type": "array"}}},
 		Positional: []string{"host"},
-		Assess:     func(context.Context, json.RawMessage) (action.Assessment, error) { return action.Assessment{}, nil },
+		Label:      func(context.Context, json.RawMessage) (action.Assessment, error) { return action.Assessment{}, nil },
 		Run: func(_ context.Context, raw json.RawMessage) (any, error) {
 			var m map[string]any
 			json.Unmarshal(raw, &m)

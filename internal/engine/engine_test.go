@@ -23,7 +23,7 @@ func newEngine(t *testing.T) (*Engine, *int) {
 	reg.Register(&action.Action{
 		ID:    "test.run",
 		Input: map[string]any{"type": "object"},
-		Assess: func(_ context.Context, raw json.RawMessage) (action.Assessment, error) {
+		Label: func(_ context.Context, raw json.RawMessage) (action.Assessment, error) {
 			var in struct {
 				Risk string `json:"risk"`
 				Prod bool   `json:"prod"`

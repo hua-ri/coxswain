@@ -10,7 +10,7 @@ func testAction(id string) *Action {
 	return &Action{
 		ID:    id,
 		Input: map[string]any{"type": "object"},
-		Assess: func(context.Context, json.RawMessage) (Assessment, error) {
+		Label: func(context.Context, json.RawMessage) (Assessment, error) {
 			return Assessment{Risk: Read}, nil
 		},
 		Run: func(context.Context, json.RawMessage) (any, error) { return "ok", nil },
@@ -35,6 +35,7 @@ func TestRegistryRejectsBadActions(t *testing.T) {
 		"bad id":    testAction("Exec"),
 		"no schema": func() *Action { a := testAction("a.b"); a.Input = nil; return a }(),
 		"no run":    func() *Action { a := testAction("a.b"); a.Run = nil; return a }(),
+		"no label":  func() *Action { a := testAction("a.b"); a.Label = nil; return a }(),
 	}
 	for name, a := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -62,6 +63,13 @@ func TestRegistryRejectsDuplicate(t *testing.T) {
 func TestRiskText(t *testing.T) {
 	b, _ := json.Marshal(map[string]Risk{"r": Destructive})
 	if string(b) != `{"r":"destructive"}` {
+		t.Fatalf("got %s", b)
+	}
+}
+
+func TestAnnotationsJSON(t *testing.T) {
+	b, _ := json.Marshal(Annotations{ReadOnly: true, Idempotent: true})
+	if string(b) != `{"read_only":true,"destructive":false,"idempotent":true,"open_world":false}` {
 		t.Fatalf("got %s", b)
 	}
 }

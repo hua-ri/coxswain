@@ -20,7 +20,7 @@ func setup(t *testing.T) (*engine.Engine, *sdk.ClientSession) {
 	reg.Register(&action.Action{
 		ID: "demo.do", Summary: "demo", Description: "demo action",
 		Input: map[string]any{"type": "object", "properties": map[string]any{"danger": map[string]any{"type": "boolean"}}},
-		Assess: func(_ context.Context, raw json.RawMessage) (action.Assessment, error) {
+		Label: func(_ context.Context, raw json.RawMessage) (action.Assessment, error) {
 			var in struct{ Danger bool }
 			action.Decode(raw, &in)
 			if in.Danger {
