@@ -332,6 +332,8 @@ kimi mcp add --transport stdio cox -- cox mcp --actor kimi
 | `auto_review` | 规则命中时交给独立审查模型：allow 直接执行 / revise 退回改写 / ask_user 或超时转人工 / deny 拒绝 | 想少被打扰的场景 |
 | `auto` | 全部放行，只记审计 | 仅限沙箱/测试环境，UI 用警示色标出 |
 
+**M0 威胁模型：** M0 防的是**通过 cox 自身工具（MCP / CLI）操作的、出错或被提示注入的 agent**：风险评级、审批、审计都只对经过 cox 的调用生效。它**不是**针对“拥有不受限 shell、以同一用户身份运行的 agent”的安全边界——这样的 agent 可以直接改 `~/.coxswain` 或直接用 `ssh`。所以要把 agent 放进沙箱、不给它裸 `ssh`；审批是护栏，不是沙箱。没有交互终端的调用方一律按 agent（`unknown`）处理；`cox approve` 只认 macOS 对话框里的按钮，不认键入的 `y`。
+
 固定约束（任何档位都生效）：Read 一律放行；自动化 actor 只允许 Read；Destructive 在 prod 下总是 ask，并需要二次确认（Touch ID）；被拒绝时给 agent 回填标准的“不要绕过”文本。
 
 **审批流程的设计要点：**

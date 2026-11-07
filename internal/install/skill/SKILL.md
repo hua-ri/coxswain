@@ -39,3 +39,4 @@ cox -o json approvals wait <approval-id>
 4. If an action is denied, do not reach the same result another way. Offer a safer alternative or stop.
 5. Use `sudo -n`, never a password prompt. Do not start interactive programs or `tail -f`.
 6. Outputs over ~200 lines are truncated; read the rest with `artifact_read` instead of re-running.
+7. Do not edit files under ~/.coxswain and do not use raw ssh to reach managed hosts.
