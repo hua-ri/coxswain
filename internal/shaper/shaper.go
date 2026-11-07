@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 type Limits struct {
@@ -111,14 +112,18 @@ func splitLines(s string) []string {
 }
 
 // clip keeps leading lines until maxBytes is reached. A first line that
-// alone exceeds maxBytes is cut.
+// alone exceeds maxBytes is cut at a rune boundary.
 func clip(lines []string, maxBytes int) []string {
 	n := 0
 	for i, l := range lines {
 		n += len(l) + 1
 		if n > maxBytes {
 			if i == 0 {
-				return []string{l[:maxBytes] + "…"}
+				cut := maxBytes
+				for cut > 0 && cut < len(l) && !utf8.RuneStart(l[cut]) {
+					cut--
+				}
+				return []string{l[:cut] + "…"}
 			}
 			return lines[:i]
 		}
@@ -127,7 +132,7 @@ func clip(lines []string, maxBytes int) []string {
 }
 
 // clipTail keeps trailing lines until maxBytes is reached. A last line
-// that alone exceeds maxBytes is cut.
+// that alone exceeds maxBytes is cut at a rune boundary.
 func clipTail(lines []string, maxBytes int) []string {
 	n := 0
 	for i := len(lines) - 1; i >= 0; i-- {
@@ -135,7 +140,11 @@ func clipTail(lines []string, maxBytes int) []string {
 		if n > maxBytes {
 			if i == len(lines)-1 {
 				l := lines[i]
-				return []string{"…" + l[len(l)-maxBytes:]}
+				start := len(l) - maxBytes
+				for start < len(l) && !utf8.RuneStart(l[start]) {
+					start++
+				}
+				return []string{"…" + l[start:]}
 			}
 			return lines[i+1:]
 		}

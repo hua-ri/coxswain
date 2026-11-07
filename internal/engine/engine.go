@@ -202,7 +202,7 @@ func (e *Engine) run(ctx context.Context, actor action.Actor, a *action.Action, 
 	return out
 }
 
-// ErrStatus lets surfaces map an Outcome to a Go error.
+// Err lets surfaces map an Outcome to a Go error.
 func (o Outcome) Err() error {
 	switch o.Status {
 	case StatusOK:

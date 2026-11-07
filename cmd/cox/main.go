@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -119,14 +120,22 @@ func mcpCommand(e *engine.Engine) *cobra.Command {
 		Short: "Serve Coxswain tools to an AI agent over MCP (stdio)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			var b [4]byte
-			rand.Read(b[:])
-			who := action.Actor{Kind: action.Agent, Name: name, Session: hex.EncodeToString(b[:])}
+			who := action.Actor{Kind: action.Agent, Name: name, Session: sessionID(rand.Read)}
 			return mcpsurf.NewServer(e, who, dialog(), version).Run(cmd.Context(), &sdk.StdioTransport{})
 		},
 	}
 	cmd.Flags().StringVar(&name, "actor", "mcp", "agent name recorded in the audit log (claude-code, codex, kimi)")
 	return cmd
+}
+
+// sessionID returns a random id for one `cox mcp` process, or a
+// timestamp-based one if the random source fails.
+func sessionID(read func([]byte) (int, error)) string {
+	var b [4]byte
+	if _, err := read(b[:]); err != nil {
+		return strconv.FormatInt(time.Now().UnixNano(), 36)
+	}
+	return hex.EncodeToString(b[:])
 }
 
 func initCommand(app *cli.App, userHome string) *cobra.Command {

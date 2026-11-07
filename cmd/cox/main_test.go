@@ -124,3 +124,12 @@ func TestMCPEndToEnd(t *testing.T) {
 		t.Fatalf("events: %s", b)
 	}
 }
+
+func TestSessionID(t *testing.T) {
+	if id := sessionID(func(b []byte) (int, error) { return 0, fmt.Errorf("no entropy") }); id == "" || id == "00000000" {
+		t.Fatalf("fallback id %q", id)
+	}
+	if id := sessionID(func(b []byte) (int, error) { copy(b, []byte{1, 2, 3, 4}); return 4, nil }); id != "01020304" {
+		t.Fatalf("id %q", id)
+	}
+}

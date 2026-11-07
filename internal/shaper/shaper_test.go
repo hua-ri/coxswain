@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestShapeSmallUnchanged(t *testing.T) {
@@ -58,5 +59,20 @@ func TestShapeRespectsBytes(t *testing.T) {
 func TestReadRejectsTraversal(t *testing.T) {
 	if _, err := NewArtifacts(t.TempDir()).Read("../x", "", 0, 0); err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+// TestClipKeepsRunes: a long line is never cut inside a UTF-8 sequence.
+func TestClipKeepsRunes(t *testing.T) {
+	line := strings.Repeat("中文", 10) // 3 bytes per rune
+	for _, max := range []int{1, 2, 3, 4, 5, 7, 11, len(line)} {
+		head := clip([]string{line}, max)[0]
+		tail := clipTail([]string{line}, max)[0]
+		if !utf8.ValidString(head) || !utf8.ValidString(tail) {
+			t.Fatalf("max %d: head %q tail %q", max, head, tail)
+		}
+		if len(strings.TrimSuffix(head, "…")) > max || len(strings.TrimPrefix(tail, "…")) > max {
+			t.Fatalf("max %d: too long: %q %q", max, head, tail)
+		}
 	}
 }
