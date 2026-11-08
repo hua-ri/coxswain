@@ -30,6 +30,26 @@ const (
 
 	TerminalOpened = "terminal.opened" // Actor is the terminal's owner
 	TerminalClosed = "terminal.closed"
+
+	// Transfers (file.upload / file.download). Actor is the owner, Detail
+	// the transfer. Progress is only published live (see Publish), at
+	// most once a second per transfer; a cancelled transfer fails with
+	// Reason saying who cancelled it.
+	TransferStarted  = "transfer.started"
+	TransferProgress = "transfer.progress"
+	TransferFinished = "transfer.finished"
+	TransferFailed   = "transfer.failed"
+
+	// Tunnels. Actor is the owner, Detail the tunnel.
+	TunnelOpened       = "tunnel.opened"
+	TunnelReconnecting = "tunnel.reconnecting" // the SSH connection broke; Error says why
+	TunnelReconnected  = "tunnel.reconnected"
+	TunnelClosed       = "tunnel.closed" // Reason says why
+
+	// Batch runs (ssh.batch). Actor is the caller.
+	BatchStarted  = "batch.started"
+	BatchHostDone = "batch.host_done"
+	BatchFinished = "batch.finished"
 )
 
 type Event struct {
@@ -46,6 +66,12 @@ type Event struct {
 	Error      string          `json:"error,omitempty"`
 	Terminal   string          `json:"terminal,omitempty"`  // terminal.* events: the session id
 	ExitCode   *int            `json:"exit_code,omitempty"` // terminal.closed: the shell's exit code, if known
+	Transfer   string          `json:"transfer,omitempty"`  // transfer.* events: the transfer id
+	Tunnel     string          `json:"tunnel,omitempty"`    // tunnel.* events: the tunnel id
+	Batch      string          `json:"batch,omitempty"`     // batch.* events: the batch run id
+	// Detail is the object the event is about (a transfer, a tunnel, a
+	// batch host result), as JSON.
+	Detail json.RawMessage `json:"detail,omitempty"`
 }
 
 // subscriberBuffer is how many events a subscriber may fall behind before
@@ -116,6 +142,17 @@ func (l *Log) Append(ev Event) error {
 	defer f.Close()
 	_, err = f.Write(append(line, '\n'))
 	return err
+}
+
+// Publish delivers ev to subscribers without writing it to the audit log,
+// for live updates such as transfer progress.
+func (l *Log) Publish(ev Event) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if ev.Time.IsZero() {
+		ev.Time = l.Now()
+	}
+	l.deliver(ev)
 }
 
 // deliver sends ev to every subscriber without blocking. l.mu is held.

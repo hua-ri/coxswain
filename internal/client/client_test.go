@@ -20,6 +20,12 @@ import (
 
 func setup(t *testing.T) (*Client, *clients.Store) {
 	t.Helper()
+	return setupWith(t, nil)
+}
+
+// setupWith lets configure change the server's configuration.
+func setupWith(t *testing.T, configure func(*server.Config)) (*Client, *clients.Store) {
+	t.Helper()
 	reg := action.NewRegistry()
 	reg.Register(&action.Action{
 		ID: "demo.echo", Summary: "echo", Input: map[string]any{"type": "object"},
@@ -35,11 +41,15 @@ func setup(t *testing.T) (*Client, *clients.Store) {
 	})
 	dir := t.TempDir()
 	store := clients.NewStore(filepath.Join(dir, "clients.json"))
-	srv := httptest.NewServer(server.New(server.Config{
+	cfg := server.Config{
 		Engine:  &engine.Engine{Registry: reg, Events: eventlog.Open(filepath.Join(dir, "events"))},
 		Clients: &clients.Authorizer{Store: store},
 		Token:   "tok", Version: "v",
-	}))
+	}
+	if configure != nil {
+		configure(&cfg)
+	}
+	srv := httptest.NewServer(server.New(cfg))
 	t.Cleanup(srv.Close)
 	return New(instance.Info{Addr: strings.TrimPrefix(srv.URL, "http://"), Token: "tok"}, "cli"), store
 }

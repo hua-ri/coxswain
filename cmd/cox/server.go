@@ -28,10 +28,11 @@ func serverCommand(coxHome, userHome string) *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			var pool *sshx.Pool
-			e, terms := newEngine(coxHome, userHome, func(d *sshx.Dialer) *sshx.Pool {
+			svc := newEngine(coxHome, userHome, func(d *sshx.Dialer) *sshx.Pool {
 				pool = &sshx.Pool{Dialer: d}
 				return pool
 			})
+			e := svc.Engine
 			defer pool.Close()
 
 			events, stop := e.Events.Subscribe()
@@ -41,7 +42,8 @@ func serverCommand(coxHome, userHome string) *cobra.Command {
 
 			err := server.Run(cmd.Context(), server.Config{
 				Engine:    e,
-				Terminals: terms,
+				Terminals: svc.Terminals,
+				Transfers: svc.Transfers,
 				Clients: &clients.Authorizer{
 					Store:  clients.NewStore(filepath.Join(coxHome, "clients.json")),
 					Ask:    clients.Dialog(authorizeTimeout),
@@ -67,8 +69,12 @@ func serverCommand(coxHome, userHome string) *cobra.Command {
 }
 
 // printEvents writes one line per audit event until the channel closes.
+// Transfer progress is left out.
 func printEvents(w io.Writer, events <-chan eventlog.Event) {
 	for ev := range events {
+		if ev.Type == eventlog.TransferProgress {
+			continue
+		}
 		fmt.Fprintln(w, eventLine(ev))
 	}
 }
@@ -84,10 +90,15 @@ func eventLine(ev eventlog.Event) string {
 	if ev.Actor != nil {
 		parts = append(parts, ev.Actor.String())
 	}
-	if t, ok := strings.CutPrefix(ev.Type, "terminal."); ok {
-		parts = append(parts, "terminal", ev.Terminal, t)
-		for _, tg := range ev.Targets {
-			parts = append(parts, tg.ID)
+	if kind, phase, ok := strings.Cut(ev.Type, "."); ok && kind != "action" {
+		id := map[string]string{"terminal": ev.Terminal, "transfer": ev.Transfer, "tunnel": ev.Tunnel, "batch": ev.Batch}[kind]
+		parts = append(parts, kind, id, phase)
+		if len(ev.Targets) > 3 {
+			parts = append(parts, fmt.Sprintf("%d hosts", len(ev.Targets)))
+		} else {
+			for _, tg := range ev.Targets {
+				parts = append(parts, tg.ID)
+			}
 		}
 		if ev.Reason != "" {
 			parts = append(parts, ev.Reason)
@@ -95,7 +106,11 @@ func eventLine(ev eventlog.Event) string {
 		if ev.ExitCode != nil {
 			parts = append(parts, fmt.Sprintf("(exit code %d)", *ev.ExitCode))
 		}
-		return confirm.Sanitize(strings.Join(parts, " "))
+		line := strings.Join(parts, " ")
+		if ev.Error != "" {
+			line += ": " + ev.Error
+		}
+		return confirm.Sanitize(line)
 	}
 	parts = append(parts, ev.Action)
 	phase := strings.TrimPrefix(ev.Type, "action.")

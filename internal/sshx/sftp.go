@@ -21,20 +21,20 @@ func Connect(ctx context.Context, pool *Pool, d *Dialer, h inventory.Host) (*Con
 	return conn, func(bool) { conn.Close() }, nil
 }
 
-// SFTP opens an SFTP session to h on a pooled connection (see Connect).
-// release closes the session and returns the connection; pass
-// broken=true if the session failed.
-func SFTP(ctx context.Context, pool *Pool, d *Dialer, h inventory.Host) (*sftp.Client, func(broken bool), error) {
+// SFTP opens an SFTP session to h on a pooled connection (see Connect),
+// which it also returns for running commands. release closes the session
+// and returns the connection; pass broken=true if the session failed.
+func SFTP(ctx context.Context, pool *Pool, d *Dialer, h inventory.Host) (*sftp.Client, *Conn, func(broken bool), error) {
 	conn, release, err := Connect(ctx, pool, d, h)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	c, err := sftp.NewClient(conn.Client)
 	if err != nil {
 		release(true)
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return c, func(broken bool) {
+	return c, conn, func(broken bool) {
 		c.Close()
 		release(broken)
 	}, nil

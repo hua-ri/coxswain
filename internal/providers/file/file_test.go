@@ -19,6 +19,7 @@ import (
 	"github.com/hua-ri/coxswain/internal/shaper"
 	"github.com/hua-ri/coxswain/internal/sshx"
 	"github.com/hua-ri/coxswain/internal/sshx/sshtest"
+	"github.com/hua-ri/coxswain/internal/transfer"
 )
 
 var (
@@ -49,7 +50,10 @@ func setup(t *testing.T) fixture {
 	pool := &sshx.Pool{Dialer: dialer}
 	t.Cleanup(func() { pool.Close() })
 	events := eventlog.Open(filepath.Join(dir, "events"))
-	p := &Provider{Hosts: hosts, Dialer: dialer, Pool: pool, Artifacts: shaper.NewArtifacts(filepath.Join(dir, "artifacts"))}
+	transfers := &transfer.Manager{Events: events}
+	t.Cleanup(transfers.CancelAll)
+	p := &Provider{Hosts: hosts, Dialer: dialer, Pool: pool, Artifacts: shaper.NewArtifacts(filepath.Join(dir, "artifacts")),
+		Transfers: transfers, DownloadDir: filepath.Join(dir, "downloads"), UserHome: dir}
 	reg := action.NewRegistry()
 	p.Register(reg)
 	return fixture{e: &engine.Engine{Registry: reg, Events: events}, p: p, srv: srv, home: dir}
@@ -106,10 +110,12 @@ func requested(t *testing.T, e *engine.Engine, id string) eventlog.Event {
 func TestAnnotations(t *testing.T) {
 	f := setup(t)
 	want := map[string]action.Annotations{
-		"file.list":  {ReadOnly: true, Idempotent: true, OpenWorld: true},
-		"file.stat":  {ReadOnly: true, Idempotent: true, OpenWorld: true},
-		"file.read":  {ReadOnly: true, Idempotent: true, OpenWorld: true},
-		"file.write": {Destructive: true, Idempotent: true, OpenWorld: true},
+		"file.list":     {ReadOnly: true, Idempotent: true, OpenWorld: true},
+		"file.stat":     {ReadOnly: true, Idempotent: true, OpenWorld: true},
+		"file.read":     {ReadOnly: true, Idempotent: true, OpenWorld: true},
+		"file.write":    {Destructive: true, Idempotent: true, OpenWorld: true},
+		"file.upload":   {Destructive: true, OpenWorld: true},
+		"file.download": {ReadOnly: true, OpenWorld: true},
 	}
 	for id, ann := range want {
 		a, ok := f.e.Registry.Get(id)

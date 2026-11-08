@@ -242,6 +242,12 @@ func TestEndToEnd(t *testing.T) {
 	if out, code := s.cox(t, "file", "read", "dev", "notes.txt"); code != 0 || out != "hi there\n" {
 		t.Fatalf("file read: %d %q", code, out)
 	}
+	if out, code := s.cox(t, "file", "download", "dev", "notes.txt"); code != 0 || !strings.Contains(out, `"status": "done"`) {
+		t.Fatalf("file download: %d %s", code, out)
+	}
+	if b, err := os.ReadFile(filepath.Join(s.coxHome, "downloads", "dev", "notes.txt")); err != nil || string(b) != "hi there\n" {
+		t.Fatalf("downloaded: %q %v", b, err)
+	}
 	dir := t.TempDir()
 	if out, code := s.cox(t, "ssh", "exec", "prod", "--", "rm", "-rf", dir); code != 0 {
 		t.Fatalf("destructive: %d %s", code, out)

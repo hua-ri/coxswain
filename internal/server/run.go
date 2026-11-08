@@ -86,6 +86,9 @@ func Run(ctx context.Context, cfg Config, home string) error {
 	case <-ctx.Done():
 	}
 	cfg.Engine.Cancel() // running actions end and are recorded as failed
+	if cfg.Transfers != nil {
+		cfg.Transfers.CancelAll() // any not started by an action
+	}
 	if cfg.Terminals != nil {
 		cfg.Terminals.CloseAll() // streams end with an exit event
 	}

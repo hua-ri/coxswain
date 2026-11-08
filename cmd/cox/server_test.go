@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -36,10 +37,30 @@ func TestEventLine(t *testing.T) {
 		{eventlog.Event{Time: at, Type: eventlog.TerminalClosed, Actor: kimi, Terminal: "t_0123456789ab",
 			Targets: []action.Target{{ID: "dev"}}, Reason: "closed by human:desktop"},
 			"09:05:07 agent:kimi terminal t_0123456789ab closed dev closed by human:desktop"},
+		{eventlog.Event{Time: at, Type: eventlog.TransferStarted, Actor: kimi, Transfer: "x_1", Targets: []action.Target{{ID: "dev"}}},
+			"09:05:07 agent:kimi transfer x_1 started dev"},
+		{eventlog.Event{Time: at, Type: eventlog.TransferFailed, Actor: kimi, Transfer: "x_1", Targets: []action.Target{{ID: "dev"}},
+			Reason: "cancelled by human:desktop"},
+			"09:05:07 agent:kimi transfer x_1 failed dev cancelled by human:desktop"},
+		{eventlog.Event{Time: at, Type: eventlog.TransferFailed, Actor: kimi, Transfer: "x_1", Targets: []action.Target{{ID: "dev"}},
+			Error: "disk full"},
+			"09:05:07 agent:kimi transfer x_1 failed dev: disk full"},
 	}
 	for _, c := range cases {
 		if got := eventLine(c.ev); got != c.want {
 			t.Errorf("got  %q\nwant %q", got, c.want)
 		}
+	}
+}
+
+func TestPrintEventsSkipsProgress(t *testing.T) {
+	ch := make(chan eventlog.Event, 2)
+	ch <- eventlog.Event{Type: eventlog.TransferProgress, Transfer: "x_1"}
+	ch <- eventlog.Event{Type: eventlog.TransferFinished, Transfer: "x_1"}
+	close(ch)
+	var b strings.Builder
+	printEvents(&b, ch)
+	if strings.Contains(b.String(), "progress") || !strings.Contains(b.String(), "transfer x_1 finished") {
+		t.Fatalf("%q", b.String())
 	}
 }

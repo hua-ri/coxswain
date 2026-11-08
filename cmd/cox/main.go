@@ -31,6 +31,7 @@ import (
 	"github.com/hua-ri/coxswain/internal/sshx"
 	"github.com/hua-ri/coxswain/internal/surface/cli"
 	"github.com/hua-ri/coxswain/internal/term"
+	"github.com/hua-ri/coxswain/internal/transfer"
 )
 
 // version is set at release time with -ldflags "-X main.version=…".
@@ -137,13 +138,19 @@ func commandName(args []string) string {
 // newRegistry returns every action, e.g. to offer the tools while the
 // server is down.
 func newRegistry(coxHome, userHome string) *action.Registry {
-	e, _ := newEngine(coxHome, userHome, nil)
-	return e.Registry
+	return newEngine(coxHome, userHome, nil).Engine.Registry
+}
+
+// services are the engine and the stateful things the server shares.
+type services struct {
+	Engine    *engine.Engine
+	Terminals *term.Manager
+	Transfers *transfer.Manager
 }
 
 // newEngine builds the engine with every provider, and the terminal
-// sessions the server shares. pool may be nil.
-func newEngine(coxHome, userHome string, pool func(*sshx.Dialer) *sshx.Pool) (*engine.Engine, *term.Manager) {
+// sessions and transfers the server shares. pool may be nil.
+func newEngine(coxHome, userHome string, pool func(*sshx.Dialer) *sshx.Pool) services {
 	hosts := inventory.NewStore(filepath.Join(coxHome, "hosts.json"))
 	artifacts := shaper.NewArtifacts(filepath.Join(coxHome, "artifacts"))
 	ssh := filepath.Join(userHome, ".ssh")
@@ -163,6 +170,8 @@ func newEngine(coxHome, userHome string, pool func(*sshx.Dialer) *sshx.Pool) (*e
 	p.Register(reg)
 	artifact.Register(reg, artifacts)
 	(&terminal.Provider{Hosts: hosts, Terms: terms, Artifacts: artifacts}).Register(reg)
-	(&file.Provider{Hosts: hosts, Dialer: dialer, Pool: p.Pool, Artifacts: artifacts}).Register(reg)
-	return &engine.Engine{Registry: reg, Events: events}, terms
+	transfers := &transfer.Manager{Events: events}
+	(&file.Provider{Hosts: hosts, Dialer: dialer, Pool: p.Pool, Artifacts: artifacts, Transfers: transfers,
+		DownloadDir: filepath.Join(coxHome, "downloads"), UserHome: userHome}).Register(reg)
+	return services{Engine: &engine.Engine{Registry: reg, Events: events}, Terminals: terms, Transfers: transfers}
 }

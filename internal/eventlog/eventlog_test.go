@@ -101,3 +101,19 @@ func TestCancelStopsDelivery(t *testing.T) {
 		t.Fatal("delivered after cancel")
 	}
 }
+
+// TestPublishIsLiveOnly: published events reach subscribers but not the
+// file (progress updates are not audit records).
+func TestPublishIsLiveOnly(t *testing.T) {
+	l := Open(t.TempDir())
+	ch, cancel := l.Subscribe()
+	defer cancel()
+	l.Publish(Event{Type: TransferProgress, Transfer: "x_1", Detail: []byte(`{"bytes":5}`)})
+	ev := <-ch
+	if ev.Type != TransferProgress || ev.Transfer != "x_1" || string(ev.Detail) != `{"bytes":5}` || ev.Time.IsZero() {
+		t.Fatalf("%+v", ev)
+	}
+	if got, err := l.Read(time.Now()); err != nil || len(got) != 0 {
+		t.Fatalf("published event was written: %v %v", got, err)
+	}
+}

@@ -13,7 +13,7 @@ func TestSFTPReusesPooledConnection(t *testing.T) {
 	p, h, srv := poolFor(t, time.Minute)
 	os.WriteFile(filepath.Join(srv.Root, "a.txt"), []byte("hello"), 0o644)
 	for range 2 {
-		c, release, err := SFTP(context.Background(), p, p.Dialer, h)
+		c, _, release, err := SFTP(context.Background(), p, p.Dialer, h)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -43,7 +43,7 @@ func TestSFTPStaysInRoot(t *testing.T) {
 	}
 	t.Cleanup(func() { os.Remove(outside) })
 	os.Symlink(outside, filepath.Join(srv.Root, "link"))
-	c, release, err := SFTP(context.Background(), p, p.Dialer, h)
+	c, _, release, err := SFTP(context.Background(), p, p.Dialer, h)
 	if err != nil {
 		t.Fatal(err)
 	}

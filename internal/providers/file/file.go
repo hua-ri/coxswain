@@ -25,6 +25,7 @@ import (
 	"github.com/hua-ri/coxswain/internal/policy"
 	"github.com/hua-ri/coxswain/internal/shaper"
 	"github.com/hua-ri/coxswain/internal/sshx"
+	"github.com/hua-ri/coxswain/internal/transfer"
 	"github.com/pkg/sftp"
 )
 
@@ -43,6 +44,13 @@ type Provider struct {
 	Dialer    *sshx.Dialer
 	Pool      *sshx.Pool // reuses connections if set (in `cox server`)
 	Artifacts *shaper.Artifacts
+	Transfers *transfer.Manager
+	// DownloadDir is where file.download saves files, one directory per
+	// host (<cox home>/downloads).
+	DownloadDir string
+	UserHome    string // for ~ in local paths
+
+	pace func(ctx context.Context) // tests: called before each chunk of a transfer
 }
 
 func (p *Provider) Register(r *action.Registry) {
@@ -50,6 +58,8 @@ func (p *Provider) Register(r *action.Registry) {
 	r.Register(p.stat())
 	r.Register(p.read())
 	r.Register(p.write())
+	r.Register(p.upload())
+	r.Register(p.download())
 }
 
 var (
@@ -137,16 +147,22 @@ func writeRisk(p string) action.Risk {
 // session opens SFTP to the host. The session is closed when ctx ends,
 // which aborts a call in progress.
 func (p *Provider) session(ctx context.Context, name string) (inventory.Host, *sftp.Client, func(broken bool), error) {
+	h, c, _, release, err := p.sessionConn(ctx, name)
+	return h, c, release, err
+}
+
+// sessionConn is session, also returning the connection.
+func (p *Provider) sessionConn(ctx context.Context, name string) (inventory.Host, *sftp.Client, *sshx.Conn, func(broken bool), error) {
 	h, err := p.Hosts.Get(name)
 	if err != nil {
-		return h, nil, nil, err
+		return h, nil, nil, nil, err
 	}
-	c, release, err := sshx.SFTP(ctx, p.Pool, p.Dialer, h)
+	c, conn, release, err := sshx.SFTP(ctx, p.Pool, p.Dialer, h)
 	if err != nil {
-		return h, nil, nil, err
+		return h, nil, nil, nil, err
 	}
 	stop := context.AfterFunc(ctx, func() { c.Close() })
-	return h, c, func(broken bool) {
+	return h, c, conn, func(broken bool) {
 		if !stop() {
 			broken = true // closed under a call
 		}

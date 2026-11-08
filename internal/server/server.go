@@ -17,6 +17,7 @@ import (
 	"github.com/hua-ri/coxswain/internal/eventlog"
 	"github.com/hua-ri/coxswain/internal/instance"
 	"github.com/hua-ri/coxswain/internal/term"
+	"github.com/hua-ri/coxswain/internal/transfer"
 )
 
 // ClientHeader names the calling client (cli, desktop, claude-code, …).
@@ -38,6 +39,9 @@ type Config struct {
 	// Terminals are the shared terminal sessions; nil disables
 	// /api/v1/terminals. Run closes them all on shutdown.
 	Terminals *term.Manager
+	// Transfers are the file transfers; nil disables /api/v1/transfers.
+	// Run cancels them all on shutdown.
+	Transfers *transfer.Manager
 	PID       int // reported by /healthz; defaults to this process
 	// Port to listen on (Run only); 0 reuses the previous port if free.
 	Port int
@@ -74,6 +78,7 @@ func New(cfg Config) http.Handler {
 	api.HandleFunc("DELETE /api/v1/clients/{name}", s.builtInOnly(s.revokeClient))
 	api.HandleFunc("PUT /api/v1/clients/{name}", s.builtInOnly(s.allowClient))
 	s.terminalRoutes(api)
+	s.transferRoutes(api)
 	api.Handle("/mcp", newMCPHandler(cfg))
 
 	root := http.NewServeMux()

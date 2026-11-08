@@ -19,6 +19,7 @@ import (
 	"github.com/hua-ri/coxswain/internal/instance"
 	"github.com/hua-ri/coxswain/internal/server"
 	"github.com/hua-ri/coxswain/internal/term"
+	"github.com/hua-ri/coxswain/internal/transfer"
 )
 
 // Client calls one server as one client name (cli, desktop).
@@ -205,6 +206,23 @@ func (c *Client) ResizeTerminal(ctx context.Context, id string, cols, rows int) 
 // CloseTerminal ends a terminal.
 func (c *Client) CloseTerminal(ctx context.Context, id string) error {
 	return c.call(ctx, http.MethodDelete, "/api/v1/terminals/"+url.PathEscape(id), nil, nil)
+}
+
+// Transfers lists the running and recently finished file transfers.
+func (c *Client) Transfers(ctx context.Context) ([]transfer.Transfer, error) {
+	var out []transfer.Transfer
+	return out, c.call(ctx, http.MethodGet, "/api/v1/transfers", nil, &out)
+}
+
+// Transfer returns one transfer.
+func (c *Client) Transfer(ctx context.Context, id string) (transfer.Transfer, error) {
+	var out transfer.Transfer
+	return out, c.call(ctx, http.MethodGet, "/api/v1/transfers/"+url.PathEscape(id), nil, &out)
+}
+
+// CancelTransfer stops a running transfer.
+func (c *Client) CancelTransfer(ctx context.Context, id string) error {
+	return c.call(ctx, http.MethodDelete, "/api/v1/transfers/"+url.PathEscape(id), nil, nil)
 }
 
 // ErrNoTerminal is returned by TerminalStream for an unknown terminal.

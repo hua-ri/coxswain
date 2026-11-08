@@ -207,7 +207,7 @@ func importHosts(cmd *cobra.Command, coxHome, userHome string) (importResult, er
 		}
 		raw = out.Result
 	case errors.Is(err, instance.ErrNotRunning):
-		e, _ := newEngine(coxHome, userHome, nil)
+		e := newEngine(coxHome, userHome, nil).Engine
 		out := e.Invoke(cmd.Context(), server.Actor("cli"), "ssh.hosts.import", nil)
 		if out.Status != engine.StatusOK {
 			return res, errors.New(out.Error)
