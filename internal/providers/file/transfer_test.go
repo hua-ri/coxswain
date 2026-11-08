@@ -92,7 +92,7 @@ func TestUploadResume(t *testing.T) {
 	// catches it and the target is not touched.
 	os.WriteFile(filepath.Join(f.srv.Root, "bad.bin"), []byte("old"), 0o644)
 	os.WriteFile(filepath.Join(f.srv.Root, ".bad.bin.cox-upload"), make([]byte, 1000), 0o600)
-	mustFail(t, invoke(t, f.e, codex, "file.upload", map[string]any{"host": "prod", "local_path": src, "remote_path": "bad.bin", "resume": true}), "checksum mismatch")
+	mustFail(t, invoke(t, f.e, codex, "file.upload", map[string]any{"host": "prod", "local_path": src, "remote_path": "bad.bin", "resume": true}), "without resume")
 	if got, _ := os.ReadFile(filepath.Join(f.srv.Root, "bad.bin")); string(got) != "old" {
 		t.Fatalf("target changed: %q", got)
 	}
@@ -128,7 +128,7 @@ func TestUploadIsAtomic(t *testing.T) {
 		t.Fatalf("target changed during the upload: %d bytes", len(got))
 	}
 	f.p.Transfers.Cancel(f.p.Transfers.List()[0].ID, desktop)
-	mustFail(t, <-done, "cancelled")
+	mustFail(t, <-done, ".app.bin.cox-upload") // where the partial upload is
 	if got, _ := os.ReadFile(target); string(got) != "old" {
 		t.Fatalf("cancelled upload changed the target: %d bytes", len(got))
 	}
@@ -356,5 +356,43 @@ func TestRevokeStopsTransfer(t *testing.T) {
 	}
 	if list := f.p.Transfers.List(); list[0].Status != transfer.Cancelled {
 		t.Fatalf("%+v", list)
+	}
+}
+
+// TestConcurrentUploadsRefused: a second upload to a target that is
+// being uploaded is refused; other targets are fine.
+func TestConcurrentUploadsRefused(t *testing.T) {
+	f := setup(t)
+	started := paused(f)
+	src := local(t, f, data(4<<20))
+	done := make(chan engine.Outcome, 1)
+	go func() {
+		done <- invoke(t, f.e, codex, "file.upload", map[string]any{"host": "prod", "local_path": src, "remote_path": "app.bin"})
+	}()
+	<-started
+	mustFail(t, invoke(t, f.e, desktop, "file.upload", map[string]any{"host": "prod", "local_path": src, "remote_path": "./app.bin"}), "already being uploaded")
+	f.p.Transfers.Cancel(f.p.Transfers.List()[0].ID, desktop)
+	<-done
+	f.p.pace = nil
+	mustOK[TransferOutput](t, invoke(t, f.e, desktop, "file.upload", map[string]any{"host": "prod", "local_path": src, "remote_path": "app.bin"}))
+}
+
+// TestUploadTempSymlink: a symlink planted where the temporary file
+// goes is neither written through by a fresh upload nor resumed.
+func TestUploadTempSymlink(t *testing.T) {
+	f := setup(t)
+	payload := data(100_000)
+	src := local(t, f, payload)
+	victim := filepath.Join(f.srv.Root, "victim")
+	os.WriteFile(victim, []byte("v"), 0o644)
+	tmp := filepath.Join(f.srv.Root, ".app.bin.cox-upload")
+	os.Symlink("victim", tmp)
+	mustFail(t, invoke(t, f.e, codex, "file.upload", map[string]any{"host": "prod", "local_path": src, "remote_path": "app.bin", "resume": true}), "regular file")
+	mustOK[TransferOutput](t, invoke(t, f.e, codex, "file.upload", map[string]any{"host": "prod", "local_path": src, "remote_path": "app.bin"}))
+	if got, _ := os.ReadFile(victim); string(got) != "v" {
+		t.Fatalf("written through the symlink: %d bytes", len(got))
+	}
+	if got, _ := os.ReadFile(filepath.Join(f.srv.Root, "app.bin")); string(got) != string(payload) {
+		t.Fatal("target wrong")
 	}
 }

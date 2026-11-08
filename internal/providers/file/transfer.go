@@ -254,11 +254,34 @@ func (p *Provider) runUpload(ctx context.Context, in uploadInput) (any, error) {
 	// renamed over it once complete and verified. Its name is fixed, so a
 	// cancelled upload can be resumed.
 	tmp := path.Join(path.Dir(dst), "."+path.Base(dst)+".cox-upload")
+	// One upload at a time per target: they would share the temporary file.
+	key := path.Clean(dst)
+	if dir, err := c.RealPath(path.Dir(dst)); err == nil {
+		key = path.Join(dir, path.Base(dst))
+	}
+	unclaim, err := p.Transfers.Claim(h.Name + "\x00" + key)
+	if err != nil {
+		return nil, fmt.Errorf("%s on %s is already being uploaded; wait for that upload or cancel it", in.RemotePath, h.Name)
+	}
+	defer unclaim()
 	var offset int64
 	if in.Resume {
-		if tfi, err := c.Stat(tmp); err == nil && tfi.Mode().IsRegular() && tfi.Size() < lfi.Size() {
-			offset = tfi.Size()
+		if tfi, err := c.Lstat(tmp); err == nil {
+			if !tfi.Mode().IsRegular() {
+				return nil, fmt.Errorf("cannot resume: %s is not a regular file; delete it and upload again without resume", tmp)
+			}
+			if tfi.Size() < lfi.Size() {
+				offset = tfi.Size()
+			}
 		}
+	}
+	if offset > 0 {
+		if err := samePrefix(ctx, conn, tmp, lf, offset); err != nil {
+			return nil, err
+		}
+	} else if err := c.Remove(tmp); err != nil && !errors.Is(err, os.ErrNotExist) && failed(err) {
+		broken = true
+		return nil, err
 	}
 
 	t := transfer.Transfer{Direction: transfer.Upload, Host: h.Name, LocalPath: src, RemotePath: in.RemotePath, Owner: owner(ctx)}
@@ -269,9 +292,12 @@ func (p *Provider) runUpload(ctx context.Context, in uploadInput) (any, error) {
 		if _, err := io.CopyN(sum, lf, offset); err != nil {
 			return err
 		}
-		flags := os.O_WRONLY | os.O_CREATE
-		if offset == 0 {
-			flags |= os.O_TRUNC
+		// A fresh upload creates the temporary file exclusively (whatever
+		// was planted there was removed above); a resumed one continues
+		// the regular file checked above.
+		flags := os.O_WRONLY | os.O_CREATE | os.O_EXCL
+		if offset > 0 {
+			flags = os.O_WRONLY
 		}
 		rf, err := createPrivate(c, tmp, flags)
 		if err != nil {
@@ -305,29 +331,26 @@ func (p *Provider) runUpload(ctx context.Context, in uploadInput) (any, error) {
 		return c.PosixRename(tmp, dst)
 	})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w; %s on %s is unchanged; the partial upload is %s (upload again with resume=true to continue it, or delete it)",
+			err, in.RemotePath, h.Name, tmp)
 	}
 	return TransferOutput{Transfer: res, HostNote: h.Note, HostTags: h.Tags}, nil
 }
 
 // samePrefix checks that the first n bytes of the local file are those
 // of the remote one, so a download can continue it.
-func samePrefix(ctx context.Context, conn *sshx.Conn, rp, local string, n int64) error {
-	f, err := os.Open(local)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
+// (For an upload, rp is the partial upload and local the source.)
+func samePrefix(ctx context.Context, conn *sshx.Conn, rp string, local *os.File, n int64) error {
 	sum := sha256.New()
-	if _, err := io.CopyN(sum, f, n); err != nil {
+	if _, err := io.Copy(sum, io.NewSectionReader(local, 0, n)); err != nil {
 		return err
 	}
 	remote, ok := remoteSHA256(ctx, conn, rp, n)
 	switch {
 	case !ok:
-		return fmt.Errorf("cannot check the partial file %s against the host (no head/sha256sum there); download again without resume", local)
+		return fmt.Errorf("cannot check the partial file against %s (no head/sha256sum on the host); try again without resume", rp)
 	case remote != hex.EncodeToString(sum.Sum(nil)):
-		return fmt.Errorf("the partial file %s differs from the remote file; download again without resume", local)
+		return fmt.Errorf("the partial file does not match %s; try again without resume", rp)
 	}
 	return nil
 }
@@ -478,7 +501,13 @@ func (p *Provider) runDownload(ctx context.Context, in downloadInput) (any, erro
 		}
 	}
 	if offset > 0 {
-		if err := samePrefix(ctx, conn, rp, dst, offset); err != nil {
+		lf, err := os.Open(dst)
+		if err != nil {
+			return nil, err
+		}
+		err = samePrefix(ctx, conn, rp, lf, offset)
+		lf.Close()
+		if err != nil {
 			return nil, err
 		}
 	}

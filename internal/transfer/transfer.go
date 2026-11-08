@@ -22,6 +22,7 @@ import (
 var (
 	ErrNotFound = errors.New("transfer not found")
 	ErrFinished = errors.New("transfer has already finished")
+	ErrBusy     = errors.New("already being transferred")
 )
 
 // Directions.
@@ -73,6 +74,30 @@ type Manager struct {
 	items map[string]*item
 	seq   uint64
 	wg    sync.WaitGroup
+
+	claims map[string]bool
+}
+
+// Claim reserves key (e.g. a remote file being written) until release is
+// called; it fails with ErrBusy while someone else holds it.
+func (m *Manager) Claim(key string) (release func(), err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.claims[key] {
+		return nil, ErrBusy
+	}
+	if m.claims == nil {
+		m.claims = map[string]bool{}
+	}
+	m.claims[key] = true
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			m.mu.Lock()
+			delete(m.claims, key)
+			m.mu.Unlock()
+		})
+	}, nil
 }
 
 type item struct {

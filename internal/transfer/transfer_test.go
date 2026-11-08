@@ -232,3 +232,26 @@ func TestSuccessWins(t *testing.T) {
 		t.Fatalf("%+v %v", got, err)
 	}
 }
+
+func TestClaim(t *testing.T) {
+	m, _, _ := newManager(t)
+	release, err := m.Claim("dev\x00/srv/a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Claim("dev\x00/srv/a"); !errors.Is(err, ErrBusy) {
+		t.Fatalf("%v", err)
+	}
+	other, err := m.Claim("dev\x00/srv/b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	other()
+	release()
+	release()
+	if r, err := m.Claim("dev\x00/srv/a"); err != nil {
+		t.Fatal(err)
+	} else {
+		r()
+	}
+}
