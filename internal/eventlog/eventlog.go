@@ -27,6 +27,9 @@ const (
 	ClientDenied     = "client.denied"     // denied, or the dialog went unanswered
 	ClientRevoked    = "client.revoked"
 	ClientAllowed    = "client.allowed" // allowed with `cox clients allow`
+
+	TerminalOpened = "terminal.opened" // Actor is the terminal's owner
+	TerminalClosed = "terminal.closed"
 )
 
 type Event struct {
@@ -39,8 +42,10 @@ type Event struct {
 	Targets    []action.Target `json:"targets,omitempty"`
 	DurationMs int64           `json:"duration_ms,omitempty"`
 	Client     string          `json:"client,omitempty"` // client.* events
-	Reason     string          `json:"reason,omitempty"` // why it was refused
+	Reason     string          `json:"reason,omitempty"` // why it was refused, or why a terminal closed
 	Error      string          `json:"error,omitempty"`
+	Terminal   string          `json:"terminal,omitempty"`  // terminal.* events: the session id
+	ExitCode   *int            `json:"exit_code,omitempty"` // terminal.closed: the shell's exit code, if known
 }
 
 // subscriberBuffer is how many events a subscriber may fall behind before

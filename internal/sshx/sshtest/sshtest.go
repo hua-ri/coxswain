@@ -1,6 +1,7 @@
 // Package sshtest runs a small SSH server for tests. It accepts one
 // ed25519 client key, runs "exec" requests with /bin/sh on this machine,
-// and forwards direct-tcpip channels (so it can act as a ProxyJump host).
+// runs /bin/sh (without a real pty) for "shell" requests, and forwards
+// direct-tcpip channels (so it can act as a ProxyJump host).
 package sshtest
 
 import (
@@ -30,10 +31,18 @@ type Server struct {
 	KeyFile    string // client private key (OpenSSH PEM, unencrypted)
 	KnownHosts string // known_hosts file containing this server's key
 	Commands   chan string
-	Accepts    atomic.Int32 // TCP connections accepted
+	// Sizes receives every pty-req (with Term) and window-change request.
+	Sizes   chan Size
+	Accepts atomic.Int32 // TCP connections accepted
 
 	mu    sync.Mutex
 	conns []net.Conn
+}
+
+// Size is a terminal size a client asked for.
+type Size struct {
+	Term       string // set for pty-req, empty for window-change
+	Cols, Rows int
 }
 
 // DropAll closes every accepted connection, as if the network failed.
@@ -86,6 +95,7 @@ func Start(t *testing.T) *Server {
 		Addr: addr.String(), Host: "127.0.0.1", Port: addr.Port, User: "tester",
 		KeyFile: keyFile, KnownHosts: filepath.Join(dir, "known_hosts"),
 		Commands: make(chan string, 100),
+		Sizes:    make(chan Size, 100),
 	}
 	line := knownhosts.Line([]string{knownhosts.Normalize(s.Addr)}, hostSigner.PublicKey())
 	if err := os.WriteFile(s.KnownHosts, []byte(line+"\n"), 0o600); err != nil {
@@ -134,6 +144,7 @@ func (s *Server) session(nc ssh.NewChannel) {
 	defer ch.Close()
 	var mu sync.Mutex
 	var cmd *exec.Cmd
+	pty := false
 	kill := func() {
 		mu.Lock()
 		if cmd != nil && cmd.Process != nil {
@@ -159,28 +170,95 @@ func (s *Server) session(nc ssh.NewChannel) {
 			err := c.Start()
 			mu.Unlock()
 			// Wait in the background so that "signal" requests are handled.
-			go func() {
-				if err == nil {
-					err = c.Wait()
-				}
-				code := 0
-				if err != nil {
-					code = 255
-					if ee, ok := err.(*exec.ExitError); ok && ee.ExitCode() >= 0 {
-						code = ee.ExitCode()
+			go wait(ch, c, err)
+		case "pty-req":
+			var p struct {
+				Term             string
+				Cols, Rows, W, H uint32
+				Modes            string
+			}
+			ssh.Unmarshal(req.Payload, &p)
+			pty = true
+			s.size(Size{Term: p.Term, Cols: int(p.Cols), Rows: int(p.Rows)})
+			req.Reply(true, nil)
+		case "window-change":
+			var p struct{ Cols, Rows, W, H uint32 }
+			ssh.Unmarshal(req.Payload, &p)
+			s.size(Size{Cols: int(p.Cols), Rows: int(p.Rows)})
+			req.Reply(false, nil)
+		case "shell":
+			req.Reply(true, nil)
+			// No real pty: a pty would turn Enter (\r) into \n and merge
+			// stderr into the output, so do that here.
+			c := exec.Command("/bin/sh")
+			c.Stdout, c.Stderr = ch, ch.Stderr()
+			if pty {
+				c.Stderr = ch
+			}
+			stdin, perr := c.StdinPipe()
+			mu.Lock()
+			cmd = c
+			err := perr
+			if err == nil {
+				err = c.Start()
+			}
+			mu.Unlock()
+			if err == nil {
+				go func() {
+					var in io.Reader = ch
+					if pty {
+						in = crToNL{ch}
 					}
-				}
-				status := make([]byte, 4)
-				binary.BigEndian.PutUint32(status, uint32(code))
-				ch.SendRequest("exit-status", false, status)
-				ch.Close()
-			}()
+					io.Copy(stdin, in)
+					stdin.Close()
+				}()
+			}
+			go wait(ch, c, err)
 		case "signal":
 			kill()
 		default:
 			req.Reply(false, nil)
 		}
 	}
+}
+
+func (s *Server) size(sz Size) {
+	select {
+	case s.Sizes <- sz:
+	default:
+	}
+}
+
+// wait sends c's exit status once it ends (err is its start error), then
+// closes the channel.
+func wait(ch ssh.Channel, c *exec.Cmd, err error) {
+	if err == nil {
+		err = c.Wait()
+	}
+	code := 0
+	if err != nil {
+		code = 255
+		if ee, ok := err.(*exec.ExitError); ok && ee.ExitCode() >= 0 {
+			code = ee.ExitCode()
+		}
+	}
+	status := make([]byte, 4)
+	binary.BigEndian.PutUint32(status, uint32(code))
+	ch.SendRequest("exit-status", false, status)
+	ch.Close()
+}
+
+// crToNL turns \r into \n, like a pty's ICRNL input mode.
+type crToNL struct{ r io.Reader }
+
+func (c crToNL) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	for i := range p[:n] {
+		if p[i] == '\r' {
+			p[i] = '\n'
+		}
+	}
+	return n, err
 }
 
 func directTCPIP(nc ssh.NewChannel) {
