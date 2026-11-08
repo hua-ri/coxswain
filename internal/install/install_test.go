@@ -96,7 +96,8 @@ func TestKimiRefusesBrokenJSON(t *testing.T) {
 
 func TestSkillText(t *testing.T) {
 	s := string(Skill)
-	for _, want := range []string{"cox server", "not running", "env=prod", "sudo -n", "artifact_read", "~/.coxswain", "raw `ssh`"} {
+	for _, want := range []string{"cox server", "not running", "env=prod", "sudo -n", "artifact_read", "~/.coxswain", "raw `ssh`",
+		"terminal_open", "terminal_send", "terminal_read", "terminal_close", "one-off"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("SKILL.md lacks %q", want)
 		}

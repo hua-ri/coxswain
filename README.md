@@ -4,8 +4,8 @@ An ops toolbox for you **and your AI agents**. Coxswain keeps your SSH hosts and
 one place and gives Claude Code, Codex and Kimi Code access to them over MCP. You and your agents
 use the same tool and see the same activity.
 
-> macOS only. Personal use. Early: SSH hosts and remote commands.
-> Kubernetes, Argo CD / Argo Workflows and the desktop app (`cox desktop`) are next.
+> macOS only. Personal use. Early: SSH hosts, remote commands, shared terminals and a desktop app.
+> Kubernetes and Argo CD / Argo Workflows are next.
 
 ## Install
 
@@ -37,10 +37,36 @@ tools. `cox server` prints one line for every action, whether you or an agent ra
 agents start) are clients of it. If it isn't running, they say:
 `Coxswain server is not running. Start it with: cox server`.
 
+## Desktop
+
+```bash
+cox desktop   # needs a running cox server
+```
+
+`cox desktop` opens a window on the running server. Closing it leaves the server running; run
+`cox desktop` again to come back. It shows:
+
+- **Hosts**, with their tags (`env=prod` in red) and notes. Click *Terminal* to open a terminal on one.
+- **Activity**: every action as it happens, yours and your agents', with its risk rating, host
+  and result. Filter by client or host. Click a terminal row to jump to that terminal.
+- **Terminals**, one tab per shared terminal.
+- **Agents**: allow or revoke them, like `cox clients allow|revoke`.
+
+Terminals live in `cox server` and are shared. Your agents can read a terminal you opened (ask
+yours to "read the last lines of my terminal on web-01"). A terminal an agent opens appears as a
+tab, marked with the agent's name, and you can type in it at any time. A dot blinks on the tab
+while the agent types. Agents can close only their own terminals. When you close an agent's
+terminal, the desktop asks first.
+
+Agents use terminals through the `terminal_*` tools: `ssh_exec` for one-off commands, a terminal
+for long-running work you may want to watch. Terminals end when `cox server` stops. Output of
+an ended terminal stays readable for 10 minutes.
+
 ## Who asks before an agent changes something
 
-Your agent does, not Coxswain. Every cox tool tells the agent what it does: `ssh_hosts_list` and
-`artifact_read` only read; `ssh_exec` and `ssh_hosts_tag` can change things. Claude Code, Codex
+Your agent does, not Coxswain. Every cox tool tells the agent what it does: `ssh_hosts_list`,
+`terminal_read` and `artifact_read` only read; `ssh_exec`, `terminal_send` and `ssh_hosts_tag` can
+change things. Claude Code, Codex
 and Kimi Code then follow their own permission settings, for example asking you before each
 `ssh_exec`. Configure that in your agent.
 
@@ -94,7 +120,8 @@ agents never get them.
 
 `cox server` listens on 127.0.0.1 only. Every request needs the random token from
 `~/.coxswain/server.json`, which changes each time the server starts. Requests from web browsers
-(with an `Origin` header) are refused.
+(with an `Origin` header) are refused. The desktop app's page never sees the token: the `cox
+desktop` process makes the requests for it.
 
 Client authorization covers agents that use Coxswain through its own entry points (`cox mcp`, the
 `cox` CLI). It is **not** an isolation boundary. Any process running as your user can read

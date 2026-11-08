@@ -5,13 +5,20 @@ project_name: coxswain
 before:
   hooks:
     - go mod tidy
+    # The desktop app's frontend is embedded in the binary.
+    - npm --prefix web ci
+    - npm --prefix web run build
     - go test ./...
 
 builds:
   - id: cox
     main: ./cmd/cox
     binary: cox
-    env: [CGO_ENABLED=0]
+    # cgo for the desktop window (WKWebView). Go passes -arch to clang, so
+    # both architectures build on one Mac.
+    env:
+      - CGO_ENABLED=1
+      - MACOSX_DEPLOYMENT_TARGET=12.0
     goos: [darwin]
     goarch: [amd64, arm64]
     flags: [-trimpath]
