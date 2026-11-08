@@ -18,7 +18,7 @@ builds:
     # both architectures build on one Mac.
     env:
       - CGO_ENABLED=1
-      - MACOSX_DEPLOYMENT_TARGET=12.0
+      - MACOSX_DEPLOYMENT_TARGET=13.0 # what the release toolchain (Go 1.27) needs anyway
     goos: [darwin]
     goarch: [amd64, arm64]
     flags: [-trimpath]
