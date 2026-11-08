@@ -19,6 +19,11 @@ export interface AuditEvent {
   error?: string;
   terminal?: string;
   exit_code?: number;
+  transfer?: string; // transfer.* events: the transfer id
+  tunnel?: string; // tunnel.* events: the tunnel id
+  batch?: string; // batch.* events: the batch run id
+  /** The object the event is about: a transfer, a tunnel, a batch's start, host result or end. */
+  detail?: unknown;
 }
 
 export type Payload =
@@ -56,6 +61,8 @@ export interface Bindings {
   coxInput(termID: string, base64: string): Promise<void>;
   coxResize(termID: string, cols: number, rows: number): Promise<void>;
   coxStatus(): Promise<Status>;
+  /** coxPickFile opens a native file dialog; the chosen absolute path ("" if cancelled) comes on REPLY_CHANNEL. */
+  coxPickFile(): Promise<string>;
 }
 
 /** Subscription id of connection changes. */
@@ -95,8 +102,13 @@ export function createCox(b: Bindings, target: { __cox?: unknown }) {
   const replies = new Map<string, Reply>(); // arrived before their call id
   const waiting = new Map<string, (r: Reply) => void>();
 
-  async function call(method: string, path: string, body: unknown): Promise<unknown> {
-    const id = await b.coxApi(method, path, body ?? null);
+  function call(method: string, path: string, body: unknown): Promise<unknown> {
+    return reply(b.coxApi(method, path, body ?? null));
+  }
+
+  /** reply waits for the result of the call whose id start resolves to. */
+  async function reply(start: Promise<string>): Promise<unknown> {
+    const id = await start;
     const r = await new Promise<Reply>((resolve) => {
       const early = replies.get(id);
       if (early) {
@@ -165,6 +177,8 @@ export function createCox(b: Bindings, target: { __cox?: unknown }) {
       return () => statusHandlers.delete(handler);
     },
 
+    /** pickFile asks for a local file: its absolute path, or "" if cancelled. */
+    pickFile: () => reply(b.coxPickFile()) as Promise<string>,
     status: () => b.coxStatus(),
     input: (termID: string, text: string) => b.coxInput(termID, toBase64(text)),
     resize: (termID: string, cols: number, rows: number) => b.coxResize(termID, cols, rows),

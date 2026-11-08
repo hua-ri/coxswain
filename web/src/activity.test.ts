@@ -47,6 +47,23 @@ describe("addEvent", () => {
     expect(rows[4].error).toBe("revoked");
   });
 
+  it("shows finished transfers but not their progress", () => {
+    const detail = { id: "x_1", direction: "download", host: "dev", remote_path: "/var/log/app.log",
+      local_path: "/d/app.log", status: "done" };
+    const rows = feed([
+      { time: t, type: "transfer.started", actor: codex, transfer: "x_1", detail },
+      { time: t, type: "transfer.progress", actor: codex, transfer: "x_1", detail },
+      { time: t, type: "transfer.finished", actor: codex, transfer: "x_1", detail,
+        targets: [{ kind: "host", id: "dev" }] },
+      { time: t, type: "transfer.failed", actor: codex, transfer: "x_2", reason: "cancelled by you",
+        detail: { ...detail, direction: "upload", status: "cancelled" } },
+    ]);
+    expect(rows.map((r) => [r.action, r.status, r.detail])).toEqual([
+      ["transfer.failed", "info", "upload /d/app.log → dev:/var/log/app.log: cancelled by you"],
+      ["transfer.finished", "info", "download dev:/var/log/app.log → /d/app.log"],
+    ]);
+  });
+
   it("keeps at most 1000 rows", () => {
     let rows: Row[] = [];
     for (let i = 0; i < 1100; i++) rows = addEvent(rows, { time: t, type: "client.allowed", client: "c" }, i);

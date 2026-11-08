@@ -199,7 +199,7 @@ func TestAPI(t *testing.T) {
 	if e, _ := reply["error"].(string); reply["ok"] != false || !strings.Contains(e, "not an API path") {
 		t.Fatalf("%v", reply)
 	}
-	if names := b.Bindings(); len(names) != 6 || names["coxApi"] == nil || names["coxSubscribe"] == nil {
+	if names := b.Bindings(); len(names) != 7 || names["coxApi"] == nil || names["coxSubscribe"] == nil {
 		t.Fatalf("%v", names)
 	}
 }
@@ -343,5 +343,34 @@ func TestReconnect(t *testing.T) {
 		if i > 50 {
 			t.Fatal("events not resubscribed")
 		}
+	}
+}
+
+func TestPickFile(t *testing.T) {
+	w := newWindow(t)
+	b := New(w, t.TempDir())
+	if _, ok := b.Bindings()["coxPickFile"]; !ok {
+		t.Fatal("coxPickFile is not bound")
+	}
+	picked := "/Users/me/report.pdf"
+	b.Pick = func() string { return picked }
+	call := b.PickFileAsync()
+	p := w.next(ReplyChannel, func(p map[string]any) bool { return p["call"] == call })
+	if p["ok"] != true || p["value"] != picked {
+		t.Fatalf("reply = %v", p)
+	}
+
+	picked = "" // cancelled
+	call = b.PickFileAsync()
+	p = w.next(ReplyChannel, func(p map[string]any) bool { return p["call"] == call })
+	if p["ok"] != true || p["value"] != "" {
+		t.Fatalf("cancelled reply = %v", p)
+	}
+
+	b.Pick = nil
+	call = b.PickFileAsync()
+	p = w.next(ReplyChannel, func(p map[string]any) bool { return p["call"] == call })
+	if p["ok"] != false || !strings.Contains(p["error"].(string), "file picker") {
+		t.Fatalf("no-picker reply = %v", p)
 	}
 }

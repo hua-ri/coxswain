@@ -34,6 +34,7 @@ func Run(ctx context.Context, home, version string, debug bool) error {
 	w := webview.New(debug)
 	defer w.Destroy()
 	b := New(w, home)
+	b.Pick = pickFile
 	if err := b.Start(ctx); err != nil {
 		return err
 	}

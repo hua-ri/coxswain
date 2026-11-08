@@ -39,6 +39,12 @@ function fakeBindings(
       calls.push(["resize", ...args]);
     },
     coxStatus: async () => ({ connected: true, addr: "127.0.0.1:1", version: "v", pid: 1 }),
+    coxPickFile: async () => {
+      calls.push(["pick"]);
+      const id = "c" + ++call;
+      setTimeout(() => target.__cox!.emit("reply", { type: "reply", call: id, ok: true, value: "/Users/me/a.txt" }));
+      return id;
+    },
     ...overrides,
   };
 }
@@ -131,5 +137,12 @@ describe("cox", () => {
       ["resize", "t_1", 100, 30],
       ["api", "POST", "/api/v1/actions/ssh.hosts.list", {}],
     ]);
+  });
+
+  it("picks a local file through the reply channel", async () => {
+    const b = fakeBindings();
+    const cox = createCox(b, b.target);
+    expect(await cox.pickFile()).toBe("/Users/me/a.txt");
+    expect(b.calls).toEqual([["pick"]]);
   });
 });

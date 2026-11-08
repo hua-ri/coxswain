@@ -1,5 +1,6 @@
 // The activity table's model: audit events folded into rows.
 import type { AuditEvent } from "./cox";
+import { describeTransfer, type Transfer } from "./transfers";
 
 export interface Row {
   key: number;
@@ -69,6 +70,17 @@ export function addEvent(rows: Row[], ev: AuditEvent, key: number): Row[] {
       let detail = ev.reason;
       if (ev.exit_code !== undefined) detail = `${detail ?? "exited"} (exit code ${ev.exit_code})`;
       return prepend(rows, { ...base, action: ev.type, terminal: ev.terminal, detail });
+    }
+    case "transfer.started":
+    case "transfer.progress":
+      return rows; // the transfers panel shows these
+    case "transfer.finished":
+    case "transfer.failed": {
+      const t = ev.detail as Transfer | undefined;
+      let detail = t ? describeTransfer(t) : undefined;
+      const why = ev.reason ?? ev.error ?? t?.error;
+      if (ev.type === "transfer.failed" && why) detail = `${detail ?? ""}: ${why}`;
+      return prepend(rows, { ...base, action: ev.type, hosts: base.hosts.length ? base.hosts : t ? [t.host] : [], detail });
     }
     default:
       return prepend(rows, { ...base, action: ev.type });

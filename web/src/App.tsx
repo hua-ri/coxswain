@@ -4,10 +4,17 @@ import { addEvent, type Row } from "./activity";
 import { cox } from "./bridge";
 import type { Cox, Status } from "./cox";
 import { Confirm } from "./Confirm";
+import { FileBrowser } from "./FileBrowser";
 import { Sidebar } from "./Sidebar";
 import { TerminalView } from "./TerminalView";
 import { needsConfirm, tabTitle, tabsReducer, type Tab } from "./terminals";
+import { runningCount, transfersReducer, type Transfer, type TransferItem } from "./transfers";
+import { TransfersView } from "./TransfersView";
 import type { ClientInfo, Host, TermSession } from "./types";
+
+/** Tab ids of the fixed panels and the prefix of Files tabs. */
+const TRANSFERS = "@transfers";
+const FILES = "@files:";
 
 /** How long the "agent is typing" dot stays after a terminal_send. */
 const TYPING_MS = 3000;
@@ -26,8 +33,11 @@ function Desktop({ cox }: { cox: Cox }) {
   const [rows, setRows] = useState<Row[]>([]);
   const [error, setError] = useState("");
   const [tabs, dispatch] = useReducer(tabsReducer, []);
-  const [active, setActive] = useState(""); // "" is the activity tab
+  const [active, setActive] = useState(""); // "" activity, TRANSFERS, files:<host>, or a terminal id
   const [closing, setClosing] = useState<Tab | null>(null);
+  const [transfers, dispatchTransfer] = useReducer(transfersReducer, []);
+  const [cancelling, setCancelling] = useState<TransferItem | null>(null);
+  const [browsers, setBrowsers] = useState<string[]>([]); // hosts with a Files tab
   const [now, setNow] = useState(Date.now());
 
   const report = useCallback((e: unknown) => setError(e instanceof Error ? e.message : String(e)), []);
@@ -44,11 +54,16 @@ function Desktop({ cox }: { cox: Cox }) {
     const sessions = (await cox.api<TermSession[]>("GET", "/api/v1/terminals")) ?? [];
     dispatch({ type: "sync", sessions });
   }, [cox]);
+  const loadTransfers = useCallback(async () => {
+    const list = (await cox.api<Transfer[]>("GET", "/api/v1/transfers")) ?? [];
+    dispatchTransfer({ type: "sync", list });
+  }, [cox]);
   const loadAll = useCallback(() => {
     loadHosts().catch(report);
     loadClients().catch(report);
     loadTerminals().catch(report);
-  }, [loadHosts, loadClients, loadTerminals, report]);
+    loadTransfers().catch(report);
+  }, [loadHosts, loadClients, loadTerminals, loadTransfers, report]);
 
   useEffect(() => {
     void cox.status().then(setStatus);
@@ -73,6 +88,7 @@ function Desktop({ cox }: { cox: Cox }) {
         if (p.type !== "event") return;
         const ev = p.event;
         setRows((rows) => addEvent(rows, ev, key++));
+        if (ev.type.startsWith("transfer.")) dispatchTransfer({ type: "event", event: ev });
         if (ev.type.startsWith("client.")) loadClients().catch(report);
         if (ev.type === "terminal.opened" && ev.terminal && ev.actor) {
           const { kind, name } = ev.actor;
@@ -137,6 +153,21 @@ function Desktop({ cox }: { cox: Cox }) {
       })
       .finally(() => removeTab(t.id));
   };
+  const openFiles = (host: string) => {
+    setBrowsers((b) => (b.includes(host) ? b : [...b, host]));
+    setActive(FILES + host);
+  };
+  const closeFiles = (host: string) => {
+    setBrowsers((b) => b.filter((h) => h !== host));
+    setActive((a) => (a === FILES + host ? "" : a));
+  };
+  const askCancel = (t: TransferItem) => (t.owner.kind === "agent" ? setCancelling(t) : cancelTransfer(t));
+  const cancelTransfer = (t: TransferItem) => {
+    setCancelling(null);
+    cox.api("DELETE", "/api/v1/transfers/" + encodeURIComponent(t.id)).catch((e) => {
+      if (!/\((404|409)\)/.test(String(e))) report(e);
+    });
+  };
   const decide = (method: "PUT" | "DELETE") => (name: string) => {
     cox
       .api(method, "/api/v1/clients/" + encodeURIComponent(name))
@@ -160,6 +191,7 @@ function Desktop({ cox }: { cox: Cox }) {
           hosts={hosts}
           clients={clients}
           onOpenTerminal={openTerminal}
+          onOpenFiles={openFiles}
           onAllow={decide("PUT")}
           onRevoke={decide("DELETE")}
         />
@@ -168,6 +200,25 @@ function Desktop({ cox }: { cox: Cox }) {
             <button className={active === "" ? "tab active" : "tab"} onClick={() => setActive("")}>
               Activity
             </button>
+            <button className={active === TRANSFERS ? "tab active" : "tab"} onClick={() => setActive(TRANSFERS)}>
+              Transfers
+              {runningCount(transfers) > 0 && <span className="count">{runningCount(transfers)}</span>}
+            </button>
+            {browsers.map((h) => (
+              <div key={h} className={active === FILES + h ? "tab active" : "tab"} onClick={() => setActive(FILES + h)}>
+                <span>{h} · files</span>
+                <span
+                  className="close"
+                  title="Close"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    closeFiles(h);
+                  }}
+                >
+                  ×
+                </span>
+              </div>
+            ))}
             {tabs.map((t) => (
               <div key={t.id} className={active === t.id ? "tab active" : "tab"} onClick={() => setActive(t.id)}>
                 {t.owner.kind === "agent" && <span className="badge agent">agent</span>}
@@ -190,6 +241,12 @@ function Desktop({ cox }: { cox: Cox }) {
             <div className="pane" style={{ display: active === "" ? "block" : "none" }}>
               <ActivityView rows={rows} onOpenTerminal={showTerminal} />
             </div>
+            <div className="pane scroll" style={{ display: active === TRANSFERS ? "block" : "none" }}>
+              <TransfersView transfers={transfers} onCancel={askCancel} />
+            </div>
+            {browsers.map((h) => (
+              <FileBrowser key={h} cox={cox} host={h} active={active === FILES + h} />
+            ))}
             {tabs.map((t) => (
               <TerminalView
                 key={t.id}
@@ -209,6 +266,14 @@ function Desktop({ cox }: { cox: Cox }) {
           confirm="Close terminal"
           onYes={() => endTerminal(closing)}
           onNo={() => setClosing(null)}
+        />
+      )}
+      {cancelling && (
+        <Confirm
+          message={`${cancelling.owner.name} started this ${cancelling.direction} (${cancelling.host}:${cancelling.remote_path}). Cancel it?`}
+          confirm="Cancel transfer"
+          onYes={() => cancelTransfer(cancelling)}
+          onNo={() => setCancelling(null)}
         />
       )}
       <footer className="statusbar">

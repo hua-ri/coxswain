@@ -69,6 +69,10 @@ type Status struct {
 type Bridge struct {
 	// Retry is how often the server is checked; default 2s.
 	Retry time.Duration
+	// Pick shows a native "open file" dialog and returns the chosen
+	// file's absolute path, or "" if cancelled. It runs on the UI
+	// thread. nil: this platform has no file picker.
+	Pick func() string
 
 	home string
 	win  Window
@@ -132,6 +136,7 @@ func (b *Bridge) Bindings() map[string]any {
 		"coxInput":       b.Input,
 		"coxResize":      b.Resize,
 		"coxStatus":      b.Status,
+		"coxPickFile":    b.PickFileAsync,
 	}
 }
 
@@ -207,6 +212,28 @@ func (b *Bridge) APIAsync(method, path string, body any) string {
 		}
 		b.emit(ReplyChannel, reply)
 	}()
+	return call
+}
+
+// PickFileAsync asks the user for a local file and returns a call id at
+// once; the chosen absolute path ("" if cancelled) is pushed on
+// ReplyChannel. The dialog runs from the UI thread's queue, not inside
+// the binding call. It is the page's coxPickFile.
+func (b *Bridge) PickFileAsync() string {
+	b.mu.Lock()
+	b.calls++
+	call := "c" + strconv.Itoa(b.calls)
+	pick := b.Pick
+	b.mu.Unlock()
+	b.win.Dispatch(func() {
+		reply := map[string]any{"type": "reply", "call": call, "ok": pick != nil}
+		if pick == nil {
+			reply["error"] = "this desktop build has no file picker"
+		} else {
+			reply["value"] = pick()
+		}
+		b.emit(ReplyChannel, reply)
+	})
 	return call
 }
 

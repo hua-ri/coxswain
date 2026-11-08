@@ -4,11 +4,12 @@ interface Props {
   hosts: Host[];
   clients: ClientInfo[];
   onOpenTerminal(host: string): void;
+  onOpenFiles(host: string): void;
   onAllow(name: string): void;
   onRevoke(name: string): void;
 }
 
-export function Sidebar({ hosts, clients, onOpenTerminal, onAllow, onRevoke }: Props) {
+export function Sidebar({ hosts, clients, onOpenTerminal, onOpenFiles, onAllow, onRevoke }: Props) {
   return (
     <aside className="sidebar">
       <h3>Hosts</h3>
@@ -18,9 +19,14 @@ export function Sidebar({ hosts, clients, onOpenTerminal, onAllow, onRevoke }: P
           <li key={h.name} title={h.note || undefined}>
             <div className="host-head">
               <span className="host-name">{h.name}</span>
-              <button className="small" onClick={() => onOpenTerminal(h.name)} title="Open a terminal">
-                Terminal
-              </button>
+              <span className="host-buttons">
+                <button className="small" onClick={() => onOpenFiles(h.name)} title="Browse files">
+                  Files
+                </button>
+                <button className="small" onClick={() => onOpenTerminal(h.name)} title="Open a terminal">
+                  Terminal
+                </button>
+              </span>
             </div>
             <div className="muted">{address(h)}</div>
             <div className="tags">
