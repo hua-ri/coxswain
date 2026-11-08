@@ -1,1 +1,5 @@
-dist/
+/dist/
+# desktop frontend: dependencies and build output (the placeholder
+# internal/desktop/ui/dist/index.html is committed)
+/web/node_modules/
+/internal/desktop/ui/dist/app/

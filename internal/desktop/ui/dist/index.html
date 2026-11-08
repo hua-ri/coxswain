@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Coxswain</title>
+    <style>
+      body { font: 14px -apple-system, BlinkMacSystemFont, sans-serif; padding: 3em; line-height: 1.5; }
+      code { background: rgba(127, 127, 127, 0.15); padding: 2px 5px; border-radius: 4px; }
+    </style>
+  </head>
+  <body>
+    <h2>The desktop UI was not built</h2>
+    <p>This cox was built without its web frontend (前端未构建). Build it, then rebuild cox:</p>
+    <p><code>npm --prefix web ci &amp;&amp; npm --prefix web run build &amp;&amp; go build ./cmd/cox</code></p>
+  </body>
+</html>
