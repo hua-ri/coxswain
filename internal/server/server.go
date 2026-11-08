@@ -18,6 +18,7 @@ import (
 	"github.com/hua-ri/coxswain/internal/instance"
 	"github.com/hua-ri/coxswain/internal/term"
 	"github.com/hua-ri/coxswain/internal/transfer"
+	"github.com/hua-ri/coxswain/internal/tunnel"
 )
 
 // ClientHeader names the calling client (cli, desktop, claude-code, …).
@@ -42,7 +43,10 @@ type Config struct {
 	// Transfers are the file transfers; nil disables /api/v1/transfers.
 	// Run cancels them all on shutdown.
 	Transfers *transfer.Manager
-	PID       int // reported by /healthz; defaults to this process
+	// Tunnels are the port forwards; nil disables /api/v1/tunnels. Run
+	// closes them all on shutdown.
+	Tunnels *tunnel.Manager
+	PID     int // reported by /healthz; defaults to this process
 	// Port to listen on (Run only); 0 reuses the previous port if free.
 	Port int
 	// KeepAlive is the SSE comment interval; default 15s.
@@ -69,7 +73,13 @@ func New(cfg Config) http.Handler {
 	cfg.defaults()
 	s := &server{cfg: cfg}
 	// Revoking a client cuts it off: its running actions are cancelled.
-	cfg.Clients.OnRevoke(func(name string) { cfg.Engine.CancelClient(name, engine.ErrClientRevoked) })
+	// Its tunnels close too: their ports would still be usable.
+	cfg.Clients.OnRevoke(func(name string) {
+		cfg.Engine.CancelClient(name, engine.ErrClientRevoked)
+		if cfg.Tunnels != nil {
+			cfg.Tunnels.CloseAgent(name, engine.ErrClientRevoked.Error())
+		}
+	})
 	api := http.NewServeMux()
 	api.HandleFunc("GET /api/v1/actions", s.authorized(s.listActions))
 	api.HandleFunc("POST /api/v1/actions/{id}", s.authorized(s.invoke))
@@ -79,6 +89,7 @@ func New(cfg Config) http.Handler {
 	api.HandleFunc("PUT /api/v1/clients/{name}", s.builtInOnly(s.allowClient))
 	s.terminalRoutes(api)
 	s.transferRoutes(api)
+	s.tunnelRoutes(api)
 	api.Handle("/mcp", newMCPHandler(cfg))
 
 	root := http.NewServeMux()

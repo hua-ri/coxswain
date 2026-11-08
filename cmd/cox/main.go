@@ -27,11 +27,13 @@ import (
 	"github.com/hua-ri/coxswain/internal/providers/file"
 	sshprov "github.com/hua-ri/coxswain/internal/providers/ssh"
 	"github.com/hua-ri/coxswain/internal/providers/terminal"
+	tunnelprov "github.com/hua-ri/coxswain/internal/providers/tunnels"
 	"github.com/hua-ri/coxswain/internal/shaper"
 	"github.com/hua-ri/coxswain/internal/sshx"
 	"github.com/hua-ri/coxswain/internal/surface/cli"
 	"github.com/hua-ri/coxswain/internal/term"
 	"github.com/hua-ri/coxswain/internal/transfer"
+	"github.com/hua-ri/coxswain/internal/tunnel"
 )
 
 // version is set at release time with -ldflags "-X main.version=…".
@@ -146,10 +148,11 @@ type services struct {
 	Engine    *engine.Engine
 	Terminals *term.Manager
 	Transfers *transfer.Manager
+	Tunnels   *tunnel.Manager
 }
 
 // newEngine builds the engine with every provider, and the terminal
-// sessions and transfers the server shares. pool may be nil.
+// sessions, transfers and tunnels the server shares. pool may be nil.
 func newEngine(coxHome, userHome string, pool func(*sshx.Dialer) *sshx.Pool) services {
 	hosts := inventory.NewStore(filepath.Join(coxHome, "hosts.json"))
 	artifacts := shaper.NewArtifacts(filepath.Join(coxHome, "artifacts"))
@@ -173,5 +176,7 @@ func newEngine(coxHome, userHome string, pool func(*sshx.Dialer) *sshx.Pool) ser
 	transfers := &transfer.Manager{Events: events}
 	(&file.Provider{Hosts: hosts, Dialer: dialer, Pool: p.Pool, Artifacts: artifacts, Transfers: transfers,
 		DownloadDir: filepath.Join(coxHome, "downloads"), UserHome: userHome}).Register(reg)
-	return services{Engine: &engine.Engine{Registry: reg, Events: events}, Terminals: terms, Transfers: transfers}
+	tunnels := &tunnel.Manager{Hosts: hosts, Dialer: dialer, Events: events}
+	(&tunnelprov.Provider{Hosts: hosts, Tunnels: tunnels}).Register(reg)
+	return services{Engine: &engine.Engine{Registry: reg, Events: events}, Terminals: terms, Transfers: transfers, Tunnels: tunnels}
 }

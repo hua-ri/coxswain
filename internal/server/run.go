@@ -92,6 +92,9 @@ func Run(ctx context.Context, cfg Config, home string) error {
 	if cfg.Terminals != nil {
 		cfg.Terminals.CloseAll() // streams end with an exit event
 	}
+	if cfg.Tunnels != nil {
+		cfg.Tunnels.CloseAll()
+	}
 	stop() // ends event streams and other long requests
 	// Requests are already cancelled; a short grace period covers
 	// responses being written. (Unused client connections would otherwise

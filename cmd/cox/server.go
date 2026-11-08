@@ -44,6 +44,7 @@ func serverCommand(coxHome, userHome string) *cobra.Command {
 				Engine:    e,
 				Terminals: svc.Terminals,
 				Transfers: svc.Transfers,
+				Tunnels:   svc.Tunnels,
 				Clients: &clients.Authorizer{
 					Store:  clients.NewStore(filepath.Join(coxHome, "clients.json")),
 					Ask:    clients.Dialog(authorizeTimeout),

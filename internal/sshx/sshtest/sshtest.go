@@ -1,8 +1,9 @@
 // Package sshtest runs a small SSH server for tests. It accepts one
 // ed25519 client key, runs "exec" requests with /bin/sh on this machine
 // (in Root), runs /bin/sh (without a real pty) for "shell" requests,
-// serves the "sftp" subsystem with Root as "/", and forwards
-// direct-tcpip channels (so it can act as a ProxyJump host).
+// serves the "sftp" subsystem with Root as "/", forwards direct-tcpip
+// channels (so it can act as a ProxyJump host) and serves remote
+// forwards (tcpip-forward), always on 127.0.0.1.
 package sshtest
 
 import (
@@ -124,12 +125,14 @@ func Start(t *testing.T) *Server {
 }
 
 func (s *Server) serve(c net.Conn, cfg *ssh.ServerConfig) {
-	_, chans, reqs, err := ssh.NewServerConn(c, cfg)
+	sc, chans, reqs, err := ssh.NewServerConn(c, cfg)
 	if err != nil {
 		c.Close()
 		return
 	}
-	go ssh.DiscardRequests(reqs)
+	fw := &forwards{conn: sc}
+	defer fw.closeAll()
+	go fw.serve(reqs)
 	for nc := range chans {
 		switch nc.ChannelType() {
 		case "session":

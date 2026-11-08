@@ -20,6 +20,7 @@ import (
 	"github.com/hua-ri/coxswain/internal/server"
 	"github.com/hua-ri/coxswain/internal/term"
 	"github.com/hua-ri/coxswain/internal/transfer"
+	"github.com/hua-ri/coxswain/internal/tunnel"
 )
 
 // Client calls one server as one client name (cli, desktop).
@@ -223,6 +224,30 @@ func (c *Client) Transfer(ctx context.Context, id string) (transfer.Transfer, er
 // CancelTransfer stops a running transfer.
 func (c *Client) CancelTransfer(ctx context.Context, id string) error {
 	return c.call(ctx, http.MethodDelete, "/api/v1/transfers/"+url.PathEscape(id), nil, nil)
+}
+
+// Tunnels lists the open tunnels.
+func (c *Client) Tunnels(ctx context.Context) ([]tunnel.Tunnel, error) {
+	var out []tunnel.Tunnel
+	return out, c.call(ctx, http.MethodGet, "/api/v1/tunnels", nil, &out)
+}
+
+// Tunnel returns one open tunnel.
+func (c *Client) Tunnel(ctx context.Context, id string) (tunnel.Tunnel, error) {
+	var out tunnel.Tunnel
+	return out, c.call(ctx, http.MethodGet, "/api/v1/tunnels/"+url.PathEscape(id), nil, &out)
+}
+
+// OpenTunnel opens a tunnel owned by this client.
+func (c *Client) OpenTunnel(ctx context.Context, spec tunnel.Spec) (tunnel.Tunnel, error) {
+	body, _ := json.Marshal(spec)
+	var out tunnel.Tunnel
+	return out, c.call(ctx, http.MethodPost, "/api/v1/tunnels", body, &out)
+}
+
+// CloseTunnel closes a tunnel.
+func (c *Client) CloseTunnel(ctx context.Context, id string) error {
+	return c.call(ctx, http.MethodDelete, "/api/v1/tunnels/"+url.PathEscape(id), nil, nil)
 }
 
 // ErrNoTerminal is returned by TerminalStream for an unknown terminal.

@@ -248,6 +248,17 @@ func TestEndToEnd(t *testing.T) {
 	if b, err := os.ReadFile(filepath.Join(s.coxHome, "downloads", "dev", "notes.txt")); err != nil || string(b) != "hi there\n" {
 		t.Fatalf("downloaded: %q %v", b, err)
 	}
+	opened, code := s.cox(t, "tunnel", "open", "dev", "socks")
+	var tn struct{ ID, Listen string }
+	if err := json.Unmarshal([]byte(opened), &tn); code != 0 || err != nil || !strings.HasPrefix(tn.Listen, "127.0.0.1:") {
+		t.Fatalf("tunnel open: %d %s", code, opened)
+	}
+	if out, code := s.cox(t, "tunnel", "list"); code != 0 || !strings.Contains(out, tn.ID) {
+		t.Fatalf("tunnel list: %d %s", code, out)
+	}
+	if out, code := s.cox(t, "tunnel", "close", tn.ID); code != 0 {
+		t.Fatalf("tunnel close: %d %s", code, out)
+	}
 	dir := t.TempDir()
 	if out, code := s.cox(t, "ssh", "exec", "prod", "--", "rm", "-rf", dir); code != 0 {
 		t.Fatalf("destructive: %d %s", code, out)
