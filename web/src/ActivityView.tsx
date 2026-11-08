@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { filterOptions, filterRows, type Filter, type Row } from "./activity";
+import { clientLabel, filterOptions, filterRows, type Filter, type Row } from "./activity";
 
 interface Props {
   rows: Row[];
@@ -36,7 +36,9 @@ export function ActivityView({ rows, onOpenTerminal }: Props) {
         <select value={filter.client} onChange={(e) => setFilter({ ...filter, client: e.target.value })}>
           <option value="">All clients</option>
           {options.clients.map((c) => (
-            <option key={c}>{c}</option>
+            <option key={c} value={c}>
+              {clientLabel(c) === c ? c : `you (${c})`}
+            </option>
           ))}
         </select>
         <select value={filter.host} onChange={(e) => setFilter({ ...filter, host: e.target.value })}>
@@ -69,8 +71,8 @@ export function ActivityView({ rows, onOpenTerminal }: Props) {
                 title={r.terminal ? "Show this terminal" : undefined}
               >
                 <td className="mono">{time(r.time)}</td>
-                <td>
-                  {r.client}
+                <td title={r.client}>
+                  {r.who}
                   {r.agent && <span className="badge agent">agent</span>}
                 </td>
                 <td className="mono">{r.action}</td>

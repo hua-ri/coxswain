@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { addEvent, filterRows, filterOptions, type Row } from "./activity";
+import { addEvent, clientLabel, filterRows, filterOptions, type Row } from "./activity";
 import type { AuditEvent } from "./cox";
 
 const codex = { kind: "agent" as const, name: "codex", session: "a" };
@@ -69,5 +69,25 @@ describe("filters", () => {
   });
   it("offers the clients and hosts seen", () => {
     expect(filterOptions(rows)).toEqual({ clients: ["cli", "codex"], hosts: ["dev", "prod"] });
+  });
+});
+
+describe("clientLabel", () => {
+  it("calls the user's own clients you", () => {
+    expect(clientLabel("desktop")).toBe("you");
+    expect(clientLabel("cli")).toBe("you");
+    expect(clientLabel("codex")).toBe("codex");
+  });
+  it("labels rows", () => {
+    const rows = feed([
+      { time: t, type: "action.requested", actor: { kind: "human", name: "desktop" }, action: "ssh.exec" },
+      { time: t, type: "action.requested", actor: codex, action: "ssh.exec" },
+      { time: t, type: "client.revoked", client: "kimi" },
+    ]);
+    expect(rows.map((r) => [r.who, r.client])).toEqual([
+      ["kimi", "kimi"],
+      ["codex", "codex"],
+      ["you", "desktop"],
+    ]);
   });
 });

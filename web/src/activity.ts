@@ -5,6 +5,7 @@ export interface Row {
   key: number;
   time: string;
   client: string; // client or actor name
+  who: string; // client as shown: "you" for the user's own clients
   agent: boolean;
   action: string; // action id, or the event type for client.* / terminal.*
   hosts: string[];
@@ -19,13 +20,20 @@ export interface Row {
 
 export const MAX_ROWS = 1000;
 
+/** clientLabel shows the user's own clients (cli, desktop) as "you". */
+export function clientLabel(name: string): string {
+  return name === "cli" || name === "desktop" ? "you" : name;
+}
+
 /** addEvent returns rows (newest first) with ev folded in. */
 export function addEvent(rows: Row[], ev: AuditEvent, key: number): Row[] {
   const actor = ev.actor;
+  const client = actor?.name ?? ev.client ?? "";
   const base: Row = {
     key,
     time: ev.time,
-    client: actor?.name ?? ev.client ?? "",
+    client,
+    who: actor?.kind === "human" ? "you" : clientLabel(client),
     agent: actor ? actor.kind === "agent" : ev.client !== undefined,
     action: ev.action ?? ev.type,
     hosts: (ev.targets ?? []).map((t) => t.id),
