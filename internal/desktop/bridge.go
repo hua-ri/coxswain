@@ -29,6 +29,13 @@ const ClientName = "desktop"
 // {type:"disconnected"}.
 const StatusChannel = "bridge"
 
+// ReplyChannel is the subscription id under which the results of the
+// page's coxApi calls are pushed: {type:"reply", call, ok, value|error}.
+const ReplyChannel = "reply"
+
+// inputQueue bounds the keystroke and resize requests waiting per terminal.
+const inputQueue = 1024
+
 // Window is what the bridge needs from the webview. Dispatch runs f on
 // the UI thread; Eval runs JavaScript in the page.
 type Window interface {
@@ -54,6 +61,11 @@ type Status struct {
 //	          {type:"gap"}                                       (some output was dropped)
 //	          {type:"exit", code:<int>|null}                     (last message of the subscription)
 //	"bridge": {type:"connected", addr, version, pid} / {type:"disconnected"}
+//	"reply":  {type:"reply", call:<id from coxApi>, ok:true, value:<JSON>} / {…, ok:false, error:"…"}
+//
+// Bound functions run on the UI thread, so none of them waits for the
+// server: coxApi returns a call id and its result comes on "reply";
+// coxInput and coxResize queue their request (in order, per terminal).
 type Bridge struct {
 	// Retry is how often the server is checked; default 2s.
 	Retry time.Duration
@@ -70,6 +82,8 @@ type Bridge struct {
 	client *client.Client // nil while disconnected
 	subs   map[string]*sub
 	next   int
+	calls  int
+	inputs map[string]chan func(*client.Client) error // per terminal, in order
 }
 
 // sub is one page subscription; cancel is set while its stream runs.
@@ -80,7 +94,8 @@ type sub struct {
 
 // New returns a bridge for the server found in home (~/.coxswain).
 func New(win Window, home string) *Bridge {
-	return &Bridge{home: home, win: win, subs: map[string]*sub{}, check: make(chan struct{}, 1)}
+	return &Bridge{home: home, win: win, subs: map[string]*sub{}, inputs: map[string]chan func(*client.Client) error{},
+		check: make(chan struct{}, 1)}
 }
 
 // Start connects to the running server (instance.ErrNotRunning if there
@@ -111,7 +126,7 @@ func (b *Bridge) Close() {
 // Bindings are the functions to bind into the page (webview.Bind).
 func (b *Bridge) Bindings() map[string]any {
 	return map[string]any{
-		"coxApi":         b.API,
+		"coxApi":         b.APIAsync,
 		"coxSubscribe":   b.Subscribe,
 		"coxUnsubscribe": b.Unsubscribe,
 		"coxInput":       b.Input,
@@ -175,26 +190,76 @@ func (b *Bridge) API(method, path string, body any) (any, error) {
 	return out, nil
 }
 
-// Input sends base64-encoded keystrokes to a terminal.
+// APIAsync starts an API call and returns its call id at once; the
+// result is pushed on ReplyChannel. It is the page's coxApi.
+func (b *Bridge) APIAsync(method, path string, body any) string {
+	b.mu.Lock()
+	b.calls++
+	call := "c" + strconv.Itoa(b.calls)
+	b.mu.Unlock()
+	go func() {
+		v, err := b.API(method, path, body)
+		reply := map[string]any{"type": "reply", "call": call, "ok": err == nil}
+		if err != nil {
+			reply["error"] = err.Error()
+		} else {
+			reply["value"] = v
+		}
+		b.emit(ReplyChannel, reply)
+	}()
+	return call
+}
+
+// Input queues base64-encoded keystrokes for a terminal.
 func (b *Bridge) Input(termID, data string) error {
 	p, err := base64.StdEncoding.DecodeString(data)
 	if err != nil {
 		return fmt.Errorf("input must be base64: %w", err)
 	}
-	c, err := b.current()
-	if err != nil {
-		return err
-	}
-	return b.checked(c.TerminalInput(b.ctx, termID, p))
+	return b.queue(termID, func(c *client.Client) error { return c.TerminalInput(b.ctx, termID, p) })
 }
 
-// Resize changes a terminal's size.
+// Resize queues a size change for a terminal.
 func (b *Bridge) Resize(termID string, cols, rows int) error {
-	c, err := b.current()
-	if err != nil {
+	return b.queue(termID, func(c *client.Client) error { return c.ResizeTerminal(b.ctx, termID, cols, rows) })
+}
+
+// queue runs f for the terminal after the requests queued before it.
+// A worker per terminal sends them and exits once the queue is empty.
+func (b *Bridge) queue(termID string, f func(*client.Client) error) error {
+	if _, err := b.current(); err != nil {
 		return err
 	}
-	return b.checked(c.ResizeTerminal(b.ctx, termID, cols, rows))
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	q, ok := b.inputs[termID]
+	if !ok {
+		q = make(chan func(*client.Client) error, inputQueue)
+		b.inputs[termID] = q
+		go b.send(termID, q)
+	}
+	select {
+	case q <- f:
+		return nil
+	default:
+		return errors.New("terminal input is backed up; try again")
+	}
+}
+
+func (b *Bridge) send(termID string, q chan func(*client.Client) error) {
+	for {
+		b.mu.Lock()
+		if len(q) == 0 {
+			delete(b.inputs, termID)
+			b.mu.Unlock()
+			return
+		}
+		b.mu.Unlock()
+		f := <-q
+		if c, err := b.current(); err == nil {
+			b.checked(f(c))
+		}
+	}
 }
 
 // Subscribe starts pushing a stream to the page: kind "events" (the

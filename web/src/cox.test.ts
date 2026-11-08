@@ -1,14 +1,29 @@
 import { describe, expect, it, vi } from "vitest";
 import { createCox, fromBase64, toBase64, type Bindings, type Payload } from "./cox";
 
-function fakeBindings(overrides: Partial<Bindings> = {}): Bindings & { calls: unknown[][] } {
+// fakeBindings answers coxApi like Go: a call id now, the result on "reply"
+// (pushed through target.__cox) shortly after.
+function fakeBindings(
+  overrides: Partial<Bindings> = {},
+  target: { __cox?: { emit(id: string, p: Payload): void } } = {},
+): Bindings & { calls: unknown[][]; target: typeof target } {
   const calls: unknown[][] = [];
   let next = 0;
+  let call = 0;
   return {
     calls,
+    target,
     coxApi: async (...args) => {
       calls.push(["api", ...args]);
-      return { status: "ok", result: [1, 2] };
+      const id = "c" + ++call;
+      const fail = args[1] === "/fail";
+      setTimeout(() =>
+        target.__cox!.emit(
+          "reply",
+          fail ? { type: "reply", call: id, ok: false, error: "boom" } : { type: "reply", call: id, ok: true, value: { status: "ok", result: [1, 2] } },
+        ),
+      );
+      return id;
     },
     coxSubscribe: async (...args) => {
       calls.push(["subscribe", ...args]);
@@ -86,9 +101,27 @@ describe("cox", () => {
     expect(seen).toHaveBeenCalledWith({ type: "disconnected" });
   });
 
+  it("delivers API results that arrive before the call id", async () => {
+    const target: { __cox?: { emit(id: string, p: Payload): void } } = {};
+    const b = fakeBindings({
+      coxApi: async () => {
+        target.__cox!.emit("reply", { type: "reply", call: "c7", ok: true, value: 42 });
+        return "c7";
+      },
+    }, target);
+    const cox = createCox(b, target);
+    expect(await cox.api("GET", "/api/v1/clients")).toBe(42);
+  });
+
+  it("rejects failed API calls", async () => {
+    const b = fakeBindings();
+    const cox = createCox(b, b.target);
+    await expect(cox.api("GET", "/fail")).rejects.toThrow("boom");
+  });
+
   it("encodes input and invokes actions", async () => {
     const b = fakeBindings();
-    const cox = createCox(b, {});
+    const cox = createCox(b, b.target);
     await cox.input("t_1", "ls\r");
     await cox.resize("t_1", 100, 30);
     const out = await cox.invoke("ssh.hosts.list", {});

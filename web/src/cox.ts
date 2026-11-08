@@ -1,7 +1,8 @@
 // The page's side of the desktop bridge. Go binds the cox* functions
 // into the page (each returns a Promise) and pushes streams by calling
 // window.__cox.emit(subID, payload). The page never talks to the server
-// itself.
+// itself. Bound functions run on the UI thread, so coxApi only returns a
+// call id; its result arrives as a "reply" message.
 
 /** An audit event from the activity stream. */
 export interface AuditEvent {
@@ -26,7 +27,8 @@ export type Payload =
   | { type: "gap" }
   | { type: "exit"; code: number | null }
   | { type: "connected"; addr: string; version: string; pid: number }
-  | { type: "disconnected" };
+  | { type: "disconnected" }
+  | { type: "reply"; call: string; ok: boolean; value?: unknown; error?: string };
 
 export type StatusPayload = Extract<Payload, { type: "connected" | "disconnected" }>;
 
@@ -47,7 +49,8 @@ export interface Outcome<T = unknown> {
 
 /** The functions Go binds into the page. */
 export interface Bindings {
-  coxApi(method: string, path: string, body?: unknown): Promise<unknown>;
+  /** coxApi starts a call and resolves to its id; the result comes on REPLY_CHANNEL. */
+  coxApi(method: string, path: string, body: unknown): Promise<string>;
   coxSubscribe(kind: "events" | "terminal", id: string): Promise<string>;
   coxUnsubscribe(subID: string): Promise<void>;
   coxInput(termID: string, base64: string): Promise<void>;
@@ -57,6 +60,10 @@ export interface Bindings {
 
 /** Subscription id of connection changes. */
 export const STATUS_CHANNEL = "bridge";
+/** Subscription id of coxApi results. */
+export const REPLY_CHANNEL = "reply";
+
+type Reply = Extract<Payload, { type: "reply" }>;
 
 /** How many early messages are kept for a subscription not yet known. */
 const PENDING_LIMIT = 10000;
@@ -85,10 +92,35 @@ export function createCox(b: Bindings, target: { __cox?: unknown }) {
   const pending = new Map<string, Payload[]>();
   const dead = new Set<string>();
   const statusHandlers = new Set<(p: StatusPayload) => void>();
+  const replies = new Map<string, Reply>(); // arrived before their call id
+  const waiting = new Map<string, (r: Reply) => void>();
+
+  async function call(method: string, path: string, body: unknown): Promise<unknown> {
+    const id = await b.coxApi(method, path, body ?? null);
+    const r = await new Promise<Reply>((resolve) => {
+      const early = replies.get(id);
+      if (early) {
+        replies.delete(id);
+        resolve(early);
+      } else {
+        waiting.set(id, resolve);
+      }
+    });
+    if (!r.ok) throw new Error(r.error ?? "request failed");
+    return r.value;
+  }
 
   const cox = {
     /** Called by Go for every pushed message. */
     emit(subID: string, payload: Payload) {
+      if (subID === REPLY_CHANNEL) {
+        const r = payload as Reply;
+        const resolve = waiting.get(r.call);
+        waiting.delete(r.call);
+        if (resolve) resolve(r);
+        else replies.set(r.call, r);
+        return;
+      }
       if (subID === STATUS_CHANNEL) {
         statusHandlers.forEach((h) => h(payload as StatusPayload));
         return;
@@ -105,11 +137,11 @@ export function createCox(b: Bindings, target: { __cox?: unknown }) {
     },
 
     api<T = unknown>(method: string, path: string, body?: unknown): Promise<T> {
-      return b.coxApi(method, path, body ?? null) as Promise<T>;
+      return call(method, path, body) as Promise<T>;
     },
 
     invoke<T = unknown>(id: string, args: Record<string, unknown> = {}): Promise<Outcome<T>> {
-      return b.coxApi("POST", "/api/v1/actions/" + id, args) as Promise<Outcome<T>>;
+      return call("POST", "/api/v1/actions/" + id, args) as Promise<Outcome<T>>;
     },
 
     /** subscribe streams to handler until the returned function is called. */

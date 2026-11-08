@@ -7,6 +7,7 @@ require (
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/skeema/knownhosts v1.3.3
 	github.com/spf13/cobra v1.10.2
+	github.com/webview/webview_go v0.0.0-20240831120633-6173450d4dd6
 	golang.org/x/crypto v0.58.0
 	golang.org/x/sys v0.49.0
 	mvdan.cc/sh/v3 v3.14.1

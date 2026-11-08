@@ -45,7 +45,7 @@ var agentAncestors = "on"
 func clientName() string { return actor.Client(actor.StdinTTY(), agentAncestors == "on") }
 
 // localCommands work without a running server.
-var localCommands = []string{"server", "mcp", "init", "clients", "version", "help", "completion"}
+var localCommands = []string{"server", "mcp", "init", "clients", "desktop", "version", "help", "completion"}
 
 func main() { os.Exit(run()) }
 
@@ -88,6 +88,7 @@ func run() int {
 		mcpCommand(coxHome, userHome),
 		initCommand(coxHome, userHome),
 		clientsCommand(coxHome),
+		desktopCommand(coxHome),
 		versionCommand(),
 	)
 	return report(root.ExecuteContext(ctx))

@@ -367,3 +367,19 @@ func TestSessionID(t *testing.T) {
 		t.Fatalf("id %q", id)
 	}
 }
+
+// TestDesktopWithoutServer: cox desktop needs a running server and opens
+// no window without one, even if server.json is stale.
+func TestDesktopWithoutServer(t *testing.T) {
+	s := newSandbox(t, sshtest.Start(t))
+	if out, code := s.cox(t, "desktop", "--help"); code != 0 || !strings.Contains(out, "desktop app") {
+		t.Fatalf("help without server: %d %s", code, out)
+	}
+	if out, code := s.cox(t, "desktop"); code != 2 || out != notRunning {
+		t.Fatalf("no server: %d %q", code, out)
+	}
+	instance.Write(s.coxHome, instance.Info{Addr: "127.0.0.1:1", PID: 1, Version: "dead", Token: "x"})
+	if out, code := s.cox(t, "desktop"); code != 2 || out != notRunning {
+		t.Fatalf("stale server.json: %d %q", code, out)
+	}
+}

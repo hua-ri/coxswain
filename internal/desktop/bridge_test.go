@@ -188,6 +188,17 @@ func TestAPI(t *testing.T) {
 	if exit := w.next(gone, ofType("exit")); exit["code"] != nil {
 		t.Fatalf("%v", exit)
 	}
+	// The page's coxApi answers at once with a call id; the result follows.
+	call := b.APIAsync("POST", "/api/v1/actions/demo.echo", map[string]any{})
+	reply := w.next(ReplyChannel, func(p map[string]any) bool { return p["call"] == call })
+	if v, _ := reply["value"].(map[string]any); reply["ok"] != true || v["status"] != "ok" {
+		t.Fatalf("%v", reply)
+	}
+	call = b.APIAsync("GET", "/healthz", nil)
+	reply = w.next(ReplyChannel, func(p map[string]any) bool { return p["call"] == call })
+	if e, _ := reply["error"].(string); reply["ok"] != false || !strings.Contains(e, "not an API path") {
+		t.Fatalf("%v", reply)
+	}
 	if names := b.Bindings(); len(names) != 6 || names["coxApi"] == nil || names["coxSubscribe"] == nil {
 		t.Fatalf("%v", names)
 	}
