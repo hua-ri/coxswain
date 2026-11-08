@@ -75,3 +75,10 @@ func TestSanitize(t *testing.T) {
 		}
 	}
 }
+
+// Return must not answer the dialog: the user has to click a button.
+func TestScriptHasNoDefaultButton(t *testing.T) {
+	if s := Script("Coxswain", "x", time.Second); strings.Contains(s, "default button") {
+		t.Fatalf("dialog has a default button: %s", s)
+	}
+}

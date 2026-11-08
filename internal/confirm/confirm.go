@@ -43,7 +43,7 @@ func AskWith(ctx context.Context, run Runner, title, message string, timeout tim
 // sanitised and quoted.
 func Script(title, message string, timeout time.Duration) string {
 	return fmt.Sprintf(`display dialog %s with title %s buttons {"Deny", "Allow"} `+
-		`default button "Deny" cancel button "Deny" giving up after %d with icon caution`,
+		`cancel button "Deny" giving up after %d with icon caution`,
 		quote(Sanitize(message)), quote(Sanitize(title)), int(timeout.Seconds()))
 }
 
