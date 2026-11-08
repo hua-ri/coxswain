@@ -116,6 +116,8 @@ func TestAnnotations(t *testing.T) {
 		"file.write":    {Destructive: true, Idempotent: true, OpenWorld: true},
 		"file.upload":   {Destructive: true, OpenWorld: true},
 		"file.download": {ReadOnly: true, OpenWorld: true},
+		"file.mkdir":    {Destructive: true, Idempotent: true, OpenWorld: true},
+		"file.remove":   {Destructive: true, Idempotent: true, OpenWorld: true},
 	}
 	for id, ann := range want {
 		a, ok := f.e.Registry.Get(id)
@@ -296,4 +298,33 @@ func TestWriteProtectedPathIsDestructive(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(f.srv.Root, "etc", "cox.conf")); err != nil {
 		t.Fatal("labels do not block:", err)
 	}
+}
+
+func TestMkdirAndRemove(t *testing.T) {
+	f := setup(t)
+	res := mustOK[PathOutput](t, invoke(t, f.e, desktop, "file.mkdir", map[string]any{"host": "prod", "path": "/a/b/c", "parents": true}))
+	if res.Path != "/a/b/c" {
+		t.Fatalf("%+v", res)
+	}
+	if fi, err := os.Stat(filepath.Join(f.srv.Root, "a", "b", "c")); err != nil || !fi.IsDir() {
+		t.Fatalf("%v %v", fi, err)
+	}
+	if ev := requested(t, f.e, "file.mkdir"); ev.Risk != "write" {
+		t.Fatalf("%+v", ev)
+	}
+	mustFail(t, invoke(t, f.e, desktop, "file.mkdir", map[string]any{"host": "prod", "path": "/x/y"}), "")
+	// parents=true on an existing directory is fine, like mkdir -p.
+	mustOK[PathOutput](t, invoke(t, f.e, desktop, "file.mkdir", map[string]any{"host": "prod", "path": "/a/b", "parents": true}))
+
+	put(t, f.srv.Root, "a/b/c/file.txt", "x")
+	mustFail(t, invoke(t, f.e, desktop, "file.remove", map[string]any{"host": "prod", "path": "/a/b/c"}), "")
+	mustOK[PathOutput](t, invoke(t, f.e, desktop, "file.remove", map[string]any{"host": "prod", "path": "/a/b/c/file.txt"}))
+	if ev := requested(t, f.e, "file.remove"); ev.Risk != "destructive" {
+		t.Fatalf("%+v", ev)
+	}
+	mustOK[PathOutput](t, invoke(t, f.e, desktop, "file.remove", map[string]any{"host": "prod", "path": "/a/b/c"}))
+	if _, err := os.Stat(filepath.Join(f.srv.Root, "a", "b", "c")); !os.IsNotExist(err) {
+		t.Fatalf("not removed: %v", err)
+	}
+	mustFail(t, invoke(t, f.e, desktop, "file.remove", map[string]any{"host": "prod", "path": "/a/b/c"}), "")
 }

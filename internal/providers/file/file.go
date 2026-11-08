@@ -58,6 +58,8 @@ func (p *Provider) Register(r *action.Registry) {
 	r.Register(p.stat())
 	r.Register(p.read())
 	r.Register(p.write())
+	r.Register(p.mkdir())
+	r.Register(p.remove())
 	r.Register(p.upload())
 	r.Register(p.download())
 }
@@ -591,4 +593,94 @@ func writeAtomic(c *sftp.Client, rp string, data []byte, mode fs.FileMode, creat
 		return out, err
 	}
 	return out, nil
+}
+
+// PathOutput is the result of file.mkdir and file.remove.
+type PathOutput struct {
+	Host string `json:"host"`
+	Path string `json:"path"`
+}
+
+func (p *Provider) mkdir() *action.Action {
+	return &action.Action{
+		ID:          "file.mkdir",
+		Summary:     "Create a directory on a saved SSH host",
+		Description: "Create a remote directory over SFTP; parents=true also creates missing parents and accepts an existing directory (like mkdir -p).",
+		Input: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"host":    hostProperty,
+				"path":    pathProperty,
+				"parents": map[string]any{"type": "boolean", "description": "create missing parents; no error if it exists"},
+			},
+			"required": []string{"host", "path"},
+		},
+		Positional:  []string{"host", "path"},
+		Annotations: action.Annotations{Destructive: true, Idempotent: true, OpenWorld: true},
+		Label:       p.label("create directory", writeRisk),
+		Run: func(ctx context.Context, raw json.RawMessage) (any, error) {
+			var in struct {
+				pathInput
+				Parents bool `json:"parents"`
+			}
+			if err := action.Decode(raw, &in); err != nil {
+				return nil, err
+			}
+			rp, err := remotePath(in.Path)
+			if err != nil {
+				return nil, err
+			}
+			h, c, release, err := p.session(ctx, in.Host)
+			if err != nil {
+				return nil, err
+			}
+			if in.Parents {
+				err = c.MkdirAll(rp)
+			} else {
+				err = c.Mkdir(rp)
+			}
+			release(failed(err))
+			if err != nil {
+				return nil, fmt.Errorf("mkdir %s: %w", in.Path, err)
+			}
+			return PathOutput{Host: h.Name, Path: in.Path}, nil
+		},
+	}
+}
+
+func (p *Provider) remove() *action.Action {
+	return &action.Action{
+		ID:      "file.remove",
+		Summary: "Delete a file or an empty directory on a saved SSH host",
+		Description: "Delete one remote file, symlink or empty directory over SFTP. It does not delete directory trees. " +
+			"Hosts tagged env=prod are production: confirm with the user before changing them. Respect the host note.",
+		Input: map[string]any{
+			"type":       "object",
+			"properties": map[string]any{"host": hostProperty, "path": pathProperty},
+			"required":   []string{"host", "path"},
+		},
+		Positional:  []string{"host", "path"},
+		Annotations: action.Annotations{Destructive: true, Idempotent: true, OpenWorld: true},
+		Label:       p.label("delete", func(string) action.Risk { return action.Destructive }),
+		Run: func(ctx context.Context, raw json.RawMessage) (any, error) {
+			var in pathInput
+			if err := action.Decode(raw, &in); err != nil {
+				return nil, err
+			}
+			rp, err := remotePath(in.Path)
+			if err != nil {
+				return nil, err
+			}
+			h, c, release, err := p.session(ctx, in.Host)
+			if err != nil {
+				return nil, err
+			}
+			err = c.Remove(rp)
+			release(failed(err))
+			if err != nil {
+				return nil, fmt.Errorf("delete %s: %w", in.Path, err)
+			}
+			return PathOutput{Host: h.Name, Path: in.Path}, nil
+		},
+	}
 }
