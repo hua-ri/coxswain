@@ -5,6 +5,7 @@ go 1.26.0
 require (
 	github.com/kevinburke/ssh_config v1.6.0
 	github.com/modelcontextprotocol/go-sdk v1.8.0
+	github.com/pkg/sftp v1.13.12
 	github.com/skeema/knownhosts v1.3.3
 	github.com/spf13/cobra v1.10.2
 	github.com/webview/webview_go v0.0.0-20240831120633-6173450d4dd6
@@ -16,6 +17,7 @@ require (
 require (
 	github.com/google/jsonschema-go v0.4.3 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
+	github.com/kr/fs v0.1.0 // indirect
 	github.com/segmentio/asm v1.1.3 // indirect
 	github.com/segmentio/encoding v0.5.4 // indirect
 	github.com/spf13/pflag v1.0.9 // indirect

@@ -236,6 +236,12 @@ func TestEndToEnd(t *testing.T) {
 	if out, code := s.cox(t, "ssh", "exec", "dev", "--", "exit 7"); code != 7 {
 		t.Fatalf("exit code: %d %q", code, out)
 	}
+	if out, code := s.cox(t, "file", "write", "dev", "notes.txt", "--content", "hi there\n"); code != 0 {
+		t.Fatalf("file write: %d %s", code, out)
+	}
+	if out, code := s.cox(t, "file", "read", "dev", "notes.txt"); code != 0 || out != "hi there\n" {
+		t.Fatalf("file read: %d %q", code, out)
+	}
 	dir := t.TempDir()
 	if out, code := s.cox(t, "ssh", "exec", "prod", "--", "rm", "-rf", dir); code != 0 {
 		t.Fatalf("destructive: %d %s", code, out)

@@ -389,3 +389,15 @@ func TestClassifyReReview(t *testing.T) {
 		}
 	}
 }
+
+func TestIsProtected(t *testing.T) {
+	for p, want := range map[string]bool{
+		"/etc/hosts": true, "/": true, "~/.ssh/config": true, "$HOME/.aws/credentials": true,
+		"/home/u/.ssh/authorized_keys": true, "../x": true, "/etc/../etc/passwd": true,
+		"/tmp/x": false, "app/config.yml": false, "~/notes.txt": false, "": false,
+	} {
+		if got := IsProtected(p); got != want {
+			t.Errorf("IsProtected(%q) = %v, want %v", p, got, want)
+		}
+	}
+}

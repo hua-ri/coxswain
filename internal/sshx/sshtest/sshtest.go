@@ -1,6 +1,7 @@
 // Package sshtest runs a small SSH server for tests. It accepts one
-// ed25519 client key, runs "exec" requests with /bin/sh on this machine,
-// runs /bin/sh (without a real pty) for "shell" requests, and forwards
+// ed25519 client key, runs "exec" requests with /bin/sh on this machine
+// (in Root), runs /bin/sh (without a real pty) for "shell" requests,
+// serves the "sftp" subsystem with Root as "/", and forwards
 // direct-tcpip channels (so it can act as a ProxyJump host).
 package sshtest
 
@@ -31,6 +32,10 @@ type Server struct {
 	KeyFile    string // client private key (OpenSSH PEM, unencrypted)
 	KnownHosts string // known_hosts file containing this server's key
 	Commands   chan string
+	// Root is a temporary directory: the SFTP root ("/") and the working
+	// directory of commands, so a relative path names the same file in
+	// both.
+	Root string
 	// Sizes receives every pty-req (with Term) and window-change request.
 	Sizes   chan Size
 	Accepts atomic.Int32 // TCP connections accepted
@@ -95,6 +100,7 @@ func Start(t *testing.T) *Server {
 		Addr: addr.String(), Host: "127.0.0.1", Port: addr.Port, User: "tester",
 		KeyFile: keyFile, KnownHosts: filepath.Join(dir, "known_hosts"),
 		Commands: make(chan string, 100),
+		Root:     t.TempDir(),
 		Sizes:    make(chan Size, 100),
 	}
 	line := knownhosts.Line([]string{knownhosts.Normalize(s.Addr)}, hostSigner.PublicKey())
@@ -164,6 +170,7 @@ func (s *Server) session(nc ssh.NewChannel) {
 			default:
 			}
 			c := exec.Command("/bin/sh", "-c", p.Command)
+			c.Dir = s.Root
 			c.Stdout, c.Stderr = ch, ch.Stderr()
 			mu.Lock()
 			cmd = c
@@ -214,6 +221,15 @@ func (s *Server) session(nc ssh.NewChannel) {
 				}()
 			}
 			go wait(ch, c, err)
+		case "subsystem":
+			var p struct{ Name string }
+			ssh.Unmarshal(req.Payload, &p)
+			if p.Name != "sftp" {
+				req.Reply(false, nil)
+				continue
+			}
+			req.Reply(true, nil)
+			go serveSFTP(ch, s.Root)
 		case "signal":
 			kill()
 		default:

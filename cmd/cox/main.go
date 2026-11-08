@@ -24,6 +24,7 @@ import (
 	"github.com/hua-ri/coxswain/internal/instance"
 	"github.com/hua-ri/coxswain/internal/inventory"
 	"github.com/hua-ri/coxswain/internal/providers/artifact"
+	"github.com/hua-ri/coxswain/internal/providers/file"
 	sshprov "github.com/hua-ri/coxswain/internal/providers/ssh"
 	"github.com/hua-ri/coxswain/internal/providers/terminal"
 	"github.com/hua-ri/coxswain/internal/shaper"
@@ -67,6 +68,7 @@ func run() int {
 		Printers: map[string]cli.Decoder{
 			"ssh.exec":      cli.PrintAs[sshprov.ExecOutput],
 			"terminal.read": cli.PrintAs[terminal.ReadOutput],
+			"file.read":     cli.PrintAs[file.ReadOutput],
 		},
 		Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr,
 	}
@@ -161,5 +163,6 @@ func newEngine(coxHome, userHome string, pool func(*sshx.Dialer) *sshx.Pool) (*e
 	p.Register(reg)
 	artifact.Register(reg, artifacts)
 	(&terminal.Provider{Hosts: hosts, Terms: terms, Artifacts: artifacts}).Register(reg)
+	(&file.Provider{Hosts: hosts, Dialer: dialer, Pool: p.Pool, Artifacts: artifacts}).Register(reg)
 	return &engine.Engine{Registry: reg, Events: events}, terms
 }

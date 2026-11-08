@@ -387,14 +387,7 @@ func (p *Provider) exec() *action.Action {
 // connect returns a connection to h from the pool, or a fresh one that
 // release closes.
 func (p *Provider) connect(ctx context.Context, h inventory.Host) (*sshx.Conn, func(broken bool), error) {
-	if p.Pool != nil {
-		return p.Pool.Get(ctx, h)
-	}
-	conn, err := p.Dialer.Dial(ctx, h)
-	if err != nil {
-		return nil, nil, err
-	}
-	return conn, func(bool) { conn.Close() }, nil
+	return sshx.Connect(ctx, p.Pool, p.Dialer, h)
 }
 
 // address is user@host:port as an import would connect to it.

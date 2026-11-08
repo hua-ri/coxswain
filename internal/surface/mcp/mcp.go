@@ -13,10 +13,11 @@ import (
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-const instructions = `Coxswain (cox) gives you the user's ops tools: SSH hosts, remote commands and shared terminals.
+const instructions = `Coxswain (cox) gives you the user's ops tools: SSH hosts, remote commands, shared terminals and files.
 - Start with ssh_hosts_list to see hosts, their tags and notes. Respect host notes.
 - Use ssh_exec for one-off commands. For long-running work or work the user should watch, open a shared
   terminal (terminal_open, terminal_send, terminal_read); the user sees it and can type in it too.
+- Use file_list, file_stat and file_read for remote files; file_write replaces a file atomically.
 - Hosts tagged env=prod are production: confirm with the user before changing them.
 - You never handle credentials; never ask the user for passwords or keys.
 - Large outputs are truncated; read more with artifact_read.`

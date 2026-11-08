@@ -520,12 +520,12 @@ func (r rater) protected(p string) bool {
 	if r.cd && p != "" && !strings.HasPrefix(p, "/") && !strings.HasPrefix(p, "~") && !strings.HasPrefix(p, "$HOME") {
 		return true
 	}
-	return isProtected(p)
+	return IsProtected(p)
 }
 
-// isProtected reports whether p is a system path, a credential store or a
+// IsProtected reports whether p is a system path, a credential store or a
 // block device. Relative paths that climb out (../..) are protected too.
-func isProtected(p string) bool {
+func IsProtected(p string) bool {
 	if strings.HasPrefix(p, "$HOME/") {
 		p = "~/" + p[len("$HOME/"):]
 	}
