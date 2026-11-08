@@ -646,3 +646,16 @@ func TestSocksMalformed(t *testing.T) {
 	ping(t, conn)
 	waitFor(t, f.m, tn.ID, func(tn Tunnel) bool { return tn.Connections <= 1 })
 }
+
+func TestLoopback(t *testing.T) {
+	for _, h := range []string{"", "localhost", "LocalHost.", "127.0.0.1", "127.1.2.3", "::1", "0.0.0.0", "::"} {
+		if !loopback(h) {
+			t.Errorf("%q is this machine", h)
+		}
+	}
+	for _, h := range []string{"10.0.0.1", "example.com", "localhost.example.com"} {
+		if loopback(h) {
+			t.Errorf("%q is not this machine", h)
+		}
+	}
+}

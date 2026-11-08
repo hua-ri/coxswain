@@ -14,6 +14,7 @@ import (
 	"net"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -436,12 +437,15 @@ func (m *Manager) maxOpen() int {
 
 // loopback reports whether host (empty: the default, 127.0.0.1) names
 // the machine itself.
+// It is defence in depth: the host resolves the name, and could map
+// other names to itself.
 func loopback(host string) bool {
+	host = strings.TrimSuffix(strings.ToLower(host), ".")
 	if host == "" || host == "localhost" {
 		return true
 	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	return ip != nil && (ip.IsLoopback() || ip.IsUnspecified())
 }
 
 func newID() (string, error) {
