@@ -126,7 +126,7 @@ func (b *bridge) initialize(req *jsonrpc.Request) {
 	b.drop(nil) // a new handshake starts a new server session
 	local, err := b.off.call(b.ctx, req)
 	if u := b.connect(false); u != nil {
-		u.track(req.ID)
+		u.track(req)
 		if b.send(u, req) {
 			return
 		}
@@ -156,13 +156,13 @@ func (b *bridge) call(req *jsonrpc.Request, wg *sync.WaitGroup) {
 // got out), the bridge reconnects and, with retry, sends it once more.
 // A call the server may have taken is never sent twice.
 func (b *bridge) relay(u *upstream, req *jsonrpc.Request, retry bool) {
-	u.track(req.ID)
+	u.track(req)
 	done := u.write(b.ctx, req)
 	go func() {
 		res := <-done
 		if res.err == nil {
 			if !u.accept(req.ID) { // the connection failed meanwhile
-				b.lost(req.ID)
+				b.lost(req)
 			}
 			return
 		}
@@ -174,8 +174,10 @@ func (b *bridge) relay(u *upstream, req *jsonrpc.Request, retry bool) {
 		b.drop(u)
 		notTaken := errors.Is(res.err, sdk.ErrSessionMissing) || !res.sent
 		switch {
+		case !notTaken && res.status >= 400:
+			b.rejected(req.ID, res.err) // the server answered: it did not run
 		case !notTaken:
-			b.lost(req.ID)
+			b.lost(req)
 		case !retry:
 			b.unsent(req)
 		default:
@@ -189,13 +191,24 @@ func (b *bridge) relay(u *upstream, req *jsonrpc.Request, retry bool) {
 }
 
 // lost answers a call the server may have run but whose answer can no
-// longer arrive: the outcome is unknown, unless the server is gone.
-func (b *bridge) lost(id jsonrpc.ID) {
+// longer arrive: the outcome is unknown. If no server answers any more,
+// the agent gets the usual offline answer instead.
+func (b *bridge) lost(req *jsonrpc.Request) {
 	if !b.reachable() {
-		b.fail(id)
+		b.local(req)
 		return
 	}
-	b.down.Write(b.ctx, &jsonrpc.Response{ID: id, Error: &jsonrpc.Error{Code: CodeConnectionLost, Message: connectionLost}})
+	b.down.Write(b.ctx, &jsonrpc.Response{ID: req.ID, Error: &jsonrpc.Error{Code: CodeConnectionLost, Message: connectionLost}})
+}
+
+// rejected answers a call the server refused with an HTTP error, passing
+// on its JSON-RPC error if it sent one.
+func (b *bridge) rejected(id jsonrpc.ID, err error) {
+	var wire *jsonrpc.Error
+	if !errors.As(err, &wire) {
+		wire = &jsonrpc.Error{Code: jsonrpc.CodeInternalError, Message: err.Error()}
+	}
+	b.down.Write(b.ctx, &jsonrpc.Response{ID: id, Error: wire})
 }
 
 // unsent answers a call that did not reach the server: from the local
@@ -295,7 +308,7 @@ func (b *bridge) connect(replay bool) *upstream {
 	if err != nil {
 		return nil
 	}
-	u = &upstream{conn: conn, pending: map[jsonrpc.ID]bool{}, internal: map[jsonrpc.ID]chan *jsonrpc.Response{}}
+	u = &upstream{conn: conn, pending: map[jsonrpc.ID]*pendingCall{}, internal: map[jsonrpc.ID]chan *jsonrpc.Response{}}
 	go b.read(u)
 	if replay && init != nil {
 		if err := b.replay(u, init, initialized); err != nil {
@@ -354,10 +367,10 @@ func (b *bridge) read(u *upstream) {
 			b.drop(u)
 			u.mu.Lock()
 			u.dead = true
-			var taken []jsonrpc.ID
-			for id, accepted := range u.pending {
-				if accepted {
-					taken = append(taken, id)
+			var taken []*jsonrpc.Request
+			for id, c := range u.pending {
+				if c.accepted {
+					taken = append(taken, c.req)
 					delete(u.pending, id)
 				}
 			}
@@ -366,14 +379,15 @@ func (b *bridge) read(u *upstream) {
 			}
 			u.internal = map[jsonrpc.ID]chan *jsonrpc.Response{}
 			u.mu.Unlock()
-			for _, id := range taken {
-				b.lost(id)
+			for _, req := range taken {
+				b.lost(req)
 			}
 			return
 		}
 		if resp, ok := msg.(*jsonrpc.Response); ok {
 			u.mu.Lock()
 			ch, internal := u.internal[resp.ID]
+			call := u.pending[resp.ID]
 			delete(u.internal, resp.ID)
 			delete(u.pending, resp.ID)
 			u.mu.Unlock()
@@ -385,7 +399,11 @@ func (b *bridge) read(u *upstream) {
 				// The server closed the call's stream without answering:
 				// it is shutting down or closed the session.
 				b.drop(u)
-				b.lost(resp.ID)
+				if call != nil {
+					b.lost(call.req)
+				} else {
+					b.fail(resp.ID)
+				}
 				continue
 			}
 		}
@@ -430,15 +448,21 @@ func (b *bridge) drop(u *upstream) {
 type upstream struct {
 	conn     sdk.Connection
 	mu       sync.Mutex
-	pending  map[jsonrpc.ID]bool                   // agent calls awaiting a response: true once the server took them
+	pending  map[jsonrpc.ID]*pendingCall           // agent calls awaiting a response
 	internal map[jsonrpc.ID]chan *jsonrpc.Response // the bridge's own calls
 	dead     bool                                  // the connection failed
 }
 
+// pendingCall is an agent call awaiting its response.
+type pendingCall struct {
+	req      *jsonrpc.Request
+	accepted bool // the server took it
+}
+
 // track records a call about to be sent.
-func (u *upstream) track(id jsonrpc.ID) {
+func (u *upstream) track(req *jsonrpc.Request) {
 	u.mu.Lock()
-	u.pending[id] = false
+	u.pending[req.ID] = &pendingCall{req: req}
 	u.mu.Unlock()
 }
 
@@ -448,14 +472,15 @@ func (u *upstream) track(id jsonrpc.ID) {
 func (u *upstream) accept(id jsonrpc.ID) bool {
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	if _, ok := u.pending[id]; !ok {
+	c, ok := u.pending[id]
+	if !ok {
 		return true // already answered
 	}
 	if u.dead {
 		delete(u.pending, id)
 		return false
 	}
-	u.pending[id] = true
+	c.accepted = true
 	return true
 }
 
@@ -465,11 +490,13 @@ func (u *upstream) untrack(id jsonrpc.ID) {
 	u.mu.Unlock()
 }
 
-// writeResult is how a write ended; sent reports that the whole request
-// body went out (so the server may have received it).
+// writeResult is how a write ended: sent reports that the whole request
+// body went out (so the server may have received it), status the HTTP
+// status the server answered with (0 if none).
 type writeResult struct {
-	err  error
-	sent bool
+	err    error
+	sent   bool
+	status int
 }
 
 // write starts writing msg and returns once its HTTP request body has
@@ -482,7 +509,7 @@ func (u *upstream) write(ctx context.Context, msg jsonrpc.Message) <-chan writeR
 	go func() {
 		err := u.conn.Write(context.WithValue(ctx, sentKey{}, t), msg)
 		t.signal()
-		done <- writeResult{err: err, sent: t.sent.Load()}
+		done <- writeResult{err: err, sent: t.sent.Load(), status: int(t.status.Load())}
 	}()
 	<-started
 	return done
@@ -490,11 +517,12 @@ func (u *upstream) write(ctx context.Context, msg jsonrpc.Message) <-chan writeR
 
 type sentKey struct{}
 
-// sendTracker follows one request body: signal when it is done (sent or
-// abandoned), sent if it was read to the end.
+// sendTracker follows one request: signal when its body is done (sent
+// or abandoned), sent if it was read to the end, status of the answer.
 type sendTracker struct {
 	signal func()
 	sent   atomic.Bool
+	status atomic.Int32
 }
 
 // writeFailed (a func()) runs when a call's write fails, before the
@@ -512,10 +540,15 @@ func (h *headers) RoundTrip(r *http.Request) (*http.Response, error) {
 	r = r.Clone(r.Context())
 	r.Header.Set("Authorization", "Bearer "+h.token)
 	r.Header.Set("X-Cox-Client", h.client)
-	if t, ok := r.Context().Value(sentKey{}).(*sendTracker); ok && r.Body != nil {
+	t, _ := r.Context().Value(sentKey{}).(*sendTracker)
+	if t != nil && r.Body != nil {
 		r.Body = &signalBody{ReadCloser: r.Body, t: t}
 	}
-	return http.DefaultTransport.RoundTrip(r)
+	resp, err := http.DefaultTransport.RoundTrip(r)
+	if t != nil && resp != nil {
+		t.status.Store(int32(resp.StatusCode))
+	}
+	return resp, err
 }
 
 // signalBody reports to its tracker once the body has been read to the

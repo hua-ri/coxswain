@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"net/http/httputil"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -22,7 +23,7 @@ import (
 // it) and can break the next tools/call in a chosen way.
 type proxy struct {
 	target *url.URL
-	mode   atomic.Value // string: "", "missing" or "cut"; used once
+	mode   atomic.Value // string: "", "missing", "cut", "eof" or "reject"; used once
 	calls  atomic.Int32 // tools/call requests that reached the server
 
 	mu      sync.Mutex
@@ -66,6 +67,19 @@ func (p *proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			p.closeStreams()
 			time.Sleep(100 * time.Millisecond)
 			http.Error(w, "session not found", http.StatusNotFound)
+			return
+		case "eof":
+			// A dead keep-alive connection: the request went out, no answer.
+			conn, _, err := w.(http.Hijacker).Hijack()
+			if err == nil {
+				conn.Close()
+			}
+			return
+		case "reject":
+			// The server refuses the request outright.
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			io.WriteString(w, `{"jsonrpc":"2.0","id":null,"error":{"code":-32602,"message":"bad request from proxy"}}`)
 			return
 		case "cut":
 			// The server accepts the call, then the connection drops.
@@ -145,6 +159,45 @@ func TestConnectionLostAfterAccept(t *testing.T) {
 	}
 	if n := p.calls.Load(); n != 2 {
 		t.Fatalf("calls that reached the server: %d (resent?)", n)
+	}
+	if got, isErr := echo(t, cs, "three"); isErr || got != "three" {
+		t.Fatalf("next call: %q %v", got, isErr)
+	}
+}
+
+// TestServerGoneMidWrite: the call went out on a connection that died
+// (the server stopped) and no server answers any more. The agent gets the
+// usual offline answer, not a protocol error.
+func TestServerGoneMidWrite(t *testing.T) {
+	home := t.TempDir()
+	startServer(t, home, newBlocker())
+	p := startProxy(t, home)
+	cs := agentSession(t, home)
+	if got, isErr := echo(t, cs, "one"); isErr || got != "one" {
+		t.Fatalf("%q %v", got, isErr)
+	}
+	p.mode.Store("eof")
+	os.Remove(instance.Path(home)) // as if the server had stopped
+	if got, isErr := echo(t, cs, "two"); !isErr || got != instance.ErrNotRunning.Error() {
+		t.Fatalf("%q %v", got, isErr)
+	}
+}
+
+// TestCallRejected: a call the server refuses (HTTP 400) did not run; the
+// agent gets the server's error, and it is not sent again.
+func TestCallRejected(t *testing.T) {
+	home := t.TempDir()
+	startServer(t, home, newBlocker())
+	p := startProxy(t, home)
+	cs := agentSession(t, home)
+	echo(t, cs, "one")
+	p.mode.Store("reject")
+	_, err := cs.CallTool(context.Background(), &sdk.CallToolParams{Name: "demo_echo", Arguments: map[string]any{"msg": "two"}})
+	if err == nil || !strings.Contains(err.Error(), "Bad Request") || strings.Contains(err.Error(), "outcome") {
+		t.Fatalf("got %v", err)
+	}
+	if n := p.calls.Load(); n != 1 {
+		t.Fatalf("calls that reached the server: %d", n)
 	}
 	if got, isErr := echo(t, cs, "three"); isErr || got != "three" {
 		t.Fatalf("next call: %q %v", got, isErr)
