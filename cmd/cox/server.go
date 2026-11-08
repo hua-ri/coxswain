@@ -28,7 +28,7 @@ func serverCommand(coxHome, userHome string) *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			var pool *sshx.Pool
-			e := newEngine(coxHome, userHome, func(d *sshx.Dialer) *sshx.Pool {
+			e, terms := newEngine(coxHome, userHome, func(d *sshx.Dialer) *sshx.Pool {
 				pool = &sshx.Pool{Dialer: d}
 				return pool
 			})
@@ -40,7 +40,8 @@ func serverCommand(coxHome, userHome string) *cobra.Command {
 			go func() { printEvents(os.Stderr, events); close(printed) }()
 
 			err := server.Run(cmd.Context(), server.Config{
-				Engine: e,
+				Engine:    e,
+				Terminals: terms,
 				Clients: &clients.Authorizer{
 					Store:  clients.NewStore(filepath.Join(coxHome, "clients.json")),
 					Ask:    clients.Dialog(authorizeTimeout),
@@ -82,6 +83,19 @@ func eventLine(ev eventlog.Event) string {
 	}
 	if ev.Actor != nil {
 		parts = append(parts, ev.Actor.String())
+	}
+	if t, ok := strings.CutPrefix(ev.Type, "terminal."); ok {
+		parts = append(parts, "terminal", ev.Terminal, t)
+		for _, tg := range ev.Targets {
+			parts = append(parts, tg.ID)
+		}
+		if ev.Reason != "" {
+			parts = append(parts, ev.Reason)
+		}
+		if ev.ExitCode != nil {
+			parts = append(parts, fmt.Sprintf("(exit code %d)", *ev.ExitCode))
+		}
+		return confirm.Sanitize(strings.Join(parts, " "))
 	}
 	parts = append(parts, ev.Action)
 	phase := strings.TrimPrefix(ev.Type, "action.")

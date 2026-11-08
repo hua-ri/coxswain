@@ -28,6 +28,7 @@ import (
 	"github.com/hua-ri/coxswain/internal/shaper"
 	"github.com/hua-ri/coxswain/internal/sshx"
 	"github.com/hua-ri/coxswain/internal/surface/cli"
+	"github.com/hua-ri/coxswain/internal/term"
 )
 
 // version is set at release time with -ldflags "-X main.version=…".
@@ -126,8 +127,16 @@ func commandName(args []string) string {
 	return ""
 }
 
-// newEngine builds the engine with every provider. pool may be nil.
-func newEngine(coxHome, userHome string, pool func(*sshx.Dialer) *sshx.Pool) *engine.Engine {
+// newRegistry returns every action, e.g. to offer the tools while the
+// server is down.
+func newRegistry(coxHome, userHome string) *action.Registry {
+	e, _ := newEngine(coxHome, userHome, nil)
+	return e.Registry
+}
+
+// newEngine builds the engine with every provider, and the terminal
+// sessions the server shares. pool may be nil.
+func newEngine(coxHome, userHome string, pool func(*sshx.Dialer) *sshx.Pool) (*engine.Engine, *term.Manager) {
 	hosts := inventory.NewStore(filepath.Join(coxHome, "hosts.json"))
 	artifacts := shaper.NewArtifacts(filepath.Join(coxHome, "artifacts"))
 	ssh := filepath.Join(userHome, ".ssh")
@@ -141,8 +150,10 @@ func newEngine(coxHome, userHome string, pool func(*sshx.Dialer) *sshx.Pool) *en
 	if pool != nil {
 		p.Pool = pool(dialer)
 	}
+	events := eventlog.Open(filepath.Join(coxHome, "events"))
+	terms := &term.Manager{Hosts: hosts, Dialer: dialer, Events: events}
 	reg := action.NewRegistry()
 	p.Register(reg)
 	artifact.Register(reg, artifacts)
-	return &engine.Engine{Registry: reg, Events: eventlog.Open(filepath.Join(coxHome, "events"))}
+	return &engine.Engine{Registry: reg, Events: events}, terms
 }

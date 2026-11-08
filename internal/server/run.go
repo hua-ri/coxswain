@@ -86,7 +86,10 @@ func Run(ctx context.Context, cfg Config, home string) error {
 	case <-ctx.Done():
 	}
 	cfg.Engine.Cancel() // running actions end and are recorded as failed
-	stop()              // ends event streams and other long requests
+	if cfg.Terminals != nil {
+		cfg.Terminals.CloseAll() // streams end with an exit event
+	}
+	stop() // ends event streams and other long requests
 	// Requests are already cancelled; a short grace period covers
 	// responses being written. (Unused client connections would otherwise
 	// hold Shutdown for 5s.)

@@ -16,6 +16,7 @@ import (
 	"github.com/hua-ri/coxswain/internal/engine"
 	"github.com/hua-ri/coxswain/internal/eventlog"
 	"github.com/hua-ri/coxswain/internal/instance"
+	"github.com/hua-ri/coxswain/internal/term"
 )
 
 // ClientHeader names the calling client (cli, desktop, claude-code, …).
@@ -34,7 +35,10 @@ type Config struct {
 	Token   string // bearer token; Run generates one if empty
 	Version string
 	Events  *eventlog.Log // activity stream source; defaults to Engine.Events
-	PID     int           // reported by /healthz; defaults to this process
+	// Terminals are the shared terminal sessions; nil disables
+	// /api/v1/terminals. Run closes them all on shutdown.
+	Terminals *term.Manager
+	PID       int // reported by /healthz; defaults to this process
 	// Port to listen on (Run only); 0 reuses the previous port if free.
 	Port int
 	// KeepAlive is the SSE comment interval; default 15s.
@@ -67,6 +71,7 @@ func New(cfg Config) http.Handler {
 	api.HandleFunc("GET /api/v1/clients", s.builtInOnly(s.listClients))
 	api.HandleFunc("DELETE /api/v1/clients/{name}", s.builtInOnly(s.revokeClient))
 	api.HandleFunc("PUT /api/v1/clients/{name}", s.builtInOnly(s.allowClient))
+	s.terminalRoutes(api)
 	api.Handle("/mcp", newMCPHandler(cfg))
 
 	root := http.NewServeMux()

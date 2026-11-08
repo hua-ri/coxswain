@@ -11,6 +11,7 @@ import (
 func TestEventLine(t *testing.T) {
 	at := time.Date(2026, 11, 7, 9, 5, 7, 0, time.Local)
 	kimi := &action.Actor{Kind: action.Agent, Name: "kimi"}
+	three := 3
 	cases := []struct {
 		ev   eventlog.Event
 		want string
@@ -26,6 +27,15 @@ func TestEventLine(t *testing.T) {
 			"09:05:07 agent:kimi ssh.exec refused: revoked"},
 		{eventlog.Event{Time: at, Type: eventlog.ClientRevoked, Client: "codex"},
 			"09:05:07 client codex revoked"},
+		{eventlog.Event{Time: at, Type: eventlog.TerminalOpened, Actor: kimi, Terminal: "t_0123456789ab",
+			Targets: []action.Target{{ID: "dev"}}},
+			"09:05:07 agent:kimi terminal t_0123456789ab opened dev"},
+		{eventlog.Event{Time: at, Type: eventlog.TerminalClosed, Actor: kimi, Terminal: "t_0123456789ab",
+			Targets: []action.Target{{ID: "dev"}}, ExitCode: &three, Reason: "exited"},
+			"09:05:07 agent:kimi terminal t_0123456789ab closed dev exited (exit code 3)"},
+		{eventlog.Event{Time: at, Type: eventlog.TerminalClosed, Actor: kimi, Terminal: "t_0123456789ab",
+			Targets: []action.Target{{ID: "dev"}}, Reason: "closed by human:desktop"},
+			"09:05:07 agent:kimi terminal t_0123456789ab closed dev closed by human:desktop"},
 	}
 	for _, c := range cases {
 		if got := eventLine(c.ev); got != c.want {

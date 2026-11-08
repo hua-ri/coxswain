@@ -34,7 +34,7 @@ func mcpCommand(coxHome, userHome string) *cobra.Command {
 			}
 			return mcpbridge.Run(cmd.Context(), mcpbridge.Options{
 				Stdin: os.Stdin, Stdout: os.Stdout, Home: coxHome, Client: name, Version: version,
-				Registry: newEngine(coxHome, userHome, nil).Registry, // tools offered while the server is down
+				Registry: newRegistry(coxHome, userHome), // tools offered while the server is down
 			})
 		},
 	}
@@ -207,7 +207,8 @@ func importHosts(cmd *cobra.Command, coxHome, userHome string) (importResult, er
 		}
 		raw = out.Result
 	case errors.Is(err, instance.ErrNotRunning):
-		out := newEngine(coxHome, userHome, nil).Invoke(cmd.Context(), server.Actor("cli"), "ssh.hosts.import", nil)
+		e, _ := newEngine(coxHome, userHome, nil)
+		out := e.Invoke(cmd.Context(), server.Actor("cli"), "ssh.hosts.import", nil)
 		if out.Status != engine.StatusOK {
 			return res, errors.New(out.Error)
 		}
