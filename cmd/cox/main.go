@@ -25,6 +25,7 @@ import (
 	"github.com/hua-ri/coxswain/internal/inventory"
 	"github.com/hua-ri/coxswain/internal/providers/artifact"
 	sshprov "github.com/hua-ri/coxswain/internal/providers/ssh"
+	"github.com/hua-ri/coxswain/internal/providers/terminal"
 	"github.com/hua-ri/coxswain/internal/shaper"
 	"github.com/hua-ri/coxswain/internal/sshx"
 	"github.com/hua-ri/coxswain/internal/surface/cli"
@@ -63,8 +64,11 @@ func run() int {
 	}
 
 	app := &cli.App{
-		Printers: map[string]cli.Decoder{"ssh.exec": cli.PrintAs[sshprov.ExecOutput]},
-		Stdin:    os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr,
+		Printers: map[string]cli.Decoder{
+			"ssh.exec":      cli.PrintAs[sshprov.ExecOutput],
+			"terminal.read": cli.PrintAs[terminal.ReadOutput],
+		},
+		Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr,
 	}
 	if name := commandName(os.Args[1:]); !slices.Contains(localCommands, name) {
 		// Action commands come from the server; without one, only the
@@ -155,5 +159,6 @@ func newEngine(coxHome, userHome string, pool func(*sshx.Dialer) *sshx.Pool) (*e
 	reg := action.NewRegistry()
 	p.Register(reg)
 	artifact.Register(reg, artifacts)
+	(&terminal.Provider{Hosts: hosts, Terms: terms, Artifacts: artifacts}).Register(reg)
 	return &engine.Engine{Registry: reg, Events: events}, terms
 }
