@@ -28,9 +28,13 @@ func sum(b []byte) string {
 	return hex.EncodeToString(s[:])
 }
 
-func local(t *testing.T, b []byte) string {
+// local writes b to a file in the upload directory, the only place
+// agents may upload from.
+func local(t *testing.T, f fixture, b []byte) string {
 	t.Helper()
-	p := filepath.Join(t.TempDir(), "payload.bin")
+	dir := filepath.Join(f.home, "uploads")
+	os.MkdirAll(dir, 0o700)
+	p := filepath.Join(dir, "payload.bin")
 	if err := os.WriteFile(p, b, 0o640); err != nil {
 		t.Fatal(err)
 	}
@@ -40,7 +44,7 @@ func local(t *testing.T, b []byte) string {
 func TestUpload(t *testing.T) {
 	f := setup(t)
 	payload := data(3<<20 + 17)
-	src := local(t, payload)
+	src := local(t, f, payload)
 	os.Mkdir(filepath.Join(f.srv.Root, "up"), 0o755)
 
 	// A relative path: the test server's commands run in its root too, so
@@ -73,7 +77,7 @@ func TestUpload(t *testing.T) {
 func TestUploadResume(t *testing.T) {
 	f := setup(t)
 	payload := data(1 << 20)
-	src := local(t, payload)
+	src := local(t, f, payload)
 	os.WriteFile(filepath.Join(f.srv.Root, "part.bin"), payload[:300_000], 0o644)
 	res := mustOK[TransferOutput](t, invoke(t, f.e, codex, "file.upload", map[string]any{"host": "prod", "local_path": src, "remote_path": "part.bin", "resume": true}))
 	got, _ := os.ReadFile(filepath.Join(f.srv.Root, "part.bin"))
@@ -93,21 +97,69 @@ func TestUploadResume(t *testing.T) {
 
 func TestUploadLabels(t *testing.T) {
 	f := setup(t)
-	src := local(t, []byte("x"))
+	src := local(t, f, []byte("x"))
 	os.Mkdir(filepath.Join(f.srv.Root, "etc"), 0o755)
 	invoke(t, f.e, codex, "file.upload", map[string]any{"host": "prod", "local_path": src, "remote_path": "/etc/x"})
 	if ev := requested(t, f.e, "file.upload"); ev.Risk != "destructive" {
 		t.Fatalf("protected remote path: %s", ev.Risk)
 	}
-	key := filepath.Join(f.home, ".ssh", "id_ed25519")
-	os.MkdirAll(filepath.Dir(key), 0o700)
-	os.WriteFile(key, []byte("KEY"), 0o600)
-	invoke(t, f.e, codex, "file.upload", map[string]any{"host": "prod", "local_path": "~/.ssh/id_ed25519", "remote_path": "k"})
-	if ev := requested(t, f.e, "file.upload"); ev.Risk != "destructive" {
-		t.Fatalf("credential upload: %s", ev.Risk)
+	// The user's uploads of credential stores are labelled destructive,
+	// also through a symlink.
+	secrets := map[string]string{
+		".ssh/id_ed25519": "KEY", ".netrc": "machine x", ".docker/config.json": "{}", ".config/gh/hosts.yml": "x",
+		".git-credentials": "x", "Library/Keychains/login.keychain-db": "x", "server.json": "token",
 	}
-	mustFail(t, invoke(t, f.e, codex, "file.upload", map[string]any{"host": "prod", "local_path": "relative.txt", "remote_path": "k"}), "absolute")
-	mustFail(t, invoke(t, f.e, codex, "file.upload", map[string]any{"host": "prod", "local_path": filepath.Dir(src), "remote_path": "k"}), "regular file")
+	for rel, content := range secrets {
+		p := filepath.Join(f.home, rel)
+		os.MkdirAll(filepath.Dir(p), 0o700)
+		os.WriteFile(p, []byte(content), 0o600)
+		invoke(t, f.e, desktop, "file.upload", map[string]any{"host": "prod", "local_path": "~/" + rel, "remote_path": "k"})
+		if ev := requested(t, f.e, "file.upload"); ev.Risk != "destructive" {
+			t.Errorf("%s: risk %s", rel, ev.Risk)
+		}
+	}
+	link := filepath.Join(t.TempDir(), "innocent.txt")
+	os.Symlink(filepath.Join(f.home, ".netrc"), link)
+	invoke(t, f.e, desktop, "file.upload", map[string]any{"host": "prod", "local_path": link, "remote_path": "k"})
+	if ev := requested(t, f.e, "file.upload"); ev.Risk != "destructive" {
+		t.Errorf("symlink to .netrc: risk %s", ev.Risk)
+	}
+	plain := filepath.Join(t.TempDir(), "notes.txt")
+	os.WriteFile(plain, []byte("x"), 0o644)
+	invoke(t, f.e, desktop, "file.upload", map[string]any{"host": "prod", "local_path": plain, "remote_path": "k"})
+	if ev := requested(t, f.e, "file.upload"); ev.Risk != "write" {
+		t.Errorf("plain file: risk %s", ev.Risk)
+	}
+	mustFail(t, invoke(t, f.e, desktop, "file.upload", map[string]any{"host": "prod", "local_path": "relative.txt", "remote_path": "k"}), "absolute")
+	mustFail(t, invoke(t, f.e, desktop, "file.upload", map[string]any{"host": "prod", "local_path": filepath.Dir(plain), "remote_path": "k"}), "regular file")
+}
+
+// TestAgentUploadConfined: agents upload only from the upload
+// directory; symlinks out of it do not count. The user may upload any
+// file.
+func TestAgentUploadConfined(t *testing.T) {
+	f := setup(t)
+	outside := filepath.Join(t.TempDir(), "secret.txt")
+	os.WriteFile(outside, []byte("secret"), 0o600)
+	uploads := filepath.Join(f.home, "uploads")
+	for _, p := range []string{outside, "~/.netrc", filepath.Join(uploads, "..", "server.json")} {
+		mustFail(t, invoke(t, f.e, codex, "file.upload", map[string]any{"host": "prod", "local_path": p, "remote_path": "k"}), uploads)
+	}
+	if fi, err := os.Stat(uploads); err != nil || fi.Mode().Perm() != 0o700 {
+		t.Fatalf("upload directory: %v %v", fi, err)
+	}
+	os.Symlink(outside, filepath.Join(uploads, "link.txt"))
+	mustFail(t, invoke(t, f.e, codex, "file.upload", map[string]any{"host": "prod", "local_path": filepath.Join(uploads, "link.txt"), "remote_path": "k"}), uploads)
+	if _, err := os.Stat(filepath.Join(f.srv.Root, "k")); !os.IsNotExist(err) {
+		t.Fatal("a refused upload reached the host")
+	}
+	// A path relative to the upload directory works.
+	os.WriteFile(filepath.Join(uploads, "app.tgz"), []byte("app"), 0o600)
+	mustOK[TransferOutput](t, invoke(t, f.e, codex, "file.upload", map[string]any{"host": "prod", "local_path": "app.tgz", "remote_path": "app.tgz"}))
+	if got, _ := os.ReadFile(filepath.Join(f.srv.Root, "app.tgz")); string(got) != "app" {
+		t.Fatalf("%q", got)
+	}
+	mustOK[TransferOutput](t, invoke(t, f.e, desktop, "file.upload", map[string]any{"host": "prod", "local_path": outside, "remote_path": "mine"}))
 }
 
 func TestDownload(t *testing.T) {
@@ -189,7 +241,7 @@ func TestCancelTransfer(t *testing.T) {
 			f := setup(t)
 			started := paused(f)
 			payload := data(4 << 20)
-			src := local(t, payload)
+			src := local(t, f, payload)
 			os.WriteFile(filepath.Join(f.srv.Root, "big.bin"), payload, 0o644)
 			args := map[string]any{"host": "prod", "remote_path": "big.bin"}
 			if dir == "upload" {

@@ -401,3 +401,15 @@ func TestIsProtected(t *testing.T) {
 		}
 	}
 }
+
+func TestIsProtectedShellStartupAndUnits(t *testing.T) {
+	for _, p := range []string{"~/.bashrc", "/home/u/.bash_profile", "~/.zshrc", ".profile", "~/.config/systemd/user/x.service",
+		"/root/.config/systemd/user/y", "/etc/cron.d/job", "/etc/crontab"} {
+		if !IsProtected(p) {
+			t.Errorf("IsProtected(%q) = false", p)
+		}
+	}
+	if IsProtected("~/.config/other") {
+		t.Error(".config is not protected as a whole")
+	}
+}

@@ -48,7 +48,10 @@ type Provider struct {
 	// DownloadDir is where file.download saves files, one directory per
 	// host (<cox home>/downloads).
 	DownloadDir string
-	UserHome    string // for ~ in local paths
+	// UploadDir is the only place agents may upload from (<cox home>/uploads).
+	UploadDir string
+	CoxHome   string // nothing in it but uploads and downloads is fit to upload
+	UserHome  string // for ~ in local paths
 
 	pace func(ctx context.Context) // tests: called before each chunk of a transfer
 }

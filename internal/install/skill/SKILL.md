@@ -26,7 +26,7 @@ Prefer the MCP tools when they are available:
 | `file_write` | write a remote text file atomically |
 | `file_mkdir` / `file_remove` | create a directory / remove a file or empty directory |
 | `file_download` | copy a remote file to this machine (`~/.coxswain/downloads/<host>/`); returns the path, not the content |
-| `file_upload` | copy a local file to a host |
+| `file_upload` | copy a file from `~/.coxswain/uploads/` to a host |
 | `tunnel_open` / `tunnel_list` / `tunnel_close` | port forwards through a host (local, remote, socks) |
 | `terminal_list` | shared terminals: yours, the user's and other agents' |
 | `terminal_open` | open a shared terminal on a host; it appears in the user's desktop app |
@@ -55,8 +55,9 @@ Prefer the MCP tools when they are available:
   machine and you get its path, size and SHA-256. Inspect the local copy with your own tools
   (grep, tail) instead of pulling it all into the conversation. `resume=true` continues a
   cancelled download.
-- `file_upload` takes an absolute local path (or `~/…`), never a relative one. Upload only files the
-  user asked you to; never upload keys, tokens or anything under `~/.ssh` or `~/.coxswain`.
+- `file_upload` uploads only files in `~/.coxswain/uploads/` (give `local_path` relative to it):
+  copy the file there first. Upload only files the user asked you to; never upload keys, tokens or
+  anything under `~/.ssh` or `~/.coxswain`.
 - The user sees every transfer in the desktop app and may cancel it. If a transfer fails as
   cancelled, do not restart it on your own; ask.
 

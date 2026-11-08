@@ -53,7 +53,8 @@ func setup(t *testing.T) fixture {
 	transfers := &transfer.Manager{Events: events}
 	t.Cleanup(transfers.CancelAll)
 	p := &Provider{Hosts: hosts, Dialer: dialer, Pool: pool, Artifacts: shaper.NewArtifacts(filepath.Join(dir, "artifacts")),
-		Transfers: transfers, DownloadDir: filepath.Join(dir, "downloads"), UserHome: dir}
+		Transfers: transfers, DownloadDir: filepath.Join(dir, "downloads"), UploadDir: filepath.Join(dir, "uploads"),
+		CoxHome: dir, UserHome: dir}
 	reg := action.NewRegistry()
 	p.Register(reg)
 	return fixture{e: &engine.Engine{Registry: reg, Events: events}, p: p, srv: srv, home: dir}
@@ -115,7 +116,7 @@ func TestAnnotations(t *testing.T) {
 		"file.read":     {ReadOnly: true, Idempotent: true, OpenWorld: true},
 		"file.write":    {Destructive: true, Idempotent: true, OpenWorld: true},
 		"file.upload":   {Destructive: true, OpenWorld: true},
-		"file.download": {ReadOnly: true, OpenWorld: true},
+		"file.download": {OpenWorld: true},
 		"file.mkdir":    {Destructive: true, Idempotent: true, OpenWorld: true},
 		"file.remove":   {Destructive: true, Idempotent: true, OpenWorld: true},
 	}

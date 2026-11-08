@@ -18,6 +18,7 @@ import (
 
 	"github.com/hua-ri/coxswain/internal/action"
 	"github.com/hua-ri/coxswain/internal/inventory"
+	"github.com/hua-ri/coxswain/internal/policy"
 	"github.com/hua-ri/coxswain/internal/sshx"
 	"github.com/hua-ri/coxswain/internal/transfer"
 )
@@ -44,6 +45,114 @@ func (p *Provider) localPath(s string) string {
 	return s
 }
 
+// localSecrets are credential stores and browser data under the user's
+// home (and its Library on macOS).
+var localSecrets = []string{
+	".netrc", ".git-credentials", ".docker", ".config/gh", ".config/gcloud", ".config/hub", ".azure", ".npmrc",
+	".pypirc", ".cargo/credentials", ".cargo/credentials.toml", ".password-store", ".terraform.d", ".vault-token",
+	".pgpass", ".my.cnf", ".aws", ".kube", ".gnupg", ".ssh",
+	"Library/Keychains", "Library/Cookies", "Library/Safari", "Library/Application Support/Google/Chrome",
+	"Library/Application Support/Firefox", "Library/Application Support/BraveSoftware",
+	"Library/Application Support/Microsoft Edge", "Library/Application Support/com.apple.TCC",
+}
+
+// under reports whether p is root or inside it.
+func under(p, root string) bool {
+	if root == "" {
+		return false
+	}
+	rel, err := filepath.Rel(root, p)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// resolved returns p and, if different, p with symlinks resolved.
+func resolved(p string) []string {
+	out := []string{filepath.Clean(p)}
+	if r, err := filepath.EvalSymlinks(p); err == nil && r != out[0] {
+		out = append(out, r)
+	}
+	return out
+}
+
+// sensitiveLocal reports whether uploading the local file s would send
+// a secret away: a credential store, browser data, a protected path or
+// anything of Coxswain's own (but its upload and download directories).
+// Symlinks are followed.
+func (p *Provider) sensitiveLocal(s string) bool {
+	if policy.IsProtected(s) {
+		return true
+	}
+	for _, path := range resolved(p.localPath(s)) {
+		if policy.IsProtected(path) {
+			return true
+		}
+		for _, cox := range resolved(p.CoxHome) {
+			if under(path, cox) && !under(path, filepath.Join(cox, "uploads")) && !under(path, filepath.Join(cox, "downloads")) {
+				return true
+			}
+		}
+		for _, home := range resolved(p.UserHome) {
+			for _, rel := range localSecrets {
+				if under(path, filepath.Join(home, rel)) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// openSource opens the local file to upload and returns its path. People
+// may name any absolute (or ~/) path. Agents may upload only from
+// UploadDir (a path relative to it, or inside it); the file is opened
+// through an os.Root there, so symlinks cannot lead out of it. Agents
+// copy files there with their own tools, under their own permission
+// prompts.
+func (p *Provider) openSource(ctx context.Context, s string) (*os.File, string, error) {
+	src := p.localPath(s)
+	if a, ok := action.ActorFrom(ctx); ok && a.Kind == action.Human {
+		if !filepath.IsAbs(src) {
+			return nil, "", fmt.Errorf("local_path must be absolute or start with ~/, not %q", s)
+		}
+		f, err := os.Open(src)
+		return f, src, err
+	}
+	refuse := fmt.Errorf("agents may upload only files in %s: copy the file there with your own tools, "+
+		"then upload it from there (local_path relative to that directory)", p.UploadDir)
+	if p.UploadDir == "" {
+		return nil, "", refuse
+	}
+	if err := os.MkdirAll(p.UploadDir, 0o700); err != nil {
+		return nil, "", err
+	}
+	os.Chmod(p.UploadDir, 0o700)
+	rel := src
+	if filepath.IsAbs(src) {
+		var err error
+		if rel, err = filepath.Rel(p.UploadDir, filepath.Clean(src)); err != nil {
+			return nil, "", refuse
+		}
+	}
+	rel = filepath.Clean(rel)
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return nil, "", refuse
+	}
+	root, err := os.OpenRoot(p.UploadDir)
+	if err != nil {
+		return nil, "", err
+	}
+	defer root.Close()
+	f, err := root.Open(rel)
+	if err != nil {
+		var pe *os.PathError
+		if errors.As(err, &pe) && strings.Contains(pe.Err.Error(), "escapes") {
+			return nil, "", refuse
+		}
+		return nil, "", fmt.Errorf("%w (%s)", err, refuse)
+	}
+	return f, filepath.Join(p.UploadDir, rel), nil
+}
+
 type uploadInput struct {
 	Host       string `json:"host"`
 	LocalPath  string `json:"local_path"`
@@ -58,7 +167,8 @@ func (p *Provider) upload() *action.Action {
 	return &action.Action{
 		ID:      "file.upload",
 		Summary: "Upload a local file to a saved SSH host",
-		Description: "Copy a file from this machine (absolute path or ~/…) to a remote path over SFTP, replacing it. " +
+		Description: "Copy a file from this machine to a remote path over SFTP, replacing it. Agents may upload only files in " +
+			"~/.coxswain/uploads/ (local_path relative to it): copy the file there first. " +
 			"Returns the size and SHA-256; the remote copy is verified with sha256sum when the host has it. " +
 			"resume=true continues a partial upload (a smaller remote file) instead of starting over. " + transferHint + " " +
 			"Hosts tagged env=prod are production: confirm with the user before changing them. Respect the host note.",
@@ -66,7 +176,7 @@ func (p *Provider) upload() *action.Action {
 			"type": "object",
 			"properties": map[string]any{
 				"host":        hostProperty,
-				"local_path":  map[string]any{"type": "string", "description": "file on this machine: absolute or ~/…"},
+				"local_path":  map[string]any{"type": "string", "description": "file in ~/.coxswain/uploads/ (relative to it); people may give any absolute or ~/ path"},
 				"remote_path": pathProperty,
 				"resume":      map[string]any{"type": "boolean", "description": "continue a partial upload"},
 			},
@@ -87,7 +197,10 @@ func (p *Provider) upload() *action.Action {
 				return action.Assessment{}, err
 			}
 			// Uploading a credential store sends it away.
-			risk := max(writeRisk(in.RemotePath), writeRisk(in.LocalPath), writeRisk(p.localPath(in.LocalPath)))
+			risk := writeRisk(in.RemotePath)
+			if p.sensitiveLocal(in.LocalPath) {
+				risk = action.Destructive
+			}
 			return action.Assessment{Risk: risk, Targets: []action.Target{hostTarget(h)},
 				Preview: fmt.Sprintf("upload %s to %s:%s", in.LocalPath, h.Name, in.RemotePath)}, nil
 		},
@@ -106,11 +219,7 @@ func (p *Provider) runUpload(ctx context.Context, in uploadInput) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	src := p.localPath(in.LocalPath)
-	if !filepath.IsAbs(src) {
-		return nil, fmt.Errorf("local_path must be absolute or start with ~/, not %q", in.LocalPath)
-	}
-	lf, err := os.Open(src)
+	lf, src, err := p.openSource(ctx, in.LocalPath)
 	if err != nil {
 		return nil, err
 	}
@@ -237,7 +346,7 @@ func (p *Provider) download() *action.Action {
 			"required": []string{"host", "remote_path"},
 		},
 		Positional:  []string{"host", "remote_path"},
-		Annotations: action.Annotations{ReadOnly: true, OpenWorld: true},
+		Annotations: action.Annotations{OpenWorld: true}, // reads the host, writes a local file
 		Label: func(_ context.Context, raw json.RawMessage) (action.Assessment, error) {
 			var in downloadInput
 			if err := action.Decode(raw, &in); err != nil {

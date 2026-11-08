@@ -59,7 +59,8 @@ var protectedDevices = []string{"/dev/sd", "/dev/nvme", "/dev/vd", "/dev/disk"}
 // protectedDirs and protectedFiles are protected wherever they are.
 var (
 	protectedDirs  = set(".ssh", ".kube", ".aws", ".gnupg")
-	protectedFiles = set("authorized_keys", "sudoers")
+	protectedFiles = set("authorized_keys", "sudoers", ".bashrc", ".bash_profile", ".bash_login", ".zshrc", ".zprofile",
+		".zshenv", ".profile")
 )
 
 func set(xs ...string) map[string]bool {
@@ -551,9 +552,13 @@ func IsProtected(p string) bool {
 	if c == ".." || strings.HasPrefix(c, "../") {
 		return true
 	}
-	for _, part := range strings.Split(c, "/") {
+	parts := strings.Split(c, "/")
+	for i, part := range parts {
 		if protectedDirs[part] {
 			return true
+		}
+		if part == ".config" && i+1 < len(parts) && parts[i+1] == "systemd" {
+			return true // user units run at login
 		}
 	}
 	return protectedFiles[path.Base(c)]

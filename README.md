@@ -177,6 +177,8 @@ and don't let them run raw `ssh`. Your credentials still never leave the server 
 - Tunnels listen on 127.0.0.1 only, but any local process can use one while it is open. A remote
   tunnel (`-R`) exposes a service on your Mac to the host; agents are told to ask you first, and it
   is always rated destructive.
-- Agents may download only into `~/.coxswain/downloads/`. They may upload any file your user can
-  read (including keys under `~/.ssh`), so have your agent ask you before each `file_upload`, as
-  you would for `ssh_exec`.
+- Agents may download only into `~/.coxswain/downloads/<host>/`, and upload only files in
+  `~/.coxswain/uploads/` (symlinks out of it don't count). To upload something else, an agent first
+  copies it there with its own tools, which its own permission settings cover. You can upload any
+  file; uploads of credential stores (`~/.ssh`, `~/.netrc`, `~/.docker`, `~/.config/gh`, Keychains,
+  browser data, `~/.coxswain`…) are rated destructive.

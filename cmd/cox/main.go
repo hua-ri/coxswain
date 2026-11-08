@@ -176,7 +176,8 @@ func newEngine(coxHome, userHome string, pool func(*sshx.Dialer) *sshx.Pool) ser
 	(&terminal.Provider{Hosts: hosts, Terms: terms, Artifacts: artifacts}).Register(reg)
 	transfers := &transfer.Manager{Events: events}
 	(&file.Provider{Hosts: hosts, Dialer: dialer, Pool: p.Pool, Artifacts: artifacts, Transfers: transfers,
-		DownloadDir: filepath.Join(coxHome, "downloads"), UserHome: userHome}).Register(reg)
+		DownloadDir: filepath.Join(coxHome, "downloads"), UploadDir: filepath.Join(coxHome, "uploads"),
+		CoxHome: coxHome, UserHome: userHome}).Register(reg)
 	tunnels := &tunnel.Manager{Hosts: hosts, Dialer: dialer, Events: events}
 	(&tunnelprov.Provider{Hosts: hosts, Tunnels: tunnels}).Register(reg)
 	return services{Engine: &engine.Engine{Registry: reg, Events: events}, Terminals: terms, Transfers: transfers, Tunnels: tunnels}
