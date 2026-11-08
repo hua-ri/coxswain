@@ -8,7 +8,7 @@ before:
     # The desktop app's frontend is embedded in the binary.
     - npm --prefix web ci
     - npm --prefix web run build
-    - go test ./...
+    # Tests gate main in CI; the release only builds.
 
 builds:
   - id: cox
