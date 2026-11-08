@@ -76,3 +76,29 @@ func TestClipKeepsRunes(t *testing.T) {
 		}
 	}
 }
+
+func TestClip(t *testing.T) {
+	if got, cut := Clip("a\nb\n", Limits{MaxBytes: 100, MaxLines: 20}); got != "a\nb\n" || cut {
+		t.Fatalf("%q %v", got, cut)
+	}
+	var sb strings.Builder
+	for i := 1; i <= 100; i++ {
+		fmt.Fprintf(&sb, "line %d\n", i)
+	}
+	got, cut := Clip(sb.String(), Limits{MaxBytes: 1 << 20, MaxLines: 20})
+	if !cut || !strings.HasPrefix(got, "line 1\n") || !strings.HasSuffix(got, "line 100") || !strings.Contains(got, "80 lines omitted") ||
+		strings.Count(got, "\n") != 20 {
+		t.Fatalf("%q", got)
+	}
+}
+
+func TestSave(t *testing.T) {
+	a := NewArtifacts(t.TempDir())
+	id, err := a.Save("x\ny\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := a.Read(id, "", 2, 2); err != nil || got != "2: y" {
+		t.Fatalf("%q %v", got, err)
+	}
+}

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/hua-ri/coxswain/internal/action"
+	"github.com/hua-ri/coxswain/internal/eventlog"
 	"github.com/hua-ri/coxswain/internal/inventory"
 	"github.com/hua-ri/coxswain/internal/policy"
 	"github.com/hua-ri/coxswain/internal/shaper"
@@ -32,7 +33,8 @@ type Provider struct {
 	Dialer    *sshx.Dialer
 	Pool      *sshx.Pool // reuses connections if set (in `cox server`)
 	Artifacts *shaper.Artifacts
-	UserHome  string // for ~ expansion and the default ~/.ssh/config
+	UserHome  string        // for ~ expansion and the default ~/.ssh/config
+	Events    *eventlog.Log // batch.* events; may be nil
 }
 
 func (p *Provider) Register(r *action.Registry) {
@@ -40,6 +42,7 @@ func (p *Provider) Register(r *action.Registry) {
 	r.Register(p.hostsImport())
 	r.Register(p.hostsTag())
 	r.Register(p.exec())
+	r.Register(p.batch())
 }
 
 func hostTarget(h inventory.Host) action.Target {

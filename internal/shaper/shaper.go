@@ -43,21 +43,37 @@ func (a *Artifacts) Shape(s string, lim Limits) (Shaped, error) {
 	if len(s) <= lim.MaxBytes && len(lines) <= lim.MaxLines {
 		return out, nil
 	}
-	id, err := a.save(s)
+	id, err := a.Save(s)
 	if err != nil {
 		return Shaped{}, err
 	}
+	out.Text = headTail(lines, lim, fmt.Sprintf("full output is artifact %s (read with cox_artifact_read)", id))
+	out.Truncated = true
+	out.ArtifactID = id
+	return out, nil
+}
+
+// Clip returns s unchanged if it fits the limits; otherwise its head and
+// tail with a note of how many lines were left out (nothing is saved).
+func Clip(s string, lim Limits) (string, bool) {
+	lines := splitLines(s)
+	if len(s) <= lim.MaxBytes && len(lines) <= lim.MaxLines {
+		return s, false
+	}
+	return headTail(lines, lim, ""), true
+}
+
+// headTail keeps the first and last lines within lim around a note.
+func headTail(lines []string, lim Limits, note string) string {
 	keep := lim.MaxLines / 2
 	headN := min(keep, len(lines))
 	head := clip(lines[:headN], lim.MaxBytes/2)
 	tail := clipTail(lines[max(len(lines)-keep, headN):], lim.MaxBytes/2)
 	omitted := len(lines) - len(head) - len(tail)
-	out.Text = strings.Join(head, "\n") +
-		fmt.Sprintf("\n… %d lines omitted; full output is artifact %s (read with cox_artifact_read) …\n", omitted, id) +
-		strings.Join(tail, "\n")
-	out.Truncated = true
-	out.ArtifactID = id
-	return out, nil
+	if note != "" {
+		note = "; " + note
+	}
+	return strings.Join(head, "\n") + fmt.Sprintf("\n… %d lines omitted%s …\n", omitted, note) + strings.Join(tail, "\n")
 }
 
 // Read returns lines [start, end] (1-based, inclusive; 0 means open) of an
@@ -92,7 +108,8 @@ func (a *Artifacts) Read(id, grep string, start, end int) (string, error) {
 	return strings.Join(out, "\n"), nil
 }
 
-func (a *Artifacts) save(s string) (string, error) {
+// Save stores s as a new artifact and returns its id.
+func (a *Artifacts) Save(s string) (string, error) {
 	var b [6]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		return "", err

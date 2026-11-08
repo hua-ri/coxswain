@@ -233,6 +233,10 @@ func TestEndToEnd(t *testing.T) {
 	if out, code := s.cox(t, "ssh", "exec", "dev", "--", "echo", "hi"); code != 0 || out != "hi\n" {
 		t.Fatalf("exec: %d %q", code, out)
 	}
+	if out, code := s.cox(t, "ssh", "batch", "--hosts", "dev", "--tag", "env=prod", "--", "echo", "hi"); code != 0 ||
+		!strings.Contains(out, "=== dev: exit 0") || !strings.Contains(out, "=== prod: exit 0") || !strings.Contains(out, "2 hosts: 2 ok") {
+		t.Fatalf("batch: %d %s", code, out)
+	}
 	if out, code := s.cox(t, "ssh", "exec", "dev", "--", "exit 7"); code != 7 {
 		t.Fatalf("exit code: %d %q", code, out)
 	}

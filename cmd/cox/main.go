@@ -70,6 +70,7 @@ func run() int {
 	app := &cli.App{
 		Printers: map[string]cli.Decoder{
 			"ssh.exec":      cli.PrintAs[sshprov.ExecOutput],
+			"ssh.batch":     cli.PrintAs[sshprov.BatchOutput],
 			"terminal.read": cli.PrintAs[terminal.ReadOutput],
 			"file.read":     cli.PrintAs[file.ReadOutput],
 		},
@@ -163,11 +164,11 @@ func newEngine(coxHome, userHome string, pool func(*sshx.Dialer) *sshx.Pool) ser
 		DefaultKeys: []string{filepath.Join(ssh, "id_ed25519"), filepath.Join(ssh, "id_ecdsa"), filepath.Join(ssh, "id_rsa")},
 		AgentSocket: os.Getenv("SSH_AUTH_SOCK"),
 	}
-	p := &sshprov.Provider{Hosts: hosts, Dialer: dialer, Artifacts: artifacts, UserHome: userHome}
+	events := eventlog.Open(filepath.Join(coxHome, "events"))
+	p := &sshprov.Provider{Hosts: hosts, Dialer: dialer, Artifacts: artifacts, UserHome: userHome, Events: events}
 	if pool != nil {
 		p.Pool = pool(dialer)
 	}
-	events := eventlog.Open(filepath.Join(coxHome, "events"))
 	terms := &term.Manager{Hosts: hosts, Dialer: dialer, Events: events}
 	reg := action.NewRegistry()
 	p.Register(reg)

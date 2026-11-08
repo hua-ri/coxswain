@@ -45,6 +45,9 @@ func TestEventLine(t *testing.T) {
 		{eventlog.Event{Time: at, Type: eventlog.TransferFailed, Actor: kimi, Transfer: "x_1", Targets: []action.Target{{ID: "dev"}},
 			Error: "disk full"},
 			"09:05:07 agent:kimi transfer x_1 failed dev: disk full"},
+		{eventlog.Event{Time: at, Type: eventlog.BatchStarted, Actor: kimi, Batch: "b_1",
+			Targets: []action.Target{{ID: "a"}, {ID: "b"}, {ID: "c"}, {ID: "d"}}},
+			"09:05:07 agent:kimi batch b_1 started 4 hosts"},
 	}
 	for _, c := range cases {
 		if got := eventLine(c.ev); got != c.want {
