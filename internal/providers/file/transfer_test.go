@@ -78,21 +78,88 @@ func TestUploadResume(t *testing.T) {
 	f := setup(t)
 	payload := data(1 << 20)
 	src := local(t, f, payload)
-	os.WriteFile(filepath.Join(f.srv.Root, "part.bin"), payload[:300_000], 0o644)
+	// A partial upload is the temporary file next to the target.
+	os.WriteFile(filepath.Join(f.srv.Root, ".part.bin.cox-upload"), payload[:300_000], 0o600)
 	res := mustOK[TransferOutput](t, invoke(t, f.e, codex, "file.upload", map[string]any{"host": "prod", "local_path": src, "remote_path": "part.bin", "resume": true}))
 	got, _ := os.ReadFile(filepath.Join(f.srv.Root, "part.bin"))
 	if string(got) != string(payload) || res.ResumedFrom != 300_000 || res.Verified == nil || !*res.Verified {
 		t.Fatalf("resumed_from %d, remote %d bytes, verified %v", res.ResumedFrom, len(got), res.Verified)
 	}
-	// A remote prefix that differs from the local file: the checksum
-	// catches it.
-	os.WriteFile(filepath.Join(f.srv.Root, "bad.bin"), make([]byte, 1000), 0o644)
+	if _, err := os.Stat(filepath.Join(f.srv.Root, ".part.bin.cox-upload")); !os.IsNotExist(err) {
+		t.Fatalf("temporary file left: %v", err)
+	}
+	// A partial upload that differs from the local file: the checksum
+	// catches it and the target is not touched.
+	os.WriteFile(filepath.Join(f.srv.Root, "bad.bin"), []byte("old"), 0o644)
+	os.WriteFile(filepath.Join(f.srv.Root, ".bad.bin.cox-upload"), make([]byte, 1000), 0o600)
 	mustFail(t, invoke(t, f.e, codex, "file.upload", map[string]any{"host": "prod", "local_path": src, "remote_path": "bad.bin", "resume": true}), "checksum mismatch")
-	// Without resume the file is replaced.
+	if got, _ := os.ReadFile(filepath.Join(f.srv.Root, "bad.bin")); string(got) != "old" {
+		t.Fatalf("target changed: %q", got)
+	}
+	// Without resume the upload starts over.
 	mustOK[TransferOutput](t, invoke(t, f.e, codex, "file.upload", map[string]any{"host": "prod", "local_path": src, "remote_path": "bad.bin"}))
 	if got, _ := os.ReadFile(filepath.Join(f.srv.Root, "bad.bin")); string(got) != string(payload) {
 		t.Fatal("not replaced")
 	}
+	if fi, _ := os.Stat(filepath.Join(f.srv.Root, "bad.bin")); fi.Mode().Perm() != 0o644 {
+		t.Fatalf("target mode not kept: %v", fi.Mode())
+	}
+}
+
+// TestUploadIsAtomic: an upload goes to a private temporary file; a
+// cancelled one leaves the target as it was, and resume completes it.
+func TestUploadIsAtomic(t *testing.T) {
+	f := setup(t)
+	started := paused(f)
+	payload := data(4 << 20)
+	src := local(t, f, payload)
+	target := filepath.Join(f.srv.Root, "app.bin")
+	tmp := filepath.Join(f.srv.Root, ".app.bin.cox-upload")
+	os.WriteFile(target, []byte("old"), 0o644)
+	done := make(chan engine.Outcome, 1)
+	go func() {
+		done <- invoke(t, f.e, codex, "file.upload", map[string]any{"host": "prod", "local_path": src, "remote_path": "app.bin"})
+	}()
+	<-started
+	if fi, err := os.Stat(tmp); err != nil || fi.Mode().Perm() != 0o600 {
+		t.Fatalf("temporary file while writing: %v %v", fi, err)
+	}
+	if got, _ := os.ReadFile(target); string(got) != "old" {
+		t.Fatalf("target changed during the upload: %d bytes", len(got))
+	}
+	f.p.Transfers.Cancel(f.p.Transfers.List()[0].ID, desktop)
+	mustFail(t, <-done, "cancelled")
+	if got, _ := os.ReadFile(target); string(got) != "old" {
+		t.Fatalf("cancelled upload changed the target: %d bytes", len(got))
+	}
+	part, err := os.Stat(tmp)
+	if err != nil || part.Size() == 0 || part.Size() >= int64(len(payload)) {
+		t.Fatalf("partial upload: %v %v", part, err)
+	}
+	f.p.pace = nil
+	res := mustOK[TransferOutput](t, invoke(t, f.e, codex, "file.upload", map[string]any{"host": "prod", "local_path": src, "remote_path": "app.bin", "resume": true}))
+	if got, _ := os.ReadFile(target); string(got) != string(payload) || res.ResumedFrom != part.Size() {
+		t.Fatalf("resume: %d bytes, resumed_from %d", len(got), res.ResumedFrom)
+	}
+	if fi, _ := os.Stat(target); fi.Mode().Perm() != 0o644 {
+		t.Fatalf("mode %v", fi.Mode())
+	}
+}
+
+// TestDownloadResumeChecksPrefix: a partial local file that differs from
+// the remote one is not continued.
+func TestDownloadResumeChecksPrefix(t *testing.T) {
+	f := setup(t)
+	payload := data(1 << 20)
+	os.WriteFile(filepath.Join(f.srv.Root, "big.bin"), payload, 0o644)
+	dst := filepath.Join(f.home, "downloads", "prod", "big.bin")
+	os.MkdirAll(filepath.Dir(dst), 0o700)
+	os.WriteFile(dst, make([]byte, 5000), 0o600)
+	mustFail(t, invoke(t, f.e, codex, "file.download", map[string]any{"host": "prod", "remote_path": "big.bin", "resume": true}), "without resume")
+	// An absolute path in the test server's root cannot be checked by
+	// its commands: resume is refused rather than trusted.
+	os.WriteFile(dst, payload[:5000], 0o600)
+	mustFail(t, invoke(t, f.e, codex, "file.download", map[string]any{"host": "prod", "remote_path": "/big.bin", "resume": true}), "without resume")
 }
 
 func TestUploadLabels(t *testing.T) {

@@ -9,11 +9,11 @@ import (
 	"fmt"
 	"hash"
 	"io"
-	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/hua-ri/coxswain/internal/action"
@@ -238,18 +238,28 @@ func (p *Provider) runUpload(ctx context.Context, in uploadInput) (any, error) {
 	broken := false
 	defer func() { release(broken) }()
 
-	var offset int64
-	rfi, err := c.Stat(rp)
-	switch {
-	case err == nil && rfi.IsDir():
-		return nil, fmt.Errorf("%s is a directory", in.RemotePath)
-	case err == nil && in.Resume && rfi.Size() < lfi.Size():
-		offset = rfi.Size()
-	case err != nil && !errors.Is(err, fs.ErrNotExist):
+	dst, fi, err := target(c, rp)
+	if err != nil {
 		broken = failed(err)
 		return nil, err
 	}
-	created := err != nil
+	if fi != nil && fi.IsDir() {
+		return nil, fmt.Errorf("%s is a directory", in.RemotePath)
+	}
+	mode := lfi.Mode().Perm()
+	if fi != nil {
+		mode = fi.Mode().Perm()
+	}
+	// The upload goes to a private temporary file next to the target,
+	// renamed over it once complete and verified. Its name is fixed, so a
+	// cancelled upload can be resumed.
+	tmp := path.Join(path.Dir(dst), "."+path.Base(dst)+".cox-upload")
+	var offset int64
+	if in.Resume {
+		if tfi, err := c.Stat(tmp); err == nil && tfi.Mode().IsRegular() && tfi.Size() < lfi.Size() {
+			offset = tfi.Size()
+		}
+	}
 
 	t := transfer.Transfer{Direction: transfer.Upload, Host: h.Name, LocalPath: src, RemotePath: in.RemotePath, Owner: owner(ctx)}
 	res, err := p.Transfers.Run(ctx, t, []action.Target{hostTarget(h)}, func(ctx context.Context, pr *transfer.Progress) error {
@@ -263,7 +273,7 @@ func (p *Provider) runUpload(ctx context.Context, in uploadInput) (any, error) {
 		if offset == 0 {
 			flags |= os.O_TRUNC
 		}
-		rf, err := c.OpenFile(rp, flags)
+		rf, err := createPrivate(c, tmp, flags)
 		if err != nil {
 			return err
 		}
@@ -279,21 +289,20 @@ func (p *Provider) runUpload(ctx context.Context, in uploadInput) (any, error) {
 			broken = failed(err) || ctx.Err() != nil
 			return err
 		}
-		if created {
-			c.Chmod(rp, lfi.Mode().Perm())
-		}
 		local := hex.EncodeToString(sum.Sum(nil))
 		pr.Update(func(t *transfer.Transfer) { t.SHA256 = local })
-		remote, ok := remoteSHA256(ctx, conn, rp)
-		if !ok {
-			return nil // no sha256sum on the host: unverified
+		if remote, ok := remoteSHA256(ctx, conn, tmp, -1); ok {
+			match := remote == local
+			pr.Update(func(t *transfer.Transfer) { t.Verified = &match })
+			if !match {
+				return fmt.Errorf("checksum mismatch: local %s, remote %s; %s is unchanged (upload again without resume)",
+					local, remote, in.RemotePath)
+			}
+		} // else: no sha256sum on the host, unverified
+		if err := c.Chmod(tmp, mode); err != nil {
+			return err
 		}
-		match := remote == local
-		pr.Update(func(t *transfer.Transfer) { t.Verified = &match })
-		if !match {
-			return fmt.Errorf("checksum mismatch: local %s, remote %s (upload again without resume)", local, remote)
-		}
-		return nil
+		return c.PosixRename(tmp, dst)
 	})
 	if err != nil {
 		return nil, err
@@ -301,13 +310,40 @@ func (p *Provider) runUpload(ctx context.Context, in uploadInput) (any, error) {
 	return TransferOutput{Transfer: res, HostNote: h.Note, HostTags: h.Tags}, nil
 }
 
+// samePrefix checks that the first n bytes of the local file are those
+// of the remote one, so a download can continue it.
+func samePrefix(ctx context.Context, conn *sshx.Conn, rp, local string, n int64) error {
+	f, err := os.Open(local)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	sum := sha256.New()
+	if _, err := io.CopyN(sum, f, n); err != nil {
+		return err
+	}
+	remote, ok := remoteSHA256(ctx, conn, rp, n)
+	switch {
+	case !ok:
+		return fmt.Errorf("cannot check the partial file %s against the host (no head/sha256sum there); download again without resume", local)
+	case remote != hex.EncodeToString(sum.Sum(nil)):
+		return fmt.Errorf("the partial file %s differs from the remote file; download again without resume", local)
+	}
+	return nil
+}
+
 var sha256Line = regexp.MustCompile(`^([0-9a-f]{64})\s`)
 
-// remoteSHA256 asks the host for a file's SHA-256 (sha256sum, or shasum
-// on macOS); ok is false if it cannot tell.
-func remoteSHA256(ctx context.Context, conn *sshx.Conn, rp string) (string, bool) {
-	q := shellQuote(rp)
-	res, err := sshx.Exec(ctx, conn.Client, "sha256sum -- "+q+" 2>/dev/null || shasum -a 256 -- "+q+" 2>/dev/null", 4096)
+// remoteSHA256 asks the host for the SHA-256 of a file, or of its first
+// n bytes if n >= 0 (sha256sum, or shasum on macOS); ok is false if it
+// cannot tell. The script runs under sh, whatever the login shell is.
+func remoteSHA256(ctx context.Context, conn *sshx.Conn, rp string, n int64) (string, bool) {
+	script := `sha256sum -- "$1" 2>/dev/null || shasum -a 256 -- "$1"`
+	if n >= 0 {
+		script = `test -f "$1" && head -c "$2" -- "$1" | { sha256sum 2>/dev/null || shasum -a 256; }`
+	}
+	cmd := "sh -c " + shellQuote(script) + " sh " + shellQuote(rp) + " " + strconv.FormatInt(max(n, 0), 10)
+	res, err := sshx.Exec(ctx, conn.Client, cmd, 4096)
 	if err != nil || res.ExitCode != 0 {
 		return "", false
 	}
@@ -418,7 +454,7 @@ func (p *Provider) runDownload(ctx context.Context, in downloadInput) (any, erro
 	if err != nil {
 		return nil, err
 	}
-	h, c, release, err := p.session(ctx, in.Host)
+	h, c, conn, release, err := p.sessionConn(ctx, in.Host)
 	if err != nil {
 		return nil, err
 	}
@@ -439,6 +475,11 @@ func (p *Provider) runDownload(ctx context.Context, in downloadInput) (any, erro
 	if in.Resume {
 		if lfi, err := os.Stat(dst); err == nil && lfi.Mode().IsRegular() && lfi.Size() < rfi.Size() {
 			offset = lfi.Size()
+		}
+	}
+	if offset > 0 {
+		if err := samePrefix(ctx, conn, rp, dst, offset); err != nil {
+			return nil, err
 		}
 	}
 

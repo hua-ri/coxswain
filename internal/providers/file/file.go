@@ -512,7 +512,7 @@ func (p *Provider) write() *action.Action {
 			if err != nil {
 				return nil, err
 			}
-			out, err := writeAtomic(c, rp, []byte(in.Content), mode, in.CreateOnly)
+			out, err := p.writeAtomic(ctx, h, c, rp, []byte(in.Content), mode, in.CreateOnly)
 			release(failed(err))
 			if err != nil {
 				return nil, fmt.Errorf("write %s: %w", in.Path, err)
@@ -523,34 +523,58 @@ func (p *Provider) write() *action.Action {
 	}
 }
 
-// writeAtomic writes data to a temporary file next to rp and renames it
-// over rp. A symlink at rp is followed (one level), so the link stays.
-// mode 0 keeps the existing permissions (0644 for a new file).
-func writeAtomic(c *sftp.Client, rp string, data []byte, mode fs.FileMode, createOnly bool) (WriteOutput, error) {
-	out := WriteOutput{Size: len(data)}
+// target resolves the file a write replaces: a symlink at rp is followed
+// (one level), so the link stays. fi is nil if the file does not exist.
+func target(c *sftp.Client, rp string) (string, os.FileInfo, error) {
 	fi, err := c.Lstat(rp)
 	switch {
-	case err == nil && createOnly:
-		return out, fmt.Errorf("%w: it exists (create_only)", fs.ErrExist)
-	case err == nil && fi.Mode()&fs.ModeSymlink != 0:
-		target, err := c.ReadLink(rp)
-		if err != nil {
-			return out, err
-		}
-		if !path.IsAbs(target) {
-			target = path.Join(path.Dir(rp), target)
-		}
-		rp = target
-		if fi, err = c.Stat(rp); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return out, err
-		}
-		if err != nil {
-			fi = nil
-		}
-	case err == nil:
 	case errors.Is(err, fs.ErrNotExist):
-		fi = nil
-	default:
+		return rp, nil, nil
+	case err != nil:
+		return rp, nil, err
+	case fi.Mode()&fs.ModeSymlink == 0:
+		return rp, fi, nil
+	}
+	link, err := c.ReadLink(rp)
+	if err != nil {
+		return rp, nil, err
+	}
+	if !path.IsAbs(link) {
+		link = path.Join(path.Dir(rp), link)
+	}
+	fi, err = c.Stat(link)
+	if errors.Is(err, fs.ErrNotExist) {
+		return link, nil, nil
+	}
+	return link, fi, err
+}
+
+// createPrivate opens (creating or truncating) a temporary file and
+// makes it 0600 before anything is written to it.
+func createPrivate(c *sftp.Client, tmp string, flags int) (*sftp.File, error) {
+	f, err := c.OpenFile(tmp, flags)
+	if err != nil {
+		return nil, err
+	}
+	if err := f.Chmod(0o600); err != nil {
+		f.Close()
+		return nil, err
+	}
+	return f, nil
+}
+
+// writeAtomic writes data to a private temporary file next to rp, gives
+// it its mode and renames it over rp. mode 0 keeps the existing
+// permissions (0644 for a new file).
+func (p *Provider) writeAtomic(ctx context.Context, h inventory.Host, c *sftp.Client, rp string, data []byte, mode fs.FileMode, createOnly bool) (WriteOutput, error) {
+	out := WriteOutput{Size: len(data)}
+	if createOnly {
+		if _, err := c.Lstat(rp); err == nil {
+			return out, fmt.Errorf("%w: it exists (create_only)", fs.ErrExist)
+		}
+	}
+	rp, fi, err := target(c, rp)
+	if err != nil {
 		return out, err
 	}
 	if fi != nil && fi.IsDir() {
@@ -568,9 +592,12 @@ func writeAtomic(c *sftp.Client, rp string, data []byte, mode fs.FileMode, creat
 	var b [6]byte
 	rand.Read(b[:])
 	tmp := path.Join(path.Dir(rp), "."+path.Base(rp)+".cox-"+hex.EncodeToString(b[:]))
-	f, err := c.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL)
+	f, err := createPrivate(c, tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL)
 	if err != nil {
 		return out, err
+	}
+	if p.pace != nil {
+		p.pace(ctx)
 	}
 	_, err = f.Write(data)
 	if cerr := f.Close(); err == nil {
@@ -587,7 +614,7 @@ func writeAtomic(c *sftp.Client, rp string, data []byte, mode fs.FileMode, creat
 		}
 	}
 	if err != nil {
-		c.Remove(tmp)
+		p.removeQuietly(h, c, tmp)
 		if createOnly {
 			if _, serr := c.Lstat(rp); serr == nil {
 				return out, fmt.Errorf("%w: it exists (create_only)", fs.ErrExist)
@@ -596,6 +623,26 @@ func writeAtomic(c *sftp.Client, rp string, data []byte, mode fs.FileMode, creat
 		return out, err
 	}
 	return out, nil
+}
+
+// removeQuietly deletes a temporary file, over a new connection if the
+// session broke (best effort).
+func (p *Provider) removeQuietly(h inventory.Host, c *sftp.Client, tmp string) {
+	err := c.Remove(tmp)
+	if err == nil || !failed(err) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	conn, err := p.Dialer.Dial(ctx, h)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+	if fresh, err := sftp.NewClient(conn.Client); err == nil {
+		fresh.Remove(tmp)
+		fresh.Close()
+	}
 }
 
 // PathOutput is the result of file.mkdir and file.remove.

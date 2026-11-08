@@ -329,3 +329,29 @@ func TestMkdirAndRemove(t *testing.T) {
 	}
 	mustFail(t, invoke(t, f.e, desktop, "file.remove", map[string]any{"host": "prod", "path": "/a/b/c"}), "")
 }
+
+// TestWriteTempIsPrivate: the temporary file is 0600 before any content
+// is written.
+func TestWriteTempIsPrivate(t *testing.T) {
+	f := setup(t)
+	checked := make(chan os.FileMode, 1)
+	f.p.pace = func(context.Context) {
+		matches, _ := filepath.Glob(filepath.Join(f.srv.Root, ".secret.env.cox-*"))
+		if len(matches) == 1 {
+			fi, _ := os.Stat(matches[0])
+			checked <- fi.Mode().Perm()
+		}
+	}
+	mustOK[WriteOutput](t, invoke(t, f.e, codex, "file.write", map[string]any{"host": "prod", "path": "secret.env", "content": "TOKEN=x\n", "mode": "0640"}))
+	select {
+	case m := <-checked:
+		if m != 0o600 {
+			t.Fatalf("temporary file mode %v", m)
+		}
+	default:
+		t.Fatal("no temporary file seen")
+	}
+	if fi, _ := os.Stat(filepath.Join(f.srv.Root, "secret.env")); fi.Mode().Perm() != 0o640 {
+		t.Fatalf("final mode %v", fi.Mode())
+	}
+}
