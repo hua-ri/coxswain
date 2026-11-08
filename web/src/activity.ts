@@ -1,6 +1,8 @@
 // The activity table's model: audit events folded into rows.
 import type { AuditEvent } from "./cox";
+import { finishBatch, hostDone, startBatch, type BatchEnd, type BatchHostDone, type BatchInfo, type BatchStart } from "./batch";
 import { describeTransfer, type Transfer } from "./transfers";
+import { tunnelRoute, type Tunnel } from "./tunnels";
 
 export interface Row {
   key: number;
@@ -17,6 +19,7 @@ export interface Row {
   detail?: string; // command line, typed text, or why a terminal closed
   terminal?: string; // terminal id, for jumping to its tab
   session?: string;
+  batch?: BatchInfo; // ssh.batch rows: per-host progress
 }
 
 export const MAX_ROWS = 1000;
@@ -82,9 +85,52 @@ export function addEvent(rows: Row[], ev: AuditEvent, key: number): Row[] {
       if (ev.type === "transfer.failed" && why) detail = `${detail ?? ""}: ${why}`;
       return prepend(rows, { ...base, action: ev.type, hosts: base.hosts.length ? base.hosts : t ? [t.host] : [], detail });
     }
+    case "batch.started": {
+      const d = ev.detail as BatchStart | undefined;
+      if (!d) return rows;
+      const batch = startBatch(d);
+      const i = rows.findIndex((r) => r.status === "running" && r.action === "ssh.batch" && !r.batch && r.client === base.client);
+      if (i < 0) {
+        const hosts = base.hosts.length ? base.hosts : batch.hosts.map((h) => h.host);
+        return prepend(rows, { ...base, action: "ssh.batch", hosts, status: "running", detail: d.command, batch });
+      }
+      return replace(rows, i, { ...rows[i], batch });
+    }
+    case "batch.host_done":
+    case "batch.finished": {
+      const i = rows.findIndex((r) => r.batch?.id === ev.batch);
+      if (i < 0 || !ev.detail) return rows;
+      const r = rows[i];
+      if (ev.type === "batch.host_done") return replace(rows, i, { ...r, batch: hostDone(r.batch!, ev.detail as BatchHostDone) });
+      const batch = finishBatch(r.batch!, ev.detail as BatchEnd);
+      const row: Row = { ...r, batch };
+      if (r.risk === undefined && r.status === "running") {
+        // No action row to finish it (the batch row stands alone).
+        row.status = ev.error || (batch.summary?.failed ?? 0) > 0 ? "failed" : "ok";
+        if (ev.error) row.error = ev.error;
+        else if (batch.summary?.failed) row.error = `${batch.summary.failed} of ${batch.summary.total} hosts failed`;
+      }
+      return replace(rows, i, row);
+    }
+    case "tunnel.opened":
+    case "tunnel.reconnecting":
+    case "tunnel.reconnected":
+    case "tunnel.closed": {
+      const t = ev.detail as Tunnel | undefined;
+      let detail = t ? tunnelRoute(t) : undefined;
+      const why = ev.reason ?? ev.error;
+      if (why) detail = `${detail ?? ""}: ${why}`;
+      return prepend(rows, { ...base, action: ev.type, hosts: base.hosts.length ? base.hosts : t ? [t.host] : [], detail });
+    }
     default:
       return prepend(rows, { ...base, action: ev.type });
   }
+}
+
+function replace(rows: Row[], i: number, row: Row): Row[] {
+  const out = rows.slice();
+  out[i] = row;
+  return out;
 }
 
 function prepend(rows: Row[], row: Row): Row[] {

@@ -120,3 +120,18 @@ button:disabled { opacity: 0.5; cursor: default; }
 .bar { height: 5px; background: var(--panel); border: 1px solid var(--border); border-radius: 3px; margin: 4px 0; overflow: hidden; }
 .bar > div { height: 100%; background: var(--accent); transition: width 0.3s; }
 .error { color: #d93025; }
+
+/* Tunnels and batch rows */
+.panel-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.tunnel-form { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; padding: 8px 10px; margin-bottom: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); }
+.tunnel-form label { display: flex; flex-direction: column; gap: 2px; font-size: 11px; color: var(--muted); }
+.tunnel-form input { font: inherit; font-size: 12px; color: var(--fg); background: var(--bg); border: 1px solid var(--border); border-radius: 5px; padding: 2px 6px; }
+.tunnel-form .help { flex-basis: 100%; font-size: 12px; }
+.disclosure { display: inline-block; width: 1em; color: var(--muted); }
+tr.expand > td { background: var(--panel); padding: 6px 12px 8px 28px; }
+.batch table { width: auto; min-width: 50%; margin-top: 4px; }
+.batch td { border-bottom: none; }
+.badge.host-ok { background: #2e9e5b; border-color: #2e9e5b; color: #fff; }
+.badge.host-failed { background: #d93025; border-color: #d93025; color: #fff; }
+pre.output { margin: 2px 0; padding: 6px 8px; max-height: 320px; overflow: auto; background: var(--bg); border: 1px solid var(--border); border-radius: 5px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; white-space: pre-wrap; }
+pre.output.stderr { color: #d93025; }

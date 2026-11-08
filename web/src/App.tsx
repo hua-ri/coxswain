@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useReducer, useState } from "react";
 import { ActivityView } from "./ActivityView";
 import { addEvent, type Row } from "./activity";
+import { fetchHostOutput, type BatchInfo } from "./batch";
 import { cox } from "./bridge";
 import type { Cox, Status } from "./cox";
 import { Confirm } from "./Confirm";
@@ -10,11 +11,17 @@ import { TerminalView } from "./TerminalView";
 import { needsConfirm, tabTitle, tabsReducer, type Tab } from "./terminals";
 import { runningCount, transfersReducer, type Transfer, type TransferItem } from "./transfers";
 import { TransfersView } from "./TransfersView";
+import { tunnelsReducer, type Tunnel } from "./tunnels";
+import { TunnelsView } from "./TunnelsView";
 import type { ClientInfo, Host, TermSession } from "./types";
 
 /** Tab ids of the fixed panels and the prefix of Files tabs. */
 const TRANSFERS = "@transfers";
 const FILES = "@files:";
+const TUNNELS = "@tunnels";
+
+/** How often the open Tunnels tab refreshes its traffic counters. */
+const TUNNEL_POLL_MS = 3000;
 
 /** How long the "agent is typing" dot stays after a terminal_send. */
 const TYPING_MS = 3000;
@@ -38,6 +45,8 @@ function Desktop({ cox }: { cox: Cox }) {
   const [transfers, dispatchTransfer] = useReducer(transfersReducer, []);
   const [cancelling, setCancelling] = useState<TransferItem | null>(null);
   const [browsers, setBrowsers] = useState<string[]>([]); // hosts with a Files tab
+  const [tunnels, dispatchTunnel] = useReducer(tunnelsReducer, []);
+  const [closingTunnel, setClosingTunnel] = useState<Tunnel | null>(null);
   const [now, setNow] = useState(Date.now());
 
   const report = useCallback((e: unknown) => setError(e instanceof Error ? e.message : String(e)), []);
@@ -58,12 +67,17 @@ function Desktop({ cox }: { cox: Cox }) {
     const list = (await cox.api<Transfer[]>("GET", "/api/v1/transfers")) ?? [];
     dispatchTransfer({ type: "sync", list });
   }, [cox]);
+  const loadTunnels = useCallback(async () => {
+    const list = (await cox.api<Tunnel[]>("GET", "/api/v1/tunnels")) ?? [];
+    dispatchTunnel({ type: "sync", list });
+  }, [cox]);
   const loadAll = useCallback(() => {
     loadHosts().catch(report);
     loadClients().catch(report);
     loadTerminals().catch(report);
     loadTransfers().catch(report);
-  }, [loadHosts, loadClients, loadTerminals, loadTransfers, report]);
+    loadTunnels().catch(report);
+  }, [loadHosts, loadClients, loadTerminals, loadTransfers, loadTunnels, report]);
 
   useEffect(() => {
     void cox.status().then(setStatus);
@@ -89,6 +103,7 @@ function Desktop({ cox }: { cox: Cox }) {
         const ev = p.event;
         setRows((rows) => addEvent(rows, ev, key++));
         if (ev.type.startsWith("transfer.")) dispatchTransfer({ type: "event", event: ev });
+        if (ev.type.startsWith("tunnel.")) dispatchTunnel({ type: "event", event: ev });
         if (ev.type.startsWith("client.")) loadClients().catch(report);
         if (ev.type === "terminal.opened" && ev.terminal && ev.actor) {
           const { kind, name } = ev.actor;
@@ -111,6 +126,13 @@ function Desktop({ cox }: { cox: Cox }) {
       stop?.();
     };
   }, [cox, loadClients, loadHosts, report]);
+
+  // Traffic counters change without events: refresh while the tab shows.
+  useEffect(() => {
+    if (active !== TUNNELS || !status.connected) return;
+    const timer = setInterval(() => loadTunnels().catch(() => {}), TUNNEL_POLL_MS);
+    return () => clearInterval(timer);
+  }, [active, status.connected, loadTunnels]);
 
   // Redraw while an "agent is typing" dot is showing.
   const typing = tabs.some((t) => (t.typingUntil ?? 0) > now);
@@ -168,6 +190,22 @@ function Desktop({ cox }: { cox: Cox }) {
       if (!/\((404|409)\)/.test(String(e))) report(e);
     });
   };
+  const askCloseTunnel = (t: Tunnel) => (t.owner.kind === "agent" ? setClosingTunnel(t) : closeTunnel(t));
+  const closeTunnel = (t: Tunnel) => {
+    setClosingTunnel(null);
+    cox
+      .api("DELETE", "/api/v1/tunnels/" + encodeURIComponent(t.id))
+      .catch((e) => {
+        if (!String(e).includes("(404)")) report(e);
+      })
+      .finally(() => loadTunnels().catch(report));
+  };
+  const createTunnel = async (body: Record<string, unknown>) => {
+    const t = await cox.api<Tunnel>("POST", "/api/v1/tunnels", body);
+    dispatchTunnel({ type: "event", event: { time: "", type: "tunnel.opened", detail: t } });
+  };
+  const loadOutput = (b: BatchInfo, host: string) =>
+    fetchHostOutput(cox.invoke, b.artifactId ?? "", b.hosts.map((h) => h.host), host);
   const decide = (method: "PUT" | "DELETE") => (name: string) => {
     cox
       .api(method, "/api/v1/clients/" + encodeURIComponent(name))
@@ -204,6 +242,10 @@ function Desktop({ cox }: { cox: Cox }) {
               Transfers
               {runningCount(transfers) > 0 && <span className="count">{runningCount(transfers)}</span>}
             </button>
+            <button className={active === TUNNELS ? "tab active" : "tab"} onClick={() => setActive(TUNNELS)}>
+              Tunnels
+              {tunnels.length > 0 && <span className="count">{tunnels.length}</span>}
+            </button>
             {browsers.map((h) => (
               <div key={h} className={active === FILES + h ? "tab active" : "tab"} onClick={() => setActive(FILES + h)}>
                 <span>{h} · files</span>
@@ -239,10 +281,13 @@ function Desktop({ cox }: { cox: Cox }) {
           </nav>
           <div className="tab-body">
             <div className="pane" style={{ display: active === "" ? "block" : "none" }}>
-              <ActivityView rows={rows} onOpenTerminal={showTerminal} />
+              <ActivityView rows={rows} onOpenTerminal={showTerminal} loadOutput={loadOutput} />
             </div>
             <div className="pane scroll" style={{ display: active === TRANSFERS ? "block" : "none" }}>
               <TransfersView transfers={transfers} onCancel={askCancel} />
+            </div>
+            <div className="pane scroll" style={{ display: active === TUNNELS ? "block" : "none" }}>
+              <TunnelsView tunnels={tunnels} hosts={hosts} onClose={askCloseTunnel} onCreate={createTunnel} />
             </div>
             {browsers.map((h) => (
               <FileBrowser key={h} cox={cox} host={h} active={active === FILES + h} />
@@ -274,6 +319,14 @@ function Desktop({ cox }: { cox: Cox }) {
           confirm="Cancel transfer"
           onYes={() => cancelTransfer(cancelling)}
           onNo={() => setCancelling(null)}
+        />
+      )}
+      {closingTunnel && (
+        <Confirm
+          message={`${closingTunnel.owner.name} opened this tunnel (${closingTunnel.host}, ${closingTunnel.listen}). Close it? Its connections end.`}
+          confirm="Close tunnel"
+          onYes={() => closeTunnel(closingTunnel)}
+          onNo={() => setClosingTunnel(null)}
         />
       )}
       <footer className="statusbar">

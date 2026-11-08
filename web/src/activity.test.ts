@@ -64,6 +64,52 @@ describe("addEvent", () => {
     ]);
   });
 
+  it("folds a batch run into its ssh.batch row", () => {
+    const actor = { kind: "agent" as const, name: "codex" }; // batch events carry no session
+    const rows = feed([
+      { time: t, type: "action.requested", actor: codex, action: "ssh.batch", risk: "read",
+        targets: [{ kind: "host", id: "a" }, { kind: "host", id: "b" }, { kind: "host", id: "c" }],
+        args: { command: "uptime", tag: "role=web" } },
+      { time: t, type: "batch.started", actor, batch: "b_1",
+        detail: { id: "b_1", command: "uptime", hosts: ["a", "b", "c"], concurrency: 5, canary: true, stop_on_failure: true } },
+      { time: t, type: "batch.host_done", actor, batch: "b_1", targets: [{ kind: "host", id: "a" }],
+        detail: { host: "a", status: "ok", exit_code: 0, duration_ms: 12 } },
+      { time: t, type: "batch.host_done", actor, batch: "b_1", targets: [{ kind: "host", id: "b" }],
+        detail: { host: "b", status: "failed", duration_ms: 3, error: "dial tcp: refused" } },
+      { time: t, type: "batch.finished", actor, batch: "b_1",
+        detail: { id: "b_1", summary: { total: 3, ok: 1, failed: 1, skipped: 1 }, stopped: "b failed", artifact_id: "art_9" } },
+      { time: t, type: "action.finished", actor: codex, action: "ssh.batch", duration_ms: 40 },
+    ]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ action: "ssh.batch", status: "ok", detail: "uptime", durationMs: 40 });
+    expect(rows[0].batch).toEqual({
+      id: "b_1",
+      command: "uptime",
+      hosts: [
+        { host: "a", status: "ok", exitCode: 0, durationMs: 12 },
+        { host: "b", status: "failed", durationMs: 3, error: "dial tcp: refused" },
+        { host: "c", status: "skipped" },
+      ],
+      summary: { total: 3, ok: 1, failed: 1, skipped: 1 },
+      stopped: "b failed",
+      artifactId: "art_9",
+      finished: true,
+    });
+  });
+
+  it("shows a batch without its action row", () => {
+    const actor = { kind: "agent" as const, name: "codex" };
+    const rows = feed([
+      { time: t, type: "batch.started", actor, batch: "b_2", targets: [{ kind: "host", id: "a" }],
+        detail: { id: "b_2", command: "false", hosts: ["a"], concurrency: 5, canary: true, stop_on_failure: true } },
+      { time: t, type: "batch.host_done", actor, batch: "b_2", detail: { host: "a", status: "failed", exit_code: 1, duration_ms: 2 } },
+      { time: t, type: "batch.finished", actor, batch: "b_2", detail: { id: "b_2", summary: { total: 1, ok: 0, failed: 1, skipped: 0 } } },
+    ]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ action: "ssh.batch", status: "failed", detail: "false", hosts: ["a"] });
+    expect(rows[0].batch?.hosts).toEqual([{ host: "a", status: "failed", exitCode: 1, durationMs: 2 }]);
+  });
+
   it("keeps at most 1000 rows", () => {
     let rows: Row[] = [];
     for (let i = 0; i < 1100; i++) rows = addEvent(rows, { time: t, type: "client.allowed", client: "c" }, i);
