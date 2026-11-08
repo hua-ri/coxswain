@@ -137,11 +137,16 @@ func TestOpenListClose(t *testing.T) {
 func TestRemoteIsDestructive(t *testing.T) {
 	e, _ := setup(t)
 	port := echo(t)
-	mustOK(t, invoke(t, e, codex, "tunnel.open", map[string]any{"host": "prod", "type": "remote", "local_port": port}))
+	mustOK(t, invoke(t, e, desktop, "tunnel.open", map[string]any{"host": "prod", "type": "remote", "local_port": port}))
 	if ev := requested(t, e); ev.Risk != "destructive" {
 		t.Fatalf("%+v", ev)
 	}
-	mustOK(t, invoke(t, e, codex, "tunnel.open", map[string]any{"host": "prod", "type": "socks", "idle_minutes": 0}))
+	// Agents may not open remote tunnels.
+	if out := invoke(t, e, codex, "tunnel.open", map[string]any{"host": "prod", "type": "remote", "local_port": port}); out.Status != engine.StatusError ||
+		!strings.Contains(out.Error, "ask the user") {
+		t.Fatalf("%+v", out)
+	}
+	mustOK(t, invoke(t, e, codex, "tunnel.open", map[string]any{"host": "prod", "type": "socks", "idle_minutes": 5}))
 	if ev := requested(t, e); ev.Risk != "write" {
 		t.Fatalf("%+v", ev)
 	}

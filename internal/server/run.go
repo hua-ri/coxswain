@@ -56,6 +56,11 @@ func Run(ctx context.Context, cfg Config, home string) error {
 	if err != nil {
 		return err
 	}
+	if cfg.Tunnels != nil {
+		// No tunnel may lead here: a process on a host could then call
+		// this API with a leaked token.
+		cfg.Tunnels.SetServerPort(ln.Addr().(*net.TCPAddr).Port)
+	}
 
 	base, stop := context.WithCancel(context.Background())
 	defer stop()

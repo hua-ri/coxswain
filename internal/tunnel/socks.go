@@ -80,6 +80,10 @@ func socksHandshake(c net.Conn) (string, error) {
 		if _, err := io.ReadFull(c, name); err != nil {
 			return "", err
 		}
+		if len(name) == 0 {
+			socksReply(c, socksBadAddress)
+			return "", errSocks
+		}
 		host = string(name)
 	default:
 		socksReply(c, socksBadAddress)

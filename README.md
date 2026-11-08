@@ -42,7 +42,7 @@ tools. `cox server` prints one line for every action, whether you or an agent ra
 | Batch runs | `ssh_batch` | one command on many hosts (`hosts` and/or `tag`), canary first, stops on failure; above 50 hosts needs `confirm_count` |
 | Files | `file_list`, `file_stat`, `file_read`, `file_write`, `file_mkdir`, `file_remove` | over SFTP; `file_write` is atomic; `file_read` is for small text files |
 | Transfers | `file_upload`, `file_download` | with progress, cancel, resume and SHA-256; downloads go to `~/.coxswain/downloads/<host>/` |
-| Tunnels | `tunnel_open`, `tunnel_list`, `tunnel_close` | local (`-L`), remote (`-R`) and SOCKS5 (`-D`), on 127.0.0.1 only; reconnect by themselves |
+| Tunnels | `tunnel_open`, `tunnel_list`, `tunnel_close` | local (`-L`), remote (`-R`, opened by you only) and SOCKS5 (`-D`), on 127.0.0.1; reconnect by themselves |
 | Terminals | `terminal_open`, `terminal_send`, `terminal_read`, `terminal_close` | shared with you in `cox desktop` |
 | Large outputs | `artifact_read` | the full copy of anything that was shortened |
 
@@ -174,9 +174,13 @@ and don't let them run raw `ssh`. Your credentials still never leave the server 
 - Commands are saved in the audit log exactly as typed. Secrets you put on a command line end up
   there too.
 - Full copies of truncated outputs stay in `~/.coxswain/artifacts/` until you delete them.
-- Tunnels listen on 127.0.0.1 only, but any local process can use one while it is open. A remote
-  tunnel (`-R`) exposes a service on your Mac to the host; agents are told to ask you first, and it
-  is always rated destructive.
+- Local and SOCKS tunnels listen on 127.0.0.1 only, but any local process (not just the agent
+  that opened it) can use one while it is open. A remote tunnel (`-R`) exposes a service on your
+  Mac to the host. It asks the host to listen on 127.0.0.1, which holds only if the host's sshd
+  doesn't allow `GatewayPorts`. Only you can open remote tunnels (in `cox desktop` or with
+  `cox tunnel open`); agents can't. No tunnel may lead to `cox server`'s own port.
+- Agents' tunnels close after at most 4 hours without connections (30 minutes by default), and
+  each agent may have at most 16 open.
 - Agents may download only into `~/.coxswain/downloads/<host>/`, and upload only files in
   `~/.coxswain/uploads/` (symlinks out of it don't count). To upload something else, an agent first
   copies it there with its own tools, which its own permission settings cover. You can upload any

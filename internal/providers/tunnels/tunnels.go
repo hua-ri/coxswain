@@ -58,12 +58,13 @@ func (p *Provider) open() *action.Action {
 		Description: "Open a tunnel through a saved SSH host. Types: " +
 			"local (like ssh -L): 127.0.0.1:local_port on this machine leads to remote_host:remote_port as seen from the host " +
 			"(remote_host defaults to 127.0.0.1, i.e. a service on the host itself); " +
-			"remote (like ssh -R): 127.0.0.1:remote_port on the host leads to 127.0.0.1:local_port on this machine — " +
-			"this exposes a local service to the host, so ask the user first; " +
-			"socks (like ssh -D): a SOCKS5 proxy on 127.0.0.1:local_port whose connections leave from the host. " +
-			"Ports default to a free one; the result says which (listen). Tunnels bind 127.0.0.1 only, reconnect by " +
-			"themselves and are shown to the user, who can close them. Close yours with tunnel_close when done; " +
-			"unused tunnels you open close after idle_minutes (default 30, 0 = never). " +
+			"socks (like ssh -D): a SOCKS5 proxy on 127.0.0.1:local_port whose connections leave from the host; " +
+			"remote (like ssh -R) exposes a port of this machine on the host: only the user can open those (desktop app or " +
+			"`cox tunnel open`), so ask them. " +
+			"Ports default to a free one; the result says which (listen). Local and socks tunnels listen on 127.0.0.1 only " +
+			"(any local process can use them while open), reconnect by themselves and are shown to the user, who can close " +
+			"them. Close yours with tunnel_close when done; yours close after idle_minutes without connections " +
+			"(default 30, 1..240). At most 16 tunnels per agent. " +
 			"Hosts tagged env=prod are production: confirm with the user first. Respect the host note.",
 		Input: map[string]any{
 			"type": "object",
@@ -72,8 +73,8 @@ func (p *Provider) open() *action.Action {
 				"type":         map[string]any{"type": "string", "enum": []string{tunnel.Local, tunnel.Remote, tunnel.Socks}},
 				"local_port":   map[string]any{"type": "integer", "minimum": 0, "maximum": 65535, "description": "port on this machine (local/socks: listen, default free; remote: required target)"},
 				"remote_host":  map[string]any{"type": "string", "description": "local only: target host as seen from the SSH host, default 127.0.0.1"},
-				"remote_port":  map[string]any{"type": "integer", "minimum": 0, "maximum": 65535, "description": "local: target port (required); remote: port to listen on at the host, default free"},
-				"idle_minutes": map[string]any{"type": "integer", "minimum": 0, "description": "close after this many minutes without connections; default 30, 0 = never"},
+				"remote_port":  map[string]any{"type": "integer", "minimum": 0, "maximum": 65535, "description": "local: target port (required); remote: port to listen on at the host (127.0.0.1), default free"},
+				"idle_minutes": map[string]any{"type": "integer", "minimum": 0, "description": "close after this many minutes without connections; agents: 1..240, default 30; people: default and 0 = never"},
 			},
 			"required": []string{"host", "type"},
 		},

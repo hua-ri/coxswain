@@ -29,6 +29,17 @@ var (
 	ErrInvalid  = errors.New("invalid tunnel")
 	ErrListen   = errors.New("cannot listen")
 	ErrTooMany  = errors.New("too many open tunnels; close some first")
+	// ErrNotAllowed is a tunnel the caller may not open.
+	ErrNotAllowed = errors.New("tunnel not allowed")
+)
+
+// maxPerAgent bounds each agent's open tunnels.
+const maxPerAgent = 16
+
+// Agents' idle timeouts, in minutes.
+const (
+	minAgentIdle = 1
+	maxAgentIdle = 240
 )
 
 // Types.
@@ -96,9 +107,55 @@ type Manager struct {
 
 	// after starts a timer (time.AfterFunc); tests replace it.
 	after func(time.Duration, func()) (stop func() bool)
+	// afterInsert, if set, runs when Open has added a tunnel (tests).
+	afterInsert func()
 
-	mu      sync.Mutex
-	tunnels map[string]*tunnel
+	serverPort atomic.Int64
+
+	mu        sync.Mutex
+	tunnels   map[string]*tunnel
+	pending   int            // tunnels being opened
+	pendingBy map[string]int // … per agent
+}
+
+// SetServerPort tells the manager Coxswain's own port on 127.0.0.1: no
+// tunnel may lead to it (a remote process could use it with a leaked
+// token).
+func (m *Manager) SetServerPort(port int) { m.serverPort.Store(int64(port)) }
+
+// reserve claims a place for a new tunnel of owner, within MaxOpen and
+// (for agents) maxPerAgent; release gives it back.
+func (m *Manager) reserve(owner action.Actor) (release func(), err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.tunnels)+m.pending >= m.maxOpen() {
+		return nil, ErrTooMany
+	}
+	agent := owner.Kind == action.Agent
+	if agent {
+		n := m.pendingBy[owner.Name]
+		for _, t := range m.tunnels {
+			if t.info.Owner.Kind == action.Agent && t.info.Owner.Name == owner.Name {
+				n++
+			}
+		}
+		if n >= maxPerAgent {
+			return nil, fmt.Errorf("%w (%d per agent)", ErrTooMany, maxPerAgent)
+		}
+		if m.pendingBy == nil {
+			m.pendingBy = map[string]int{}
+		}
+		m.pendingBy[owner.Name]++
+	}
+	m.pending++
+	return func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		m.pending--
+		if agent {
+			m.pendingBy[owner.Name]--
+		}
+	}, nil
 }
 
 func defaultBackoff(attempt int) time.Duration {
@@ -110,7 +167,7 @@ func defaultBackoff(attempt int) time.Duration {
 
 // Open validates spec, connects to the host and starts the tunnel.
 func (m *Manager) Open(ctx context.Context, spec Spec, owner action.Actor) (Tunnel, error) {
-	idle, target, err := check(&spec, owner)
+	idle, target, err := check(&spec, owner, int(m.serverPort.Load()))
 	if err != nil {
 		return Tunnel{}, err
 	}
@@ -118,12 +175,16 @@ func (m *Manager) Open(ctx context.Context, spec Spec, owner action.Actor) (Tunn
 	if err != nil {
 		return Tunnel{}, err
 	}
-	m.mu.Lock()
-	n := len(m.tunnels)
-	m.mu.Unlock()
-	if n >= m.maxOpen() {
-		return Tunnel{}, ErrTooMany
+	release, err := m.reserve(owner)
+	if err != nil {
+		return Tunnel{}, err
 	}
+	inserted := false
+	defer func() {
+		if !inserted {
+			release()
+		}
+	}()
 	id, err := newID()
 	if err != nil {
 		return Tunnel{}, err
@@ -162,7 +223,12 @@ func (m *Manager) Open(ctx context.Context, spec Spec, owner action.Actor) (Tunn
 		m.tunnels = map[string]*tunnel{}
 	}
 	m.tunnels[id] = t
+	inserted = true
 	m.mu.Unlock()
+	release()
+	if m.afterInsert != nil {
+		m.afterInsert()
+	}
 
 	t.mu.Lock()
 	t.armIdle()
@@ -177,12 +243,19 @@ func (m *Manager) Open(ctx context.Context, spec Spec, owner action.Actor) (Tunn
 	go t.supervise()
 	info := t.snapshot()
 	m.log(eventlog.TunnelOpened, t, nil)
+	// The caller may have been cancelled (an agent revoked) while this
+	// was opening, after its tunnels were closed: close this one too.
+	if ctx.Err() != nil {
+		cause := context.Cause(ctx)
+		m.close(id, cause.Error())
+		return Tunnel{}, cause
+	}
 	return info, nil
 }
 
 // check validates spec (filling defaults) and returns the idle minutes
 // and the target description.
-func check(s *Spec, owner action.Actor) (int, string, error) {
+func check(s *Spec, owner action.Actor, serverPort int) (int, string, error) {
 	bad := func(format string, args ...any) (int, string, error) {
 		return 0, "", fmt.Errorf("%w: "+format, append([]any{ErrInvalid}, args...)...)
 	}
@@ -195,10 +268,27 @@ func check(s *Spec, owner action.Actor) (int, string, error) {
 		idle = DefaultAgentIdle
 	}
 	if s.IdleMinutes != nil {
-		if *s.IdleMinutes < 0 {
-			return bad("idle_minutes must not be negative")
-		}
 		idle = *s.IdleMinutes
+		switch {
+		case idle < 0:
+			return bad("idle_minutes must not be negative")
+		case owner.Kind == action.Agent && (idle < minAgentIdle || idle > maxAgentIdle):
+			return bad("an agent's tunnel must close after %d..%d idle minutes", minAgentIdle, maxAgentIdle)
+		}
+	}
+	notAllowed := func(why string) (int, string, error) {
+		return 0, "", fmt.Errorf("%w: %s", ErrNotAllowed, why)
+	}
+	if owner.Kind == action.Agent && s.Type == Remote {
+		return notAllowed("agents may not open remote tunnels (they expose this machine to the host); " +
+			"ask the user to open it in the Coxswain desktop app or with `cox tunnel open`")
+	}
+	if serverPort != 0 {
+		switch {
+		case s.Type == Remote && s.LocalPort == serverPort,
+			s.Type == Local && s.RemotePort == serverPort && loopback(s.RemoteHost):
+			return notAllowed(fmt.Sprintf("port %d is Coxswain's own", serverPort))
+		}
 	}
 	var target string
 	switch s.Type {
@@ -342,6 +432,16 @@ func (m *Manager) maxOpen() int {
 		return m.MaxOpen
 	}
 	return 64
+}
+
+// loopback reports whether host (empty: the default, 127.0.0.1) names
+// the machine itself.
+func loopback(host string) bool {
+	if host == "" || host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func newID() (string, error) {

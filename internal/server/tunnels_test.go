@@ -2,10 +2,12 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -143,5 +145,27 @@ func TestRevokeClosesTunnels(t *testing.T) {
 	f.cfg.Clients.Revoke("codex")
 	if list := f.cfg.Tunnels.List(); len(list) != 1 || list[0].ID != mine.ID {
 		t.Fatalf("%+v", list)
+	}
+}
+
+// TestRunProtectsItsPort: once listening, the server's own port cannot
+// be the target of a tunnel.
+func TestRunProtectsItsPort(t *testing.T) {
+	f := newConfig(t)
+	withTunnels(t, &f)
+	f.cfg.Token = ""
+	info, stop := runReady(t, f.cfg, t.TempDir())
+	defer stop()
+	_, port, _ := net.SplitHostPort(info.Addr)
+	p, _ := strconv.Atoi(port)
+	_, err := f.cfg.Tunnels.Open(t.Context(), tunnel.Spec{Host: "dev", Type: tunnel.Remote, LocalPort: p}, Actor("cli"))
+	if !errors.Is(err, tunnel.ErrNotAllowed) {
+		t.Fatalf("%v", err)
+	}
+	cfg := f.cfg
+	cfg.Token = token
+	w := request(t, New(cfg), "POST", "/api/v1/tunnels", fmt.Sprintf(`{"host":"dev","type":"remote","local_port":%d}`, p), nil)
+	if w.Code != 403 {
+		t.Fatalf("%d %s", w.Code, w.Body)
 	}
 }

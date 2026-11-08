@@ -86,6 +86,8 @@ func tunnelError(w http.ResponseWriter, err error) {
 		code = http.StatusNotFound
 	case errors.Is(err, tunnel.ErrInvalid):
 		code = http.StatusBadRequest
+	case errors.Is(err, tunnel.ErrNotAllowed):
+		code = http.StatusForbidden
 	case errors.Is(err, tunnel.ErrListen), errors.Is(err, tunnel.ErrTooMany):
 		code = http.StatusConflict
 	}

@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -236,12 +237,22 @@ func TestLocal(t *testing.T) {
 func TestLocalFixedPortAndRemoteHost(t *testing.T) {
 	f := setup(t)
 	port := echo(t)
-	free, _ := net.Listen("tcp", "127.0.0.1:0")
-	want := free.Addr().(*net.TCPAddr).Port
-	free.Close()
-	tn, err := f.m.Open(context.Background(), Spec{Host: "dev", Type: Local, LocalPort: want, RemoteHost: "localhost", RemotePort: port}, desktop)
-	if err != nil {
-		t.Fatal(err)
+	// Ask for a port that was free a moment ago; if something else took
+	// it meanwhile, try another one.
+	var tn Tunnel
+	var want int
+	for range 20 {
+		free, _ := net.Listen("tcp", "127.0.0.1:0")
+		want = free.Addr().(*net.TCPAddr).Port
+		free.Close()
+		var err error
+		tn, err = f.m.Open(context.Background(), Spec{Host: "dev", Type: Local, LocalPort: want, RemoteHost: "localhost", RemotePort: port}, desktop)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, ErrListen) {
+			t.Fatal(err)
+		}
 	}
 	if tn.Listen != "127.0.0.1:"+strconv.Itoa(want) || tn.Target != "localhost:"+strconv.Itoa(port) || tn.IdleMinutes != 0 {
 		t.Fatalf("%+v", tn)
@@ -253,10 +264,79 @@ func TestLocalFixedPortAndRemoteHost(t *testing.T) {
 	}
 }
 
+// TestServerPortRefused: no tunnel may lead to Coxswain's own port, and
+// agents may not open remote tunnels at all.
+func TestServerPortRefused(t *testing.T) {
+	f := setup(t)
+	server := echo(t) // stands in for cox server
+	f.m.SetServerPort(server)
+	for _, s := range []Spec{
+		{Host: "dev", Type: Remote, LocalPort: server},
+		{Host: "dev", Type: Local, RemotePort: server},
+		{Host: "dev", Type: Local, RemoteHost: "localhost", RemotePort: server},
+	} {
+		if _, err := f.m.Open(context.Background(), s, desktop); !errors.Is(err, ErrNotAllowed) {
+			t.Errorf("%+v: %v", s, err)
+		}
+	}
+	other := echo(t)
+	_, err := f.m.Open(context.Background(), Spec{Host: "dev", Type: Remote, LocalPort: other}, codex)
+	if !errors.Is(err, ErrNotAllowed) || !strings.Contains(err.Error(), "ask the user") {
+		t.Fatalf("agent remote tunnel: %v", err)
+	}
+	if len(f.m.List()) != 0 {
+		t.Fatal("refused tunnels listed")
+	}
+}
+
+// TestAgentLimits: agents get at most 16 tunnels each and must let them
+// close when idle (1..240 minutes).
+func TestAgentLimits(t *testing.T) {
+	f := setup(t)
+	port := echo(t)
+	spec := Spec{Host: "dev", Type: Local, RemotePort: port}
+	for _, idle := range []int{0, 241} {
+		s := spec
+		s.IdleMinutes = &idle
+		if _, err := f.m.Open(context.Background(), s, codex); !errors.Is(err, ErrInvalid) {
+			t.Errorf("idle %d: %v", idle, err)
+		}
+	}
+	for i := range maxPerAgent {
+		if _, err := f.m.Open(context.Background(), spec, codex); err != nil {
+			t.Fatalf("tunnel %d: %v", i, err)
+		}
+	}
+	if _, err := f.m.Open(context.Background(), spec, codex); !errors.Is(err, ErrTooMany) {
+		t.Fatalf("17th: %v", err)
+	}
+	if _, err := f.m.Open(context.Background(), spec, action.Actor{Kind: action.Agent, Name: "kimi"}); err != nil {
+		t.Fatalf("another agent: %v", err)
+	}
+	if _, err := f.m.Open(context.Background(), spec, desktop); err != nil {
+		t.Fatalf("the user: %v", err)
+	}
+}
+
+// TestOpenCancelled: a tunnel whose caller is cancelled while it opens
+// (the agent was revoked) does not stay open.
+func TestOpenCancelled(t *testing.T) {
+	f := setup(t)
+	port := echo(t)
+	ctx, cancel := context.WithCancelCause(context.Background())
+	f.m.afterInsert = func() { cancel(errors.New("client revoked")) }
+	if _, err := f.m.Open(ctx, Spec{Host: "dev", Type: Local, RemotePort: port}, codex); err == nil || !strings.Contains(err.Error(), "client revoked") {
+		t.Fatalf("%v", err)
+	}
+	if len(f.m.List()) != 0 {
+		t.Fatal("tunnel left open")
+	}
+}
+
 func TestRemote(t *testing.T) {
 	f := setup(t)
 	port := echo(t)
-	tn, err := f.m.Open(context.Background(), Spec{Host: "dev", Type: Remote, LocalPort: port}, codex)
+	tn, err := f.m.Open(context.Background(), Spec{Host: "dev", Type: Remote, LocalPort: port}, desktop)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -266,7 +346,7 @@ func TestRemote(t *testing.T) {
 	// The test SSH server runs here, so its 127.0.0.1 is ours.
 	roundTrip(t, tn.Listen)
 	waitFor(t, f.m, tn.ID, func(tn Tunnel) bool { return tn.TotalConnections == 1 && tn.BytesIn == 5 && tn.BytesOut == 5 })
-	if err := f.m.Close(tn.ID, codex); err != nil {
+	if err := f.m.Close(tn.ID, desktop); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := net.Dial("tcp", tn.Listen); err == nil {
@@ -364,7 +444,7 @@ func TestReconnect(t *testing.T) {
 			if typ == Remote {
 				spec = Spec{Host: "dev", Type: Remote, LocalPort: port}
 			}
-			tn, err := f.m.Open(context.Background(), spec, codex)
+			tn, err := f.m.Open(context.Background(), spec, desktop)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -433,8 +513,8 @@ func TestIdleClose(t *testing.T) {
 	}
 }
 
-// TestNoIdleClose: the user's tunnels, and idle_minutes 0, never close by
-// themselves.
+// TestNoIdleClose: the user's tunnels never close by themselves, by
+// default or with idle_minutes 0.
 func TestNoIdleClose(t *testing.T) {
 	f := setup(t)
 	port := echo(t)
@@ -442,7 +522,7 @@ func TestNoIdleClose(t *testing.T) {
 	if _, err := f.m.Open(context.Background(), Spec{Host: "dev", Type: Local, RemotePort: port}, desktop); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.m.Open(context.Background(), Spec{Host: "dev", Type: Local, RemotePort: port, IdleMinutes: &zero}, codex); err != nil {
+	if _, err := f.m.Open(context.Background(), Spec{Host: "dev", Type: Local, RemotePort: port, IdleMinutes: &zero}, desktop); err != nil {
 		t.Fatal(err)
 	}
 	if n := len(f.timers.armed()); n != 0 {
@@ -463,7 +543,7 @@ func TestInvalid(t *testing.T) {
 		{Host: "dev", Type: Socks, RemotePort: 80},
 		{Host: "dev", Type: Local, RemotePort: 80, IdleMinutes: &neg},
 	} {
-		if _, err := f.m.Open(context.Background(), s, codex); !errors.Is(err, ErrInvalid) {
+		if _, err := f.m.Open(context.Background(), s, desktop); !errors.Is(err, ErrInvalid) {
 			t.Errorf("%+v: %v", s, err)
 		}
 	}
@@ -509,4 +589,60 @@ func TestCloseAgent(t *testing.T) {
 	if len(list) != 2 || list[0].ID != mine.ID || list[1].ID != kimis.ID {
 		t.Fatalf("%+v", list)
 	}
+}
+
+// rawSocks sends b to a SOCKS proxy and returns what it answers before
+// closing the connection.
+func rawSocks(t *testing.T, proxy string, b []byte, closeWrite bool) []byte {
+	t.Helper()
+	c, err := net.Dial("tcp", proxy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	c.SetDeadline(time.Now().Add(5 * time.Second))
+	c.Write(b)
+	if closeWrite {
+		c.(*net.TCPConn).CloseWrite()
+	}
+	// The proxy closes the connection; unread input may make that a
+	// reset rather than an end of file.
+	out, err := io.ReadAll(c)
+	if err != nil && !errors.Is(err, syscall.ECONNRESET) {
+		t.Fatalf("proxy did not close the connection: %v", err)
+	}
+	return out
+}
+
+func TestSocksMalformed(t *testing.T) {
+	f := setup(t)
+	port := echo(t)
+	tn, err := f.m.Open(context.Background(), Spec{Host: "dev", Type: Socks}, desktop)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := binary.BigEndian.AppendUint16(nil, uint16(port))
+	for _, c := range []struct {
+		name string
+		in   []byte
+		want []byte
+	}{
+		{"no methods", []byte{5, 0}, []byte{5, 0xff}},
+		{"socks4", []byte{4, 1, 0, 80, 127, 0, 0, 1, 0}, nil},
+		{"empty domain", append([]byte{5, 1, 0, 5, 1, 0, 3, 0}, p...), []byte{5, 0, 5, socksBadAddress, 0, 1, 0, 0, 0, 0, 0, 0}},
+		{"bad address type", append([]byte{5, 1, 0, 5, 1, 0, 9}, p...), []byte{5, 0, 5, socksBadAddress, 0, 1, 0, 0, 0, 0, 0, 0}},
+		{"eof in greeting", []byte{5, 3, 0}, nil},
+		{"eof in request", []byte{5, 1, 0, 5, 1, 0, 1, 127}, []byte{5, 0}},
+	} {
+		if got := rawSocks(t, tn.Listen, c.in, true); string(got) != string(c.want) {
+			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
+		}
+	}
+	// The proxy still works.
+	conn, code := socks(t, tn.Listen, 1, 1, []byte{127, 0, 0, 1}, port)
+	if code != 0 {
+		t.Fatalf("reply %d", code)
+	}
+	ping(t, conn)
+	waitFor(t, f.m, tn.ID, func(tn Tunnel) bool { return tn.Connections <= 1 })
 }
