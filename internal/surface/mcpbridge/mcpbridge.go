@@ -6,6 +6,12 @@
 // running, so the agent's handshake never fails. Once the server is
 // reachable, the bridge connects, re-initializes the session the agent
 // already set up and relays from then on.
+//
+// If the server drops the session (e.g. the client was revoked), the
+// next call reconnects; a call the server refused for that reason is sent
+// once more. A call whose connection dropped after the server took it is
+// never resent: the agent is told the outcome is unknown, or that the
+// server is not running if it no longer answers.
 package mcpbridge
 
 import (
@@ -28,6 +34,15 @@ import (
 
 // CodeNotRunning is the JSON-RPC error code for "server not reachable".
 const CodeNotRunning = -32000
+
+// CodeConnectionLost is the JSON-RPC error code for a call whose
+// connection dropped after the server accepted it, while the server is
+// still running.
+const CodeConnectionLost = -32001
+
+// connectionLost is its message.
+const connectionLost = "lost the connection to the Coxswain server; the outcome is unknown (the call may have run). " +
+	"Check before retrying"
 
 // replayTimeout bounds re-initializing a session after a reconnect.
 const replayTimeout = 10 * time.Second
@@ -129,20 +144,75 @@ func (b *bridge) initialize(req *jsonrpc.Request) {
 // concurrently. If the server is unreachable, the local server answers.
 func (b *bridge) call(req *jsonrpc.Request, wg *sync.WaitGroup) {
 	if u := b.connect(true); u != nil {
-		u.track(req.ID)
-		b.sendAsync(u, req, func() { // the write failed: reconnect once
-			if u := b.connect(true); u != nil {
-				u.track(req.ID)
-				if b.send(u, req) {
-					return
-				}
-			}
-			b.local(req)
-		})
+		b.relay(u, req, true)
 		return
 	}
 	wg.Add(1)
 	go func() { defer wg.Done(); b.local(req) }()
+}
+
+// relay sends an agent call on u and returns once it is on its way. If
+// the server did not take it (its session was gone, or the request never
+// got out), the bridge reconnects and, with retry, sends it once more.
+// A call the server may have taken is never sent twice.
+func (b *bridge) relay(u *upstream, req *jsonrpc.Request, retry bool) {
+	u.track(req.ID)
+	done := u.write(b.ctx, req)
+	go func() {
+		res := <-done
+		if res.err == nil {
+			if !u.accept(req.ID) { // the connection failed meanwhile
+				b.lost(req.ID)
+			}
+			return
+		}
+		hook, _ := writeFailed.Load().(func())
+		if hook != nil {
+			hook()
+		}
+		u.untrack(req.ID)
+		b.drop(u)
+		notTaken := errors.Is(res.err, sdk.ErrSessionMissing) || !res.sent
+		switch {
+		case !notTaken:
+			b.lost(req.ID)
+		case !retry:
+			b.unsent(req)
+		default:
+			if nu := b.connect(true); nu != nil {
+				b.relay(nu, req, false)
+				return
+			}
+			b.unsent(req)
+		}
+	}()
+}
+
+// lost answers a call the server may have run but whose answer can no
+// longer arrive: the outcome is unknown, unless the server is gone.
+func (b *bridge) lost(id jsonrpc.ID) {
+	if !b.reachable() {
+		b.fail(id)
+		return
+	}
+	b.down.Write(b.ctx, &jsonrpc.Response{ID: id, Error: &jsonrpc.Error{Code: CodeConnectionLost, Message: connectionLost}})
+}
+
+// unsent answers a call that did not reach the server: from the local
+// server if the server is gone, else with an error saying it did not run.
+func (b *bridge) unsent(req *jsonrpc.Request) {
+	if !b.reachable() {
+		b.local(req)
+		return
+	}
+	b.down.Write(b.ctx, &jsonrpc.Response{ID: req.ID, Error: &jsonrpc.Error{Code: CodeConnectionLost,
+		Message: "could not reach the Coxswain server session; the call did not run. Try again"}})
+}
+
+// reachable reports whether the server answers.
+func (b *bridge) reachable() bool {
+	_, err := instance.Discover(b.ctx, b.home)
+	return err == nil
 }
 
 // local answers req from the offline server.
@@ -173,7 +243,7 @@ func (b *bridge) fail(id jsonrpc.ID) {
 
 // send writes msg on u and waits for the result; on failure u is dropped.
 func (b *bridge) send(u *upstream, msg jsonrpc.Message) bool {
-	if err := <-u.write(b.ctx, msg); err != nil {
+	if res := <-u.write(b.ctx, msg); res.err != nil {
 		b.forget(u, msg)
 		return false
 	}
@@ -186,7 +256,7 @@ func (b *bridge) send(u *upstream, msg jsonrpc.Message) bool {
 func (b *bridge) sendAsync(u *upstream, msg jsonrpc.Message, onFail func()) {
 	done := u.write(b.ctx, msg)
 	go func() {
-		if err := <-done; err != nil {
+		if res := <-done; res.err != nil {
 			b.forget(u, msg)
 			if onFail != nil {
 				onFail()
@@ -252,8 +322,8 @@ func (b *bridge) replay(u *upstream, init, initialized *jsonrpc.Request) error {
 	u.mu.Lock()
 	u.internal[req.ID] = ch
 	u.mu.Unlock()
-	if err := <-u.write(b.ctx, &req); err != nil {
-		return err
+	if res := <-u.write(b.ctx, &req); res.err != nil {
+		return res.err
 	}
 	select {
 	case resp, ok := <-ch:
@@ -269,28 +339,35 @@ func (b *bridge) replay(u *upstream, init, initialized *jsonrpc.Request) error {
 		return b.ctx.Err()
 	}
 	if initialized != nil {
-		return <-u.write(b.ctx, initialized)
+		return (<-u.write(b.ctx, initialized)).err
 	}
 	return nil
 }
 
-// read relays server messages to the agent until the connection fails,
-// then answers the agent's pending calls with the not-running error.
+// read relays server messages to the agent until the connection fails.
+// Then the calls the server had taken are answered (see lost); calls
+// still being sent are left to relay, which knows whether they got out.
 func (b *bridge) read(u *upstream) {
 	for {
 		msg, err := u.conn.Read(b.ctx)
 		if err != nil {
 			b.drop(u)
 			u.mu.Lock()
-			pending := u.pending
-			u.pending = map[jsonrpc.ID]bool{}
+			u.dead = true
+			var taken []jsonrpc.ID
+			for id, accepted := range u.pending {
+				if accepted {
+					taken = append(taken, id)
+					delete(u.pending, id)
+				}
+			}
 			for _, ch := range u.internal {
 				close(ch)
 			}
 			u.internal = map[jsonrpc.ID]chan *jsonrpc.Response{}
 			u.mu.Unlock()
-			for id := range pending {
-				b.fail(id)
+			for _, id := range taken {
+				b.lost(id)
 			}
 			return
 		}
@@ -304,11 +381,11 @@ func (b *bridge) read(u *upstream) {
 				ch <- resp
 				continue
 			}
-			if lost(resp.Error) {
-				// The server closed the stream without answering: it is
-				// most likely shutting down.
+			if terminated(resp.Error) {
+				// The server closed the call's stream without answering:
+				// it is shutting down or closed the session.
 				b.drop(u)
-				b.fail(resp.ID)
+				b.lost(resp.ID)
 				continue
 			}
 		}
@@ -316,9 +393,9 @@ func (b *bridge) read(u *upstream) {
 	}
 }
 
-// lost reports the SDK's synthetic error for a stream that ended without
-// a response.
-func lost(err error) bool {
+// terminated reports the SDK's synthetic error for a stream that ended
+// without a response.
+func terminated(err error) bool {
 	var wire *jsonrpc.Error
 	return err != nil && !errors.As(err, &wire) && strings.Contains(err.Error(), "terminated without response")
 }
@@ -353,14 +430,33 @@ func (b *bridge) drop(u *upstream) {
 type upstream struct {
 	conn     sdk.Connection
 	mu       sync.Mutex
-	pending  map[jsonrpc.ID]bool                   // agent calls awaiting a response
+	pending  map[jsonrpc.ID]bool                   // agent calls awaiting a response: true once the server took them
 	internal map[jsonrpc.ID]chan *jsonrpc.Response // the bridge's own calls
+	dead     bool                                  // the connection failed
 }
 
+// track records a call about to be sent.
 func (u *upstream) track(id jsonrpc.ID) {
 	u.mu.Lock()
-	u.pending[id] = true
+	u.pending[id] = false
 	u.mu.Unlock()
+}
+
+// accept records that the server took a call (its write succeeded). It
+// reports false, forgetting the call, if the connection already failed:
+// its answer will not arrive.
+func (u *upstream) accept(id jsonrpc.ID) bool {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if _, ok := u.pending[id]; !ok {
+		return true // already answered
+	}
+	if u.dead {
+		delete(u.pending, id)
+		return false
+	}
+	u.pending[id] = true
+	return true
 }
 
 func (u *upstream) untrack(id jsonrpc.ID) {
@@ -369,23 +465,42 @@ func (u *upstream) untrack(id jsonrpc.ID) {
 	u.mu.Unlock()
 }
 
+// writeResult is how a write ended; sent reports that the whole request
+// body went out (so the server may have received it).
+type writeResult struct {
+	err  error
+	sent bool
+}
+
 // write starts writing msg and returns once its HTTP request body has
 // been sent (or the write ended). The channel yields the write's result.
-func (u *upstream) write(ctx context.Context, msg jsonrpc.Message) <-chan error {
-	sent := make(chan struct{})
+func (u *upstream) write(ctx context.Context, msg jsonrpc.Message) <-chan writeResult {
+	started := make(chan struct{})
 	var once sync.Once
-	signal := func() { once.Do(func() { close(sent) }) }
-	done := make(chan error, 1)
+	t := &sendTracker{signal: func() { once.Do(func() { close(started) }) }}
+	done := make(chan writeResult, 1)
 	go func() {
-		err := u.conn.Write(context.WithValue(ctx, sentKey{}, signal), msg)
-		signal()
-		done <- err
+		err := u.conn.Write(context.WithValue(ctx, sentKey{}, t), msg)
+		t.signal()
+		done <- writeResult{err: err, sent: t.sent.Load()}
 	}()
-	<-sent
+	<-started
 	return done
 }
 
 type sentKey struct{}
+
+// sendTracker follows one request body: signal when it is done (sent or
+// abandoned), sent if it was read to the end.
+type sendTracker struct {
+	signal func()
+	sent   atomic.Bool
+}
+
+// writeFailed (a func()) runs when a call's write fails, before the
+// bridge reacts. Tests use it to let the connection's failure be seen
+// first.
+var writeFailed atomic.Value
 
 // headers adds the bearer token and client name to every request, and
 // reports when a request body has been sent (see upstream.write).
@@ -397,28 +512,32 @@ func (h *headers) RoundTrip(r *http.Request) (*http.Response, error) {
 	r = r.Clone(r.Context())
 	r.Header.Set("Authorization", "Bearer "+h.token)
 	r.Header.Set("X-Cox-Client", h.client)
-	if signal, ok := r.Context().Value(sentKey{}).(func()); ok && r.Body != nil {
-		r.Body = &signalBody{ReadCloser: r.Body, signal: signal}
+	if t, ok := r.Context().Value(sentKey{}).(*sendTracker); ok && r.Body != nil {
+		r.Body = &signalBody{ReadCloser: r.Body, t: t}
 	}
 	return http.DefaultTransport.RoundTrip(r)
 }
 
-// signalBody calls signal once the body has been read to the end.
+// signalBody reports to its tracker once the body has been read to the
+// end (sent) or closed.
 type signalBody struct {
 	io.ReadCloser
-	signal func()
+	t *sendTracker
 }
 
 func (s *signalBody) Read(p []byte) (int, error) {
 	n, err := s.ReadCloser.Read(p)
+	if err == io.EOF {
+		s.t.sent.Store(true)
+	}
 	if err != nil {
-		s.signal()
+		s.t.signal()
 	}
 	return n, err
 }
 
 func (s *signalBody) Close() error {
-	s.signal()
+	s.t.signal()
 	return s.ReadCloser.Close()
 }
 

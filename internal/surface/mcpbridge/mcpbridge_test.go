@@ -60,12 +60,20 @@ func registry(b *blocker) *action.Registry {
 // func stops it and waits.
 func startServer(t *testing.T, home string, b *blocker) func() {
 	t.Helper()
+	stop, _ := startServerAuth(t, home, b)
+	return stop
+}
+
+// startServerAuth is startServer that also returns the server's authorizer.
+func startServerAuth(t *testing.T, home string, b *blocker) (func(), *clients.Authorizer) {
+	t.Helper()
 	store := clients.NewStore(filepath.Join(home, "clients.json"))
 	store.Trust("codex")
 	ready := make(chan struct{})
+	auth := &clients.Authorizer{Store: store}
 	cfg := server.Config{
 		Engine:  &engine.Engine{Registry: registry(b), Events: eventlog.Open(filepath.Join(home, "events"))},
-		Clients: &clients.Authorizer{Store: store},
+		Clients: auth,
 		Version: "test",
 		Ready:   func(instance.Info) { close(ready) },
 	}
@@ -88,7 +96,7 @@ func startServer(t *testing.T, home string, b *blocker) func() {
 		}
 	}
 	t.Cleanup(stop)
-	return stop
+	return stop, auth
 }
 
 // agentSession runs the bridge on pipes and connects an SDK client to it.
@@ -248,5 +256,27 @@ func TestCancelThroughBridge(t *testing.T) {
 	}
 	if got, isErr := echo(t, cs, "after"); isErr || got != "after" {
 		t.Fatalf("%q %v", got, isErr)
+	}
+}
+
+// TestRevokedBetweenCalls: when the server closes the agent's session
+// (revoke) between two calls, the next call reconnects and gets the
+// server's answer, not "server is not running".
+func TestRevokedBetweenCalls(t *testing.T) {
+	home := t.TempDir()
+	_, auth := startServerAuth(t, home, newBlocker())
+	cs := agentSession(t, home)
+	if got, isErr := echo(t, cs, "one"); isErr || got != "one" {
+		t.Fatalf("%q %v", got, isErr)
+	}
+	if err := auth.Revoke("codex"); err != nil {
+		t.Fatal(err)
+	}
+	if got, isErr := echo(t, cs, "two"); !isErr || !strings.Contains(got, clients.NotAuthorized) {
+		t.Fatalf("after revoke: %q %v", got, isErr)
+	}
+	auth.Allow("codex")
+	if got, isErr := echo(t, cs, "three"); isErr || got != "three" {
+		t.Fatalf("after allow: %q %v", got, isErr)
 	}
 }
