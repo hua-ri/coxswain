@@ -355,3 +355,26 @@ func TestWriteTempIsPrivate(t *testing.T) {
 		t.Fatalf("final mode %v", fi.Mode())
 	}
 }
+
+// TestWriteContentNotLogged: the audit log has file.write's size and
+// hash, not its content.
+func TestWriteContentNotLogged(t *testing.T) {
+	f := setup(t)
+	mustOK[WriteOutput](t, invoke(t, f.e, codex, "file.write", map[string]any{"host": "prod", "path": "app.env", "content": "PASSWORD=hunter2\n"}))
+	ev := requested(t, f.e, "file.write")
+	if strings.Contains(string(ev.Args), "hunter2") {
+		t.Fatalf("content logged: %s", ev.Args)
+	}
+	var args struct {
+		Host    string
+		Path    string
+		Content struct {
+			Bytes  int
+			SHA256 string
+		}
+	}
+	if err := json.Unmarshal(ev.Args, &args); err != nil || args.Host != "prod" || args.Path != "app.env" ||
+		args.Content.Bytes != 17 || len(args.Content.SHA256) != 64 {
+		t.Fatalf("%s %v", ev.Args, err)
+	}
+}

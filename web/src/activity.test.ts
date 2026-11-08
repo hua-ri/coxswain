@@ -26,6 +26,17 @@ describe("addEvent", () => {
     expect(rows[1]).toMatchObject({ hosts: ["dev"], status: "failed", error: "boom", durationMs: 3 });
   });
 
+  it("shows the path and size of file actions, not their content", () => {
+    const rows = feed([
+      { time: t, type: "action.requested", actor: codex, action: "file.write", risk: "write",
+        args: { host: "dev", path: "/etc/app.env", content: { bytes: 17, sha256: "ab" } } },
+      { time: t, type: "action.requested", actor: codex, action: "file.download", risk: "read",
+        args: { host: "dev", remote_path: "/var/log/app.log" } },
+    ]);
+    expect(rows[1].detail).toBe("/etc/app.env (17 bytes)");
+    expect(rows[0].detail).toBe("/var/log/app.log");
+  });
+
   it("records refusals, client and terminal events", () => {
     const rows = feed([
       { time: t, type: "action.refused", actor: codex, action: "ssh.exec", reason: "revoked" },

@@ -197,3 +197,38 @@ func TestCancelClient(t *testing.T) {
 		t.Fatalf("%+v", evs)
 	}
 }
+
+// TestRedact: an action's Redact shapes the arguments in the audit log;
+// Run still gets them all.
+func TestRedact(t *testing.T) {
+	var got string
+	reg := action.NewRegistry()
+	reg.Register(&action.Action{
+		ID:    "test.secret",
+		Input: map[string]any{"type": "object"},
+		Label: func(context.Context, json.RawMessage) (action.Assessment, error) { return action.Assessment{}, nil },
+		Run: func(_ context.Context, raw json.RawMessage) (any, error) {
+			got = string(raw)
+			return nil, nil
+		},
+		Redact: func(json.RawMessage) json.RawMessage { return json.RawMessage(`{"content":"redacted"}`) },
+	})
+	e := &Engine{Registry: reg, Events: eventlog.Open(t.TempDir() + "/events")}
+	ch, cancel := e.Events.Subscribe()
+	defer cancel()
+	if out := e.Invoke(context.Background(), agent, "test.secret", args(`{"content":"s3cret"}`)); out.Status != StatusOK {
+		t.Fatalf("%+v", out)
+	}
+	if got != `{"content":"s3cret"}` {
+		t.Fatalf("run got %s", got)
+	}
+	if ev := <-ch; string(ev.Args) != `{"content":"redacted"}` {
+		t.Fatalf("live event: %s", ev.Args)
+	}
+	evs, _ := e.Events.Read(time.Now())
+	for _, ev := range evs {
+		if string(ev.Args) != "" && string(ev.Args) != `{"content":"redacted"}` {
+			t.Fatalf("logged %s", ev.Args)
+		}
+	}
+}

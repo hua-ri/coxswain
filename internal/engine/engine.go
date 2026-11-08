@@ -111,8 +111,12 @@ func (e *Engine) Invoke(ctx context.Context, client action.Actor, id string, arg
 	if err != nil {
 		return Outcome{Status: StatusError, Error: err.Error()}
 	}
+	logged := args
+	if a.Redact != nil {
+		logged = a.Redact(args)
+	}
 	if err := e.Events.Append(eventlog.Event{
-		Type: eventlog.ActionRequested, Actor: &client, Action: id, Args: args,
+		Type: eventlog.ActionRequested, Actor: &client, Action: id, Args: logged,
 		Risk: as.Risk.String(), Targets: as.Targets,
 	}); err != nil {
 		return Outcome{Status: StatusError, Error: "audit log unavailable, refusing to run: " + err.Error()}

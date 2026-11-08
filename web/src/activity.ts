@@ -48,7 +48,7 @@ export function addEvent(rows: Row[], ev: AuditEvent, key: number): Row[] {
     case "action.requested": {
       const args = ev.args ?? {};
       const terminal = ev.action?.startsWith("terminal.") && typeof args.id === "string" ? args.id : undefined;
-      const detail = [args.command, args.text, args.host].find((v) => typeof v === "string") as string | undefined;
+      const detail = requestDetail(args);
       return prepend(rows, { ...base, risk: ev.risk, status: "running", detail, terminal });
     }
     case "action.finished":
@@ -155,4 +155,15 @@ export function filterOptions(rows: Row[]): { clients: string[]; hosts: string[]
     r.hosts.forEach((h) => hosts.add(h));
   }
   return { clients: [...clients].sort(), hosts: [...hosts].sort() };
+}
+
+/** requestDetail summarises a request's arguments: the command, the text typed, the file (with the size
+ * written; file contents are not in the activity stream) or the host. */
+function requestDetail(args: Record<string, unknown>): string | undefined {
+  const path = [args.path, args.remote_path].find((v) => typeof v === "string") as string | undefined;
+  if (path !== undefined) {
+    const content = args.content as { bytes?: unknown } | undefined;
+    return typeof content?.bytes === "number" ? `${path} (${content.bytes} bytes)` : path;
+  }
+  return [args.command, args.text, args.host].find((v) => typeof v === "string") as string | undefined;
 }

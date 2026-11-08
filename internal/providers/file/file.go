@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -452,6 +453,28 @@ type WriteOutput struct {
 	Created  bool              `json:"created"` // the file did not exist
 }
 
+// redactContent replaces file.write's content with its size and SHA-256
+// for the audit log.
+func redactContent(raw json.RawMessage) json.RawMessage {
+	var m map[string]json.RawMessage
+	if json.Unmarshal(raw, &m) != nil {
+		return json.RawMessage(`{"redacted":true}`)
+	}
+	var content string
+	if c, ok := m["content"]; ok {
+		if json.Unmarshal(c, &content) != nil {
+			content = string(c)
+		}
+		sum := sha256.Sum256([]byte(content))
+		m["content"], _ = json.Marshal(map[string]any{"bytes": len(content), "sha256": hex.EncodeToString(sum[:])})
+	}
+	out, err := json.Marshal(m)
+	if err != nil {
+		return json.RawMessage(`{"redacted":true}`)
+	}
+	return out
+}
+
 func parseMode(s string) (fs.FileMode, error) {
 	m, err := strconv.ParseUint(s, 8, 32)
 	if err != nil || m > 0o7777 {
@@ -482,6 +505,7 @@ func (p *Provider) write() *action.Action {
 		},
 		Positional:  []string{"host", "path"},
 		Annotations: action.Annotations{Destructive: true, Idempotent: true, OpenWorld: true},
+		Redact:      redactContent,
 		Label: func(ctx context.Context, raw json.RawMessage) (action.Assessment, error) {
 			var in writeInput
 			if err := action.Decode(raw, &in); err != nil {

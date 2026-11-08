@@ -94,6 +94,9 @@ type Action struct {
 	// Label describes one invocation for the audit log (risk, targets).
 	Label func(ctx context.Context, args json.RawMessage) (Assessment, error)
 	Run   func(ctx context.Context, args json.RawMessage) (any, error)
+	// Redact, if set, returns the arguments as they are recorded in the
+	// audit log and the activity stream (e.g. without file contents).
+	Redact func(args json.RawMessage) json.RawMessage
 }
 
 var idPattern = regexp.MustCompile(`^[a-z][a-z0-9]*(\.[a-z][a-z0-9_]*)+$`)
