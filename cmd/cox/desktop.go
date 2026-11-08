@@ -20,7 +20,7 @@ func desktopCommand(coxHome string) *cobra.Command {
 			"It connects to the running `cox server`; closing the window leaves the server running.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return desktop.Run(cmd.Context(), coxHome, debug)
+			return desktop.Run(cmd.Context(), coxHome, version, debug)
 		},
 	}
 	cmd.Flags().BoolVar(&debug, "debug", false, "enable the web inspector")

@@ -17,7 +17,7 @@ import (
 // the window is closed or ctx ends. Without a server it returns
 // instance.ErrNotRunning before opening anything. It must be called on
 // the main thread (the main goroutine, locked with runtime.LockOSThread).
-func Run(ctx context.Context, home string, debug bool) error {
+func Run(ctx context.Context, home, version string, debug bool) error {
 	if _, err := client.Discover(ctx, home, ClientName); err != nil {
 		return err
 	}
@@ -43,6 +43,7 @@ func Run(ctx context.Context, home string, debug bool) error {
 			return err
 		}
 	}
+	setupMenu(version) // ⌘C / ⌘V / ⌘Q need a main menu
 	w.SetTitle("Coxswain")
 	w.SetSize(1280, 800, webview.HintNone)
 	w.Navigate("http://" + ln.Addr().String() + "/")
