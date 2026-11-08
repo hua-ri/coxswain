@@ -72,3 +72,18 @@ tr.clickable { cursor: pointer; }
 tr.clickable:hover { background: var(--panel); }
 
 .statusbar { display: flex; justify-content: space-between; }
+
+div.tab { border: 1px solid var(--border); border-bottom: none; padding: 3px 8px; cursor: pointer; background: var(--panel); }
+div.tab.active { background: var(--bg); border-color: var(--accent); }
+.tab .close { color: var(--muted); padding: 0 2px; }
+.tab .close:hover { color: var(--fg); }
+.tab .badge { margin-left: 0; }
+.typing { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); animation: blink 0.8s infinite alternate; }
+@keyframes blink { from { opacity: 1; } to { opacity: 0.2; } }
+.terminal { position: absolute; inset: 0; padding: 4px 6px; }
+.pane { position: absolute; inset: 0; }
+
+.overlay { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.35); display: flex; align-items: center; justify-content: center; z-index: 10; }
+.dialog { background: var(--bg); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; max-width: 420px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3); }
+.dialog .buttons { display: flex; justify-content: flex-end; gap: 8px; }
+button.danger { background: #d93025; border-color: #d93025; color: #fff; }
