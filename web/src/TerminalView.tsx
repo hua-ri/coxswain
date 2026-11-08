@@ -1,11 +1,10 @@
 import { useEffect, useRef } from "react";
 import { FitAddon } from "@xterm/addon-fit";
-import { Terminal, type ITheme } from "@xterm/xterm";
+import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { fromBase64, type Cox } from "./cox";
+import { terminalTheme } from "./theme";
 
-const light: ITheme = { background: "#ffffff", foreground: "#1d1d1f", cursor: "#1d1d1f", selectionBackground: "#b4d5fe" };
-const dark: ITheme = { background: "#1e1e1e", foreground: "#e8e8ed", cursor: "#e8e8ed", selectionBackground: "#3a5a8c" };
 const darkQuery = window.matchMedia("(prefers-color-scheme: dark)");
 
 interface Props {
@@ -32,7 +31,7 @@ export function TerminalView({ cox, id, active, closed, onExit }: Props) {
       fontSize: 12,
       cursorBlink: true,
       scrollback: 5000,
-      theme: darkQuery.matches ? dark : light,
+      theme: terminalTheme(darkQuery.matches),
     });
     const f = new FitAddon();
     t.loadAddon(f);
@@ -40,7 +39,13 @@ export function TerminalView({ cox, id, active, closed, onExit }: Props) {
     term.current = t;
     fit.current = f;
 
-    const theme = () => (t.options.theme = darkQuery.matches ? dark : light);
+    // The frame around the terminal takes its background, live.
+    const theme = () => {
+      const th = terminalTheme(darkQuery.matches);
+      t.options.theme = th;
+      box.current!.style.background = th.background ?? "";
+    };
+    theme();
     darkQuery.addEventListener("change", theme);
     const input = t.onData((d) => {
       if (!closedRef.current) void cox.input(id, d).catch(() => {});

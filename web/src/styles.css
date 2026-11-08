@@ -80,7 +80,10 @@ div.tab.active { background: var(--bg); border-color: var(--accent); }
 .tab .badge { margin-left: 0; }
 .typing { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); animation: blink 0.8s infinite alternate; }
 @keyframes blink { from { opacity: 1; } to { opacity: 0.2; } }
-.terminal { position: absolute; inset: 0; padding: 4px 6px; }
+.terminal { position: absolute; inset: 0; padding: 4px 6px; background: #ffffff; }
+@media (prefers-color-scheme: dark) { .terminal { background: #1e1e1e; } }
+/* xterm.css paints the viewport black; let the frame's (theme) color show. */
+.terminal .xterm, .terminal .xterm-viewport, .terminal .xterm-screen { background-color: transparent !important; }
 .pane { position: absolute; inset: 0; }
 
 .overlay { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.35); display: flex; align-items: center; justify-content: center; z-index: 10; }
