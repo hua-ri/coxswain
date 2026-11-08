@@ -10,8 +10,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hua-ri/coxswain/internal/action"
 	"github.com/hua-ri/coxswain/internal/clients"
 	"github.com/hua-ri/coxswain/internal/engine"
+	"github.com/hua-ri/coxswain/internal/eventlog"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -176,5 +178,53 @@ func TestMCPAudit(t *testing.T) {
 	}
 	if !session || !refused {
 		t.Fatalf("session=%v refused=%v: %+v", session, refused, evs)
+	}
+}
+
+// TestRevokeCancelsRunningCall: revoking an agent returns at once, even
+// while it runs an action, and that action is cancelled and audited.
+func TestRevokeCancelsRunningCall(t *testing.T) {
+	f := newConfig(t)
+	started := make(chan struct{}, 1)
+	f.cfg.Engine.Registry.Register(&action.Action{
+		ID: "demo.block", Input: map[string]any{"type": "object"},
+		Label: func(context.Context, json.RawMessage) (action.Assessment, error) { return action.Assessment{}, nil },
+		Run: func(ctx context.Context, _ json.RawMessage) (any, error) {
+			started <- struct{}{}
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	})
+	f.cfg.Clients.Store.Trust("codex")
+	srv := httptest.NewServer(New(f.cfg))
+	t.Cleanup(srv.Close)
+	cs := connectMCP(t, srv.URL, "codex")
+	done := make(chan error, 1)
+	go func() {
+		_, err := cs.CallTool(context.Background(), &sdk.CallToolParams{Name: "demo_block"})
+		done <- err
+	}()
+	<-started
+
+	start := time.Now()
+	if w := request(t, New(f.cfg), "DELETE", "/api/v1/clients/codex", "", nil); w.Code != 204 {
+		t.Fatalf("revoke: %d %s", w.Code, w.Body)
+	}
+	if d := time.Since(start); d > time.Second {
+		t.Fatalf("revoke took %v", d)
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the revoked agent's call kept running")
+	}
+	var failed *eventlog.Event
+	for _, ev := range lastEvents(t, f) {
+		if ev.Type == eventlog.ActionFailed && ev.Action == "demo.block" {
+			failed = &ev
+		}
+	}
+	if failed == nil || failed.Error != "client revoked" || failed.Reason != "client revoked" {
+		t.Fatalf("%+v", failed)
 	}
 }

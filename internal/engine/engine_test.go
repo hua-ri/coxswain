@@ -143,3 +143,57 @@ func TestCancelInFlight(t *testing.T) {
 		t.Fatalf("%+v", out)
 	}
 }
+
+// TestCancelClient: cancelling a client aborts only its running actions,
+// which are recorded as failed because the client was revoked.
+func TestCancelClient(t *testing.T) {
+	e, _ := newEngine(t)
+	started := make(chan string, 2)
+	e.Registry.Register(&action.Action{
+		ID: "test.block", Input: map[string]any{"type": "object"},
+		Label: func(context.Context, json.RawMessage) (action.Assessment, error) { return action.Assessment{}, nil },
+		Run: func(ctx context.Context, _ json.RawMessage) (any, error) {
+			who, _ := action.ActorFrom(ctx)
+			started <- who.Name
+			<-ctx.Done()
+			return nil, errors.New("command stopped: " + ctx.Err().Error())
+		},
+	})
+	kimi := action.Actor{Kind: action.Agent, Name: "kimi"}
+	outs := map[string]chan Outcome{"codex": make(chan Outcome, 1), "kimi": make(chan Outcome, 1)}
+	for _, who := range []action.Actor{agent, kimi} {
+		go func() { outs[who.Name] <- e.Invoke(context.Background(), who, "test.block", nil) }()
+	}
+	<-started
+	<-started
+	e.CancelClient("codex", ErrClientRevoked)
+	select {
+	case out := <-outs["codex"]:
+		if out.Status != StatusError || out.Error != "client revoked" {
+			t.Fatalf("%+v", out)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("codex's action was not cancelled")
+	}
+	select {
+	case out := <-outs["kimi"]:
+		t.Fatalf("kimi's action was cancelled: %+v", out)
+	case <-time.After(100 * time.Millisecond):
+	}
+	e.Cancel()
+	<-outs["kimi"]
+
+	evs, _ := e.Events.Read(time.Now())
+	found := false
+	for _, ev := range evs {
+		if ev.Type == eventlog.ActionFailed && ev.Actor.Name == "codex" {
+			found = ev.Error == "client revoked" && ev.Reason == "client revoked"
+		}
+		if ev.Type == eventlog.ActionFailed && ev.Actor.Name == "kimi" && ev.Reason != "" {
+			t.Fatalf("kimi: %+v", ev)
+		}
+	}
+	if !found {
+		t.Fatalf("%+v", evs)
+	}
+}

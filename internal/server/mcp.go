@@ -45,7 +45,9 @@ func (h *mcpHandler) server(r *http.Request) *sdk.Server {
 	return s
 }
 
-// revoked closes every session of a revoked client.
+// revoked closes every session of a revoked client, in the background:
+// closing waits for the session's running calls, which the engine
+// cancels (see New).
 func (h *mcpHandler) revoked(name string) {
 	h.mu.Lock()
 	s := h.servers[name]
@@ -54,6 +56,6 @@ func (h *mcpHandler) revoked(name string) {
 		return
 	}
 	for ss := range s.Sessions() {
-		ss.Close()
+		go ss.Close()
 	}
 }

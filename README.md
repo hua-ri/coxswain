@@ -97,6 +97,10 @@ cox clients allow codex    # allow without the dialog (takes effect at once)
 cox clients revoke codex   # cut it off now; it is refused, without asking, until you allow it again
 ```
 
+Revoking takes effect at once: whatever the agent is running (a command, a terminal call) is
+stopped and recorded as failed with "client revoked". Terminals it opened stay open, since you may
+be watching them; close them yourself in `cox desktop`.
+
 This also covers agents that run `cox` through their own shell. Coxswain recognises Claude Code,
 Codex and Kimi as parent processes (or `COX_ACTOR=agent:<name>`); a `cox` run without a terminal
 counts as the agent `unknown`. Their calls need your permission, their output is shortened like

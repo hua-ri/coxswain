@@ -64,6 +64,8 @@ func (c *Config) defaults() {
 func New(cfg Config) http.Handler {
 	cfg.defaults()
 	s := &server{cfg: cfg}
+	// Revoking a client cuts it off: its running actions are cancelled.
+	cfg.Clients.OnRevoke(func(name string) { cfg.Engine.CancelClient(name, engine.ErrClientRevoked) })
 	api := http.NewServeMux()
 	api.HandleFunc("GET /api/v1/actions", s.authorized(s.listActions))
 	api.HandleFunc("POST /api/v1/actions/{id}", s.authorized(s.invoke))

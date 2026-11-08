@@ -280,3 +280,43 @@ func TestRevokedBetweenCalls(t *testing.T) {
 		t.Fatalf("after allow: %q %v", got, isErr)
 	}
 }
+
+// TestRevokedDuringCall: revoking the agent while its call runs returns at
+// once and ends the call (the action is cancelled), through the bridge.
+func TestRevokedDuringCall(t *testing.T) {
+	home := t.TempDir()
+	b := newBlocker()
+	_, auth := startServerAuth(t, home, b)
+	cs := agentSession(t, home)
+	type res struct {
+		r   *sdk.CallToolResult
+		err error
+	}
+	got := make(chan res, 1)
+	go func() {
+		r, err := cs.CallTool(context.Background(), &sdk.CallToolParams{Name: "demo_block"})
+		got <- res{r, err}
+	}()
+	<-b.started
+	start := time.Now()
+	auth.Revoke("codex")
+	if d := time.Since(start); d > time.Second {
+		t.Fatalf("revoke took %v", d)
+	}
+	select {
+	case <-b.cancelled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the action was not cancelled")
+	}
+	select {
+	case r := <-got:
+		if r.err == nil && !r.r.IsError {
+			t.Fatalf("call succeeded: %+v", r.r)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("call hung after revoke")
+	}
+	if got, isErr := echo(t, cs, "next"); !isErr || !strings.Contains(got, clients.NotAuthorized) {
+		t.Fatalf("after revoke: %q %v", got, isErr)
+	}
+}
