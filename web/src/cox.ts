@@ -4,27 +4,9 @@
 // itself. Bound functions run on the UI thread, so coxApi only returns a
 // call id; its result arrives as a "reply" message.
 
-/** An audit event from the activity stream. */
-export interface AuditEvent {
-  time: string;
-  type: string;
-  actor?: { kind: "human" | "agent"; name: string; session?: string };
-  action?: string;
-  args?: Record<string, unknown>;
-  risk?: "read" | "write" | "destructive";
-  targets?: { kind: string; id: string; tags?: Record<string, string> }[];
-  duration_ms?: number;
-  client?: string;
-  reason?: string;
-  error?: string;
-  terminal?: string;
-  exit_code?: number;
-  transfer?: string; // transfer.* events: the transfer id
-  tunnel?: string; // tunnel.* events: the tunnel id
-  batch?: string; // batch.* events: the batch run id
-  /** The object the event is about: a transfer, a tunnel, a batch's start, host result or end. */
-  detail?: unknown;
-}
+import type { AuditEvent } from "./types";
+
+export type { AuditEvent };
 
 export type Payload =
   | { type: "event"; event: AuditEvent }

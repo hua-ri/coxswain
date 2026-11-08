@@ -4,8 +4,8 @@ An ops toolbox for you **and your AI agents**. Coxswain keeps your SSH hosts and
 one place and gives Claude Code, Codex and Kimi Code access to them over MCP. You and your agents
 use the same tool and see the same activity.
 
-> macOS only. Personal use. Early: SSH hosts, remote commands, shared terminals and a desktop app.
-> Kubernetes and Argo CD / Argo Workflows are next.
+> macOS only. Personal use. Early: SSH hosts, remote commands, batch runs, files, tunnels, shared
+> terminals and a desktop app. Kubernetes and Argo CD / Argo Workflows are next.
 
 ## Install
 
@@ -33,7 +33,35 @@ cox ssh exec prod-web-01 -- df -h
 Then ask your agent, e.g. *"Why is the disk on prod-web-01 filling up?"* It uses the `cox`
 tools. `cox server` prints one line for every action, whether you or an agent ran it.
 
-`cox server` holds all state (connections, sessions). `cox` commands and `cox mcp` (what your
+## What it can do
+
+| Capability | Tools (MCP) / commands | Notes |
+|---|---|---|
+| Hosts | `ssh_hosts_list`, `ssh_hosts_tag` | imported from `~/.ssh/config`; tags and notes are shown to agents |
+| Commands | `ssh_exec` | one command, output and exit code |
+| Batch runs | `ssh_batch` | one command on many hosts (`hosts` and/or `tag`), canary first, stops on failure; above 50 hosts needs `confirm_count` |
+| Files | `file_list`, `file_stat`, `file_read`, `file_write`, `file_mkdir`, `file_remove` | over SFTP; `file_write` is atomic; `file_read` is for small text files |
+| Transfers | `file_upload`, `file_download` | with progress, cancel, resume and SHA-256; downloads go to `~/.coxswain/downloads/<host>/` |
+| Tunnels | `tunnel_open`, `tunnel_list`, `tunnel_close` | local (`-L`), remote (`-R`) and SOCKS5 (`-D`), on 127.0.0.1 only; reconnect by themselves |
+| Terminals | `terminal_open`, `terminal_send`, `terminal_read`, `terminal_close` | shared with you in `cox desktop` |
+| Large outputs | `artifact_read` | the full copy of anything that was shortened |
+
+Every tool is also a command, e.g.:
+
+```bash
+cox file list web-01 /var/log
+cox file download web-01 /var/log/nginx/error.log      # → ~/.coxswain/downloads/web-01/error.log
+cox file upload web-01 ~/build/app.tgz /tmp/app.tgz
+cox tunnel open web-01 local --remote-port 5432         # prints the local address (listen)
+cox tunnel list
+cox ssh batch --tag role=web -- uptime
+```
+
+Transfers, tunnels and batch runs live in `cox server`, each with its owner (you or an agent).
+`cox desktop` shows them and can stop any of them; agents can close only their own tunnels.
+They all end when `cox server` stops.
+
+`cox server` holds all state (connections, sessions, transfers, tunnels). `cox` commands and `cox mcp` (what your
 agents start) are clients of it. If it isn't running, they say:
 `Coxswain server is not running. Start it with: cox server`.
 
@@ -46,9 +74,16 @@ cox desktop   # needs a running cox server
 `cox desktop` opens a window on the running server. Closing it leaves the server running; run
 `cox desktop` again to come back. It shows:
 
-- **Hosts**, with their tags (`env=prod` in red) and notes. Click *Terminal* to open a terminal on one.
+- **Hosts**, with their tags (`env=prod` in red) and notes. Click *Terminal* to open a terminal on
+  one, *Files* to browse its files: open folders, download (to `~/.coxswain/downloads/<host>/`),
+  upload a file you pick, create folders, delete (after asking).
 - **Activity**: every action as it happens, yours and your agents', with its risk rating, host
-  and result. Filter by client or host. Click a terminal row to jump to that terminal.
+  and result. Filter by client or host. Click a terminal row to jump to that terminal; click a
+  batch run (`ssh.batch`) to see each host's result and, on request, its output.
+- **Transfers**: uploads and downloads, yours and your agents', with progress and speed. Cancel a
+  running one; it can be resumed later.
+- **Tunnels**: every open tunnel with its route, owner, connections and traffic. Close any of
+  them, or open one with *New tunnel*.
 - **Terminals**, one tab per shared terminal.
 - **Agents**: allow or revoke them, like `cox clients allow|revoke`.
 
@@ -65,8 +100,8 @@ an ended terminal stays readable for 10 minutes.
 ## Who asks before an agent changes something
 
 Your agent does, not Coxswain. Every cox tool tells the agent what it does: `ssh_hosts_list`,
-`terminal_read` and `artifact_read` only read; `ssh_exec`, `terminal_send` and `ssh_hosts_tag` can
-change things. Claude Code, Codex
+`file_list`, `file_read`, `terminal_read` and `artifact_read` only read; `ssh_exec`, `ssh_batch`,
+`file_write`, `file_upload`, `tunnel_open`, `terminal_send` and `ssh_hosts_tag` can change things. Claude Code, Codex
 and Kimi Code then follow their own permission settings, for example asking you before each
 `ssh_exec`. Configure that in your agent.
 
@@ -97,9 +132,10 @@ cox clients allow codex    # allow without the dialog (takes effect at once)
 cox clients revoke codex   # cut it off now; it is refused, without asking, until you allow it again
 ```
 
-Revoking takes effect at once: whatever the agent is running (a command, a terminal call) is
-stopped and recorded as failed with "client revoked". Terminals it opened stay open, since you may
-be watching them; close them yourself in `cox desktop`.
+Revoking takes effect at once: whatever the agent is running (a command, a batch run, a file
+transfer, a terminal call) is stopped and recorded as failed with "client revoked", and the
+tunnels it opened are closed. Terminals it opened stay open, since you may be watching them;
+close them yourself in `cox desktop`.
 
 This also covers agents that run `cox` through their own shell. Coxswain recognises Claude Code,
 Codex and Kimi as parent processes (or `COX_ACTOR=agent:<name>`); a `cox` run without a terminal
@@ -115,7 +151,8 @@ permission; agents can't use `cox clients`.
 | `~/.coxswain/clients.json` | agents you allowed or revoked |
 | `~/.coxswain/hosts.json` | hosts, tags, notes |
 | `~/.coxswain/events/` | audit log |
-| `~/.coxswain/artifacts/` | full copies of truncated outputs |
+| `~/.coxswain/artifacts/` | full copies of truncated outputs (and of every batch run's output) |
+| `~/.coxswain/downloads/` | downloaded files, one folder per host |
 
 Credentials stay in `ssh-agent` and your key files. Coxswain never stores or shows them, and
 agents never get them.
@@ -137,3 +174,9 @@ and don't let them run raw `ssh`. Your credentials still never leave the server 
 - Commands are saved in the audit log exactly as typed. Secrets you put on a command line end up
   there too.
 - Full copies of truncated outputs stay in `~/.coxswain/artifacts/` until you delete them.
+- Tunnels listen on 127.0.0.1 only, but any local process can use one while it is open. A remote
+  tunnel (`-R`) exposes a service on your Mac to the host; agents are told to ask you first, and it
+  is always rated destructive.
+- Agents may download only into `~/.coxswain/downloads/`. They may upload any file your user can
+  read (including keys under `~/.ssh`), so have your agent ask you before each `file_upload`, as
+  you would for `ssh_exec`.

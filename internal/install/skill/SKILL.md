@@ -1,6 +1,6 @@
 ---
 name: cox
-description: Operate the user's servers through Coxswain (cox) — list SSH hosts, run commands on them, use shared terminals the user can watch, read large outputs. Use for any server inspection or ops task instead of raw ssh.
+description: Operate the user's servers through Coxswain (cox) — list SSH hosts, run commands on one or many of them, browse and transfer files, open tunnels, use shared terminals the user can watch, read large outputs. Use for any server inspection or ops task instead of raw ssh.
 ---
 
 # Coxswain (cox)
@@ -20,6 +20,14 @@ Prefer the MCP tools when they are available:
 |---|---|
 | `ssh_hosts_list` | hosts with tags (`env=prod` is production) and notes |
 | `ssh_exec` | run one non-interactive command on a host |
+| `ssh_batch` | run one command on many hosts (`hosts` and/or `tag`), canary first |
+| `file_list` / `file_stat` | list a remote directory / one path's metadata |
+| `file_read` | read a small remote text file (up to 1 MiB) into the conversation |
+| `file_write` | write a remote text file atomically |
+| `file_mkdir` / `file_remove` | create a directory / remove a file or empty directory |
+| `file_download` | copy a remote file to this machine (`~/.coxswain/downloads/<host>/`); returns the path, not the content |
+| `file_upload` | copy a local file to a host |
+| `tunnel_open` / `tunnel_list` / `tunnel_close` | port forwards through a host (local, remote, socks) |
 | `terminal_list` | shared terminals: yours, the user's and other agents' |
 | `terminal_open` | open a shared terminal on a host; it appears in the user's desktop app |
 | `terminal_send` | type a command (or text) into a shared terminal |
@@ -39,11 +47,48 @@ Prefer the MCP tools when they are available:
 - `terminal_read` returns plain text, not a screen: use batch modes (`top -b -n 1`), not full-screen
   programs.
 
+### Files: `file_read` or `file_download`?
+
+- `file_read` for small text files you need to see (configs, short logs): the content comes back
+  to you. It refuses binary files and files over 1 MiB.
+- `file_download` for large or binary files (big logs, dumps, archives): the file lands on this
+  machine and you get its path, size and SHA-256. Inspect the local copy with your own tools
+  (grep, tail) instead of pulling it all into the conversation. `resume=true` continues a
+  cancelled download.
+- `file_upload` takes an absolute local path (or `~/…`), never a relative one. Upload only files the
+  user asked you to; never upload keys, tokens or anything under `~/.ssh` or `~/.coxswain`.
+- The user sees every transfer in the desktop app and may cancel it. If a transfer fails as
+  cancelled, do not restart it on your own; ask.
+
+### Tunnels
+
+- `tunnel_open` returns the address to use (`listen`). Close every tunnel you open with
+  `tunnel_close` as soon as you are done; unused ones close themselves after `idle_minutes`
+  (default 30).
+- A `remote` tunnel exposes a service on the user's machine to the host: ask the user first.
+- The user can close any tunnel. If yours disappears, it was closed on purpose: do not reopen it
+  without asking.
+
+### Batch runs
+
+- Use `ssh_batch` rather than many `ssh_exec` calls for the same command on several hosts.
+- Keep the defaults `canary=true` and `stop_on_failure=true`: the first host runs alone, and a
+  failure stops the rest. Prefer a read-only command first to check the target list.
+- Above 50 hosts it asks for `confirm_count`: check the list with `ssh_hosts_list`, and set it to
+  the real number only if the targets are right. Never guess it.
+- Each host's output is shortened to 20 lines; the full output is in `artifact_id`
+  (`artifact_read`, one section per host starting `=== <host>: …`).
+
 Without MCP, use the CLI with JSON output:
 
 ```bash
 cox -o json ssh hosts list
 cox -o json ssh exec <host> -- <command>
+cox -o json ssh batch --tag role=web -- <command>
+cox -o json file list <host> <path>
+cox -o json file download <host> <remote-path>
+cox -o json tunnel open <host> local --remote-port 5432
+cox -o json tunnel close <tunnel-id>
 cox -o json terminal open <host>
 cox -o json terminal send <terminal-id> <command>
 cox -o json terminal read <terminal-id> --lines 50
@@ -61,3 +106,4 @@ cox -o json artifact read <artifact-id> --grep ERROR
    `ssh_exec`; use a shared terminal for those.
 6. Outputs over ~200 lines are truncated; read the rest with `artifact_read` instead of re-running.
 7. Do not edit files under ~/.coxswain and do not use raw ssh to reach managed hosts.
+8. Clean up after yourself: close your tunnels and terminals when the task is done.

@@ -28,6 +28,28 @@ export interface TermSession {
   exit_code?: number;
 }
 
+/** An audit event from the activity stream (GET /api/v1/events). */
+export interface AuditEvent {
+  time: string;
+  type: string;
+  actor?: { kind: "human" | "agent"; name: string; session?: string };
+  action?: string;
+  args?: Record<string, unknown>;
+  risk?: "read" | "write" | "destructive";
+  targets?: { kind: string; id: string; tags?: Record<string, string> }[];
+  duration_ms?: number;
+  client?: string;
+  reason?: string;
+  error?: string;
+  terminal?: string;
+  exit_code?: number;
+  transfer?: string; // transfer.* events: the transfer id
+  tunnel?: string; // tunnel.* events: the tunnel id
+  batch?: string; // batch.* events: the batch run id
+  /** The object the event is about: a transfer, a tunnel, a batch's start, host result or end. */
+  detail?: unknown;
+}
+
 /** address renders user@host:port. */
 export function address(h: Host): string {
   let s = h.hostname;
