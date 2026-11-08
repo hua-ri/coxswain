@@ -323,3 +323,26 @@ func TestBatchRevoked(t *testing.T) {
 		t.Fatalf("%+v", fin)
 	}
 }
+
+// TestBatchRunsTheLabelledHosts: the hosts are resolved once, when the
+// call is labelled (and audited); a tag added in between does not widen
+// the run.
+func TestBatchRunsTheLabelledHosts(t *testing.T) {
+	f := setupBatch(t, web(1, true), web(2, true), batchHost{name: "db", ok: true})
+	a, _ := f.e.Registry.Get("ssh.batch")
+	label := a.Label
+	a.Label = func(ctx context.Context, raw json.RawMessage) (action.Assessment, error) {
+		as, err := label(ctx, raw)
+		f.p.Hosts.Update(func(m map[string]inventory.Host) error {
+			h := m["db"]
+			h.Tags = map[string]string{"role": "web"}
+			m["db"] = h
+			return nil
+		})
+		return as, err
+	}
+	res := batchOK(t, batch(t, f, agent, map[string]any{"tag": "role=web", "command": "true"}))
+	if statuses(res) != "web-1:ok web-2:ok" {
+		t.Fatalf("%s", statuses(res))
+	}
+}

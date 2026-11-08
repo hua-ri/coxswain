@@ -171,6 +171,25 @@ func (p *Provider) resolve(in batchInput) ([]inventory.Host, error) {
 	return out, nil
 }
 
+// labelled returns the hosts the call was labelled (and audited) with,
+// so that a tag changed in between cannot widen the run; without a label
+// it resolves them.
+func (p *Provider) labelled(ctx context.Context, in batchInput) ([]inventory.Host, error) {
+	as, ok := action.AssessmentFrom(ctx)
+	if !ok {
+		return p.resolve(in)
+	}
+	hosts := make([]inventory.Host, 0, len(as.Targets))
+	for _, t := range as.Targets {
+		h, err := p.Hosts.Get(t.ID)
+		if err != nil {
+			return nil, err
+		}
+		hosts = append(hosts, h)
+	}
+	return hosts, nil
+}
+
 func (in *batchInput) check() error {
 	if strings.TrimSpace(in.Command) == "" {
 		return errors.New("command is required")
@@ -188,8 +207,8 @@ func (p *Provider) batch() *action.Action {
 	return &action.Action{
 		ID:      "ssh.batch",
 		Summary: "Run a command on several saved SSH hosts",
-		Description: "Run one non-interactive command on several saved hosts: the hosts named and/or every host with tag " +
-			"(key=value). By default the first host runs alone first as a canary; if it fails, nothing else runs. Then up " +
+		Description: "Run one non-interactive command on several saved hosts: the hosts named plus every host with tag " +
+			"(key=value) — a tag widens the set, so check it with ssh_hosts_list first. By default the first host runs alone first as a canary; if it fails, nothing else runs. Then up " +
 			"to concurrency (default 5) hosts run at once, and after a failure no further hosts start (stop_on_failure, " +
 			"default true). More than 50 hosts need confirm_count set to their number. Returns each host's exit code and " +
 			"output (shortened to 20 lines per host; all of it is in artifact_id, read with artifact_read) and a summary. " +
@@ -243,7 +262,7 @@ func (p *Provider) batch() *action.Action {
 			if err := in.check(); err != nil {
 				return nil, err
 			}
-			hosts, err := p.resolve(in)
+			hosts, err := p.labelled(ctx, in)
 			if err != nil {
 				return nil, err
 			}

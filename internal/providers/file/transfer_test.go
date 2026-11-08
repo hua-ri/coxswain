@@ -260,7 +260,7 @@ func TestDownloadLocalPath(t *testing.T) {
 	f := setup(t)
 	os.WriteFile(filepath.Join(f.srv.Root, "a.txt"), []byte("abc"), 0o644)
 	elsewhere := filepath.Join(t.TempDir(), "a.txt")
-	for _, p := range []string{elsewhere, "../../escape.txt", "~/.zshrc"} {
+	for _, p := range []string{elsewhere, "../../escape.txt", "~/.zshrc", "../other-host/a.txt"} {
 		mustFail(t, invoke(t, f.e, codex, "file.download", map[string]any{"host": "prod", "remote_path": "a.txt", "local_path": p}), "download directory")
 	}
 	res := mustOK[TransferOutput](t, invoke(t, f.e, desktop, "file.download", map[string]any{"host": "prod", "remote_path": "a.txt", "local_path": elsewhere}))

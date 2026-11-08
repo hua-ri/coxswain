@@ -147,10 +147,9 @@ func (m *Manager) Run(ctx context.Context, t Transfer, targets []action.Target, 
 	defer m.wg.Done()
 	m.append(started)
 
+	// A transfer that completed is done, even if it was cancelled as it
+	// finished.
 	err = work(ctx, &Progress{m: m, it: it})
-	if err == nil && ctx.Err() != nil {
-		err = ctx.Err()
-	}
 	m.mu.Lock()
 	finished := m.now().UTC()
 	it.info.FinishedAt = &finished

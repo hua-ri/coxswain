@@ -435,7 +435,7 @@ func (p *Provider) downloadPath(ctx context.Context, h inventory.Host, rp, local
 		return "", fmt.Errorf("agents download only into the download directory (%s); give local_path relative to it", base)
 	}
 	out := filepath.Join(base, expanded)
-	if rel, err := filepath.Rel(p.DownloadDir, out); err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	if rel, err := filepath.Rel(base, out); err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf("local_path must stay inside the download directory (%s)", base)
 	}
 	return out, nil

@@ -125,7 +125,7 @@ func (e *Engine) Invoke(ctx context.Context, client action.Actor, id string, arg
 	ctx, done := e.track(ctx, client)
 	defer done()
 	start := time.Now()
-	res, err := a.Run(action.WithActor(ctx, client), args)
+	res, err := a.Run(action.WithAssessment(action.WithActor(ctx, client), as), args)
 	ev := eventlog.Event{
 		Type: eventlog.ActionFinished, Actor: &client, Action: id,
 		DurationMs: time.Since(start).Milliseconds(),

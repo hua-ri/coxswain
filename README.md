@@ -39,7 +39,7 @@ tools. `cox server` prints one line for every action, whether you or an agent ra
 |---|---|---|
 | Hosts | `ssh_hosts_list`, `ssh_hosts_tag` | imported from `~/.ssh/config`; tags and notes are shown to agents |
 | Commands | `ssh_exec` | one command, output and exit code |
-| Batch runs | `ssh_batch` | one command on many hosts (`hosts` and/or `tag`), canary first, stops on failure; above 50 hosts needs `confirm_count` |
+| Batch runs | `ssh_batch` | one command on many hosts (`hosts` plus every host with `tag`), canary first, stops on failure; above 50 hosts needs `confirm_count` |
 | Files | `file_list`, `file_stat`, `file_read`, `file_write`, `file_mkdir`, `file_remove` | over SFTP; `file_write` is atomic; `file_read` is for small text files |
 | Transfers | `file_upload`, `file_download` | with progress, cancel, resume and SHA-256; downloads go to `~/.coxswain/downloads/<host>/` |
 | Tunnels | `tunnel_open`, `tunnel_list`, `tunnel_close` | local (`-L`), remote (`-R`, opened by you only) and SOCKS5 (`-D`), on 127.0.0.1; reconnect by themselves |

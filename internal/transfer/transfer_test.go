@@ -217,3 +217,18 @@ func TestKeepsRecentFinished(t *testing.T) {
 		t.Fatal("oldest kept")
 	}
 }
+
+// TestSuccessWins: a transfer that completed is done even if it was
+// cancelled just as it finished.
+func TestSuccessWins(t *testing.T) {
+	m, _, _ := newManager(t)
+	got, err := m.Run(context.Background(), upload(), target, func(_ context.Context, p *Progress) error {
+		var id string
+		p.Update(func(t *Transfer) { id = t.ID })
+		m.Cancel(id, desktop)
+		return nil
+	})
+	if err != nil || got.Status != Done || got.Error != "" {
+		t.Fatalf("%+v %v", got, err)
+	}
+}

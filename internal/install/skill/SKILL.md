@@ -74,6 +74,8 @@ Prefer the MCP tools when they are available:
 ### Batch runs
 
 - Use `ssh_batch` rather than many `ssh_exec` calls for the same command on several hosts.
+  `hosts` and `tag` add up: a tag adds every host that has it. Check the targets with
+  `ssh_hosts_list` (with the same tag) first.
 - Keep the defaults `canary=true` and `stop_on_failure=true`: the first host runs alone, and a
   failure stops the rest. Prefer a read-only command first to check the target list.
 - Above 50 hosts it asks for `confirm_count`: check the list with `ssh_hosts_list`, and set it to

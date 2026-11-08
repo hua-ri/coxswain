@@ -165,3 +165,18 @@ func ActorFrom(ctx context.Context) (Actor, bool) {
 	a, ok := ctx.Value(actorKey{}).(Actor)
 	return a, ok
 }
+
+type assessmentKey struct{}
+
+// WithAssessment records the invocation's assessment in ctx; the engine
+// does this before calling Run, so Run acts on what was audited (e.g.
+// the same hosts).
+func WithAssessment(ctx context.Context, as Assessment) context.Context {
+	return context.WithValue(ctx, assessmentKey{}, as)
+}
+
+// AssessmentFrom returns the assessment recorded by WithAssessment.
+func AssessmentFrom(ctx context.Context) (Assessment, bool) {
+	as, ok := ctx.Value(assessmentKey{}).(Assessment)
+	return as, ok
+}
