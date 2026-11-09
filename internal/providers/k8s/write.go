@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -71,6 +72,8 @@ type applyInput struct {
 	Namespace string `json:"namespace"`
 	Manifest  string `json:"manifest"`
 	DryRun    bool   `json:"dry_run"`
+	// ForceConflicts takes over fields other managers set; the user only.
+	ForceConflicts bool `json:"force_conflicts,omitempty"`
 }
 
 // planned is one manifest object, resolved.
@@ -227,7 +230,7 @@ func (p *Provider) apply() *action.Action {
 		Positional:  []string{"context"},
 		Annotations: writeRemote,
 		Redact:      redactApply,
-		Label: func(_ context.Context, raw json.RawMessage) (action.Assessment, error) {
+		Label: func(ctx context.Context, raw json.RawMessage) (action.Assessment, error) {
 			if err := action.ExactKeys(raw, applySchema); err != nil {
 				return action.Assessment{}, err
 			}
@@ -239,8 +242,15 @@ func (p *Provider) apply() *action.Action {
 			if err != nil {
 				return action.Assessment{}, err
 			}
+			if in.ForceConflicts {
+				if who, _ := action.ActorFrom(ctx); who.Kind != action.Human {
+					return action.Assessment{}, errors.New("force_conflicts is for the user only: conflicts are not forced " +
+						"for agents, by design; ask the user to resolve the conflict (the Coxswain desktop app's Apply view " +
+						"can take the fields over)")
+				}
+			}
 			risk := action.Destructive
-			if in.DryRun {
+			if in.DryRun && !in.ForceConflicts { // a forced one takes fields over: destructive even as a preview
 				risk = action.Read
 				for _, pl := range objs {
 					if secretResource(pl.res) {
@@ -289,10 +299,10 @@ func (p *Provider) apply() *action.Action {
 				if err != nil {
 					return nil, fmt.Errorf("%s: %w; nothing was applied", pl.id(), kube.Explain(err))
 				}
-				after, err := c.Apply.Apply(ctx, pl.res, pl.ns, pl.obj, true)
+				after, err := c.Apply.Apply(ctx, pl.res, pl.ns, pl.obj, true, in.ForceConflicts)
 				if err != nil {
-					if msg, ok := conflictMessage(pl.id(), err); ok {
-						return nil, fmt.Errorf("%s\nNothing was applied.", msg)
+					if ce := conflictError(pl.id(), err, "Nothing was applied."); ce != nil {
+						return nil, ce
 					}
 					return nil, fmt.Errorf("dry run of %s failed: %w; nothing was applied", pl.id(), err)
 				}
@@ -323,9 +333,9 @@ func (p *Provider) apply() *action.Action {
 				return out, nil
 			}
 			for i, pl := range objs {
-				if _, err := c.Apply.Apply(ctx, pl.res, pl.ns, pl.obj, false); err != nil {
-					if msg, ok := conflictMessage(pl.id(), err); ok {
-						err = errors.New(msg)
+				if _, err := c.Apply.Apply(ctx, pl.res, pl.ns, pl.obj, false, in.ForceConflicts); err != nil {
+					if ce := conflictError(pl.id(), err, ""); ce != nil {
+						err = ce
 					}
 					done := []string{}
 					for _, prev := range objs[:i] {
@@ -348,6 +358,8 @@ var applySchema = map[string]any{
 		"namespace": map[string]any{"type": "string", "description": "for objects without one; default: the context's namespace"},
 		"manifest":  map[string]any{"type": "string", "description": "YAML (or JSON) objects, separated by ---"},
 		"dry_run":   map[string]any{"type": "boolean", "description": "only show what would change"},
+		"force_conflicts": map[string]any{"type": "boolean", "description": "take over fields other field managers set; " +
+			"only the user (cox CLI or desktop) may do this: agents must ask the user"},
 	},
 	"required": []string{"context", "manifest"},
 }
@@ -359,33 +371,74 @@ var fieldHints = map[string]string{
 	".spec.template.metadata.annotations." + restartedAt: "k8s_rollout action=restart",
 }
 
-// conflictMessage explains a server-side apply conflict: each field, who
-// manages it, and what to do instead. Conflicts are never forced.
-func conflictMessage(id string, err error) (string, bool) {
+// Conflict is a field another field manager set, which an apply would
+// change.
+type Conflict struct {
+	Object    string `json:"object"` // Kind/name
+	Field     string `json:"field"`
+	Manager   string `json:"manager"`
+	Operation string `json:"operation"`      // Update or Apply
+	Hint      string `json:"hint,omitempty"` // the operation that changes it
+}
+
+// ConflictError is an apply that conflicts; its details list the
+// conflicts for programs (the desktop renders them).
+type ConflictError struct {
+	msg       string
+	Conflicts []Conflict
+}
+
+func (e *ConflictError) Error() string { return e.msg }
+func (e *ConflictError) Details() any  { return map[string]any{"conflicts": e.Conflicts} }
+
+// conflictCause parses a conflict cause's message as the API server
+// writes it: conflict with "manager"[ with subresource "x"][ using v[ at t]]
+// (managers of updates show their version, of applies only their name).
+var conflictCause = regexp.MustCompile(`^conflict with "([^"]*)"(.*)$`)
+
+// conflictError explains a server-side apply conflict: each field, who
+// manages it, and what to do instead; nil if err is not one. Conflicts
+// are never forced for agents.
+func conflictError(id string, err error, tail string) *ConflictError {
 	if !apierrors.IsConflict(err) {
-		return "", false
+		return nil
 	}
 	var status apierrors.APIStatus
 	if !errors.As(err, &status) || status.Status().Details == nil {
-		return "", false
+		return nil
 	}
+	ce := &ConflictError{}
 	var lines []string
 	for _, c := range status.Status().Details.Causes {
-		if c.Type != metav1.CauseTypeFieldManagerConflict {
+		if c.Type != metav1.CauseTypeFieldManagerConflict && c.Type != "" {
 			continue
 		}
-		line := fmt.Sprintf("  %s: %s", c.Field, c.Message)
-		if hint := fieldHints[c.Field]; hint != "" {
-			line += " (change it with " + hint + ")"
+		m := conflictCause.FindStringSubmatch(c.Message)
+		if m == nil {
+			continue
+		}
+		cf := Conflict{Object: id, Field: c.Field, Manager: m[1], Operation: "Apply", Hint: fieldHints[c.Field]}
+		if strings.Contains(m[2], " using ") {
+			cf.Operation = "Update"
+		}
+		ce.Conflicts = append(ce.Conflicts, cf)
+		line := fmt.Sprintf("  %s: set by %q (%s)", cf.Field, cf.Manager, strings.ToLower(cf.Operation))
+		if cf.Hint != "" {
+			line += ", change it with " + cf.Hint
 		}
 		lines = append(lines, line)
 	}
 	if len(lines) == 0 {
-		return "", false
+		return nil
 	}
-	return fmt.Sprintf("Applying %s conflicts with fields another field manager set:\n%s\n"+
+	ce.msg = fmt.Sprintf("Applying %s conflicts with fields another field manager set:\n%s\n"+
 		"Change those fields with the matching operation, leave them out of the manifest, or ask the user to resolve "+
-		"the conflict. Conflicts are not forced: k8s_apply has no force option, by design.", id, strings.Join(lines, "\n")), true
+		"the conflict. Conflicts are not forced for agents, by design; the user can take the fields over "+
+		"(force_conflicts, in the desktop app or with cox k8s apply --force-conflicts).", id, strings.Join(lines, "\n"))
+	if tail != "" {
+		ce.msg += "\n" + tail
+	}
+	return ce
 }
 
 // redactApply is k8s.apply's arguments for the audit log: Secret values

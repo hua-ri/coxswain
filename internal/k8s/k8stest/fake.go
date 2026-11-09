@@ -139,7 +139,7 @@ func (f *FakeExec) Calls() []k8s.ExecRequest {
 // ApplyCall is one call of FakeApplier.
 type ApplyCall struct {
 	Kind, Namespace, Name string
-	DryRun                bool
+	DryRun, Force         bool
 }
 
 // FakeApplier imitates server-side apply on a fake dynamic client: the
@@ -154,9 +154,9 @@ type FakeApplier struct {
 	calls []ApplyCall
 }
 
-func (a *FakeApplier) Apply(ctx context.Context, res k8s.Resource, ns string, obj *unstructured.Unstructured, dryRun bool) (*unstructured.Unstructured, error) {
+func (a *FakeApplier) Apply(ctx context.Context, res k8s.Resource, ns string, obj *unstructured.Unstructured, dryRun, force bool) (*unstructured.Unstructured, error) {
 	a.mu.Lock()
-	a.calls = append(a.calls, ApplyCall{Kind: obj.GetKind(), Namespace: ns, Name: obj.GetName(), DryRun: dryRun})
+	a.calls = append(a.calls, ApplyCall{Kind: obj.GetKind(), Namespace: ns, Name: obj.GetName(), DryRun: dryRun, Force: force})
 	fail := a.Fail
 	a.mu.Unlock()
 	if fail != nil {

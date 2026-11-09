@@ -2,12 +2,15 @@ package k8s
 
 import (
 	"context"
+	"encoding/json"
 	"net/url"
 	"strings"
 	"testing"
 
 	"github.com/hua-ri/coxswain/internal/engine"
 	"github.com/hua-ri/coxswain/internal/k8s/k8stest"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 const webPath = "/apis/apps/v1/namespaces/shop/deployments/web"
@@ -66,4 +69,61 @@ func TestScaleThenApply(t *testing.T) {
 	if !res.Objects[0].Applied {
 		t.Fatalf("%+v", res)
 	}
+}
+
+// TestForceConflicts: an earlier build left replicas owned by "cox"
+// (an update). An agent gets the conflicts (structured, with hints) and
+// cannot force; the user can take the fields over.
+func TestForceConflicts(t *testing.T) {
+	api := k8stest.NewAPIServer(t)
+	api.Seed(webPath, map[string]any{
+		"apiVersion": "apps/v1", "kind": "Deployment",
+		"metadata": map[string]any{"name": "web", "namespace": "shop", "uid": "u1"},
+		"spec":     map[string]any{"replicas": int64(2)},
+	})
+	f := setupAPI(t, api)
+	c, err := f.p.Clusters.Client("fake")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Dynamic.Resource(deployGVR).Namespace("shop").Patch(context.Background(), "web", types.MergePatchType,
+		[]byte(`{"spec":{"replicas":3}}`), metav1.PatchOptions{FieldManager: "cox"}); err != nil {
+		t.Fatal(err)
+	}
+	manifest := "apiVersion: apps/v1\nkind: Deployment\nmetadata: {name: web, namespace: shop}\nspec: {replicas: 2}\n"
+
+	out := f.e.Invoke(context.Background(), codex, "k8s.apply", args("context", "fake", "manifest", manifest, "dry_run", true))
+	b, _ := json.Marshal(out.Details)
+	if out.Status != engine.StatusError || !strings.Contains(out.Error, `"cox"`) || !strings.Contains(out.Error, "k8s_scale") ||
+		string(b) != `{"conflicts":[{"object":"Deployment/web","field":".spec.replicas","manager":"cox","operation":"Update","hint":"k8s_scale"}]}` {
+		t.Fatalf("%+v\n%s", out, b)
+	}
+	out = f.e.Invoke(context.Background(), codex, "k8s.apply", args("context", "fake", "manifest", manifest, "force_conflicts", true))
+	if out.Status != engine.StatusError || !strings.Contains(out.Error, "ask the user") {
+		t.Fatalf("agent forced: %+v", out)
+	}
+
+	res := f.invoke(t, desktop, "k8s.apply", args("context", "fake", "manifest", manifest, "dry_run", true, "force_conflicts", true)).(ApplyOutput)
+	if res.Objects[0].Diff == nil || !strings.Contains(res.Objects[0].Diff.Text, "+  replicas: 2") {
+		t.Fatalf("forced dry run: %+v", res.Objects[0])
+	}
+	if ev := f.requested(t, "k8s.apply"); ev.Risk != "destructive" {
+		t.Fatalf("forced dry run risk %s", ev.Risk)
+	}
+	res = f.invoke(t, desktop, "k8s.apply", args("context", "fake", "manifest", manifest, "force_conflicts", true)).(ApplyOutput)
+	if !res.Objects[0].Applied {
+		t.Fatalf("%+v", res)
+	}
+	var forced []string
+	for _, r := range api.Requests() {
+		if r.Method == "PATCH" && strings.Contains(r.ContentType, "apply-patch") {
+			q, _ := url.ParseQuery(r.Query)
+			forced = append(forced, q.Get("force")+"/"+q.Get("dryRun"))
+		}
+	}
+	if strings.Join(forced, ",") != "false/All,true/All,true/All,true/" {
+		t.Fatalf("applies (force/dryRun): %v", forced)
+	}
+	// The agent's next apply of the same value is no conflict any more.
+	f.invoke(t, codex, "k8s.apply", args("context", "fake", "manifest", manifest, "dry_run", true))
 }

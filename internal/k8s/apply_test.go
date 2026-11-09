@@ -27,7 +27,7 @@ func TestDynamicApplier(t *testing.T) {
 	}}
 	res := k8s.Resource{GVR: schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}, Kind: "Deployment", Namespaced: true}
 	for _, dry := range []bool{true, false} {
-		out, err := c.Apply.Apply(context.Background(), res, "shop", obj, dry)
+		out, err := c.Apply.Apply(context.Background(), res, "shop", obj, dry, false)
 		if err != nil {
 			t.Fatal(err)
 		}

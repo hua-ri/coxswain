@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -230,5 +232,37 @@ func TestRedact(t *testing.T) {
 		if string(ev.Args) != "" && string(ev.Args) != `{"content":"redacted"}` {
 			t.Fatalf("logged %s", ev.Args)
 		}
+	}
+}
+
+// detailed is an error with structured details.
+type detailed struct{}
+
+func (detailed) Error() string { return "conflict" }
+func (detailed) Details() any  { return map[string]any{"conflicts": []string{".spec.replicas"}} }
+
+// TestLabelKnowsTheActorAndErrorsCarryDetails: Label can tell who asks
+// (some arguments are for the user only), and an error's details reach
+// the outcome.
+func TestLabelKnowsTheActorAndErrorsCarryDetails(t *testing.T) {
+	reg := action.NewRegistry()
+	var seen action.Actor
+	reg.Register(&action.Action{
+		ID:    "test.who",
+		Input: map[string]any{"type": "object"},
+		Label: func(ctx context.Context, _ json.RawMessage) (action.Assessment, error) {
+			seen, _ = action.ActorFrom(ctx)
+			return action.Assessment{}, nil
+		},
+		Run: func(context.Context, json.RawMessage) (any, error) { return nil, fmt.Errorf("wrapped: %w", detailed{}) },
+	})
+	e := &Engine{Registry: reg, Events: eventlog.Open(t.TempDir() + "/events")}
+	out := e.Invoke(context.Background(), agent, "test.who", nil)
+	if seen != agent {
+		t.Fatalf("label saw %+v", seen)
+	}
+	b, _ := json.Marshal(out)
+	if out.Status != StatusError || !strings.Contains(string(b), `"details":{"conflicts":[".spec.replicas"]}`) {
+		t.Fatalf("%s", b)
 	}
 }

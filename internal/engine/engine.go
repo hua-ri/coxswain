@@ -27,6 +27,14 @@ type Outcome struct {
 	Result any    `json:"result,omitempty"`
 	Error  string `json:"error,omitempty"`
 	Hint   string `json:"hint,omitempty"`
+	// Details describe an error for programs (e.g. apply conflicts).
+	Details any `json:"details,omitempty"`
+}
+
+// Detailer is an error with structured details for the outcome.
+type Detailer interface {
+	error
+	Details() any
 }
 
 // ErrClientRevoked is why a revoked client's running actions stop.
@@ -107,7 +115,8 @@ func (e *Engine) Invoke(ctx context.Context, client action.Actor, id string, arg
 	if len(args) == 0 {
 		args = json.RawMessage("{}")
 	}
-	as, err := a.Label(ctx, args)
+	// Label knows who asks: some arguments are for the user only.
+	as, err := a.Label(action.WithActor(ctx, client), args)
 	if err != nil {
 		return Outcome{Status: StatusError, Error: err.Error()}
 	}
@@ -139,7 +148,12 @@ func (e *Engine) Invoke(ctx context.Context, client action.Actor, id string, arg
 	}
 	logErr := e.Events.Append(ev)
 	if err != nil {
-		return Outcome{Status: StatusError, Error: err.Error()}
+		out := Outcome{Status: StatusError, Error: err.Error()}
+		var d Detailer
+		if errors.As(err, &d) {
+			out.Details = d.Details()
+		}
+		return out
 	}
 	out := Outcome{Status: StatusOK, Result: res}
 	if logErr != nil {

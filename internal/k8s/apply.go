@@ -21,20 +21,22 @@ const OpsFieldManager = "cox-ops"
 // Applier applies objects. Tests use a fake.
 type Applier interface {
 	// Apply server-side applies obj (of resource res, in namespace ns, ""
-	// for cluster-scoped) as FieldManager without forcing conflicts, and
-	// returns the result. With dryRun the server only reports the result.
-	Apply(ctx context.Context, res Resource, ns string, obj *unstructured.Unstructured, dryRun bool) (*unstructured.Unstructured, error)
+	// for cluster-scoped) as FieldManager and returns the result. With
+	// dryRun the server only reports the result; with force, fields other
+	// managers set are taken over instead of being a conflict (only ever
+	// at the user's request).
+	Apply(ctx context.Context, res Resource, ns string, obj *unstructured.Unstructured, dryRun, force bool) (*unstructured.Unstructured, error)
 }
 
 // DynamicApplier applies through the dynamic client.
 type DynamicApplier struct{ Dynamic dynamic.Interface }
 
-func (a *DynamicApplier) Apply(ctx context.Context, res Resource, ns string, obj *unstructured.Unstructured, dryRun bool) (*unstructured.Unstructured, error) {
+func (a *DynamicApplier) Apply(ctx context.Context, res Resource, ns string, obj *unstructured.Unstructured, dryRun, force bool) (*unstructured.Unstructured, error) {
 	var ri dynamic.ResourceInterface = a.Dynamic.Resource(res.GVR)
 	if res.Namespaced {
 		ri = a.Dynamic.Resource(res.GVR).Namespace(ns)
 	}
-	opts := metav1.ApplyOptions{FieldManager: FieldManager, Force: false}
+	opts := metav1.ApplyOptions{FieldManager: FieldManager, Force: force}
 	if dryRun {
 		opts.DryRun = []string{metav1.DryRunAll}
 	}

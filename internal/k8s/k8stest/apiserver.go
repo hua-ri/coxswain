@@ -117,7 +117,7 @@ func (s *APIServer) serveStored(w http.ResponseWriter, r *http.Request, body []b
 		return true
 	}
 	q := r.URL.Query()
-	manager, dry := q.Get("fieldManager"), q.Get("dryRun") == "All"
+	manager, dry, force := q.Get("fieldManager"), q.Get("dryRun") == "All", q.Get("force") == "true"
 	op := "Update"
 	if strings.HasPrefix(r.Header.Get("Content-Type"), "application/apply-patch") {
 		op = "Apply"
@@ -131,7 +131,7 @@ func (s *APIServer) serveStored(w http.ResponseWriter, r *http.Request, body []b
 	fields := map[string]any{}
 	leaves(patch, "", fields)
 	key := manager + "/" + op
-	if op == "Apply" {
+	if op == "Apply" && !force {
 		var causes []map[string]any
 		var msgs []string
 		for f, v := range fields {
@@ -142,8 +142,12 @@ func (s *APIServer) serveStored(w http.ResponseWriter, r *http.Request, body []b
 			if cur := lookup(st.obj, f); reflect.DeepEqual(cur, v) {
 				continue
 			}
-			name := strings.SplitN(owner, "/", 2)[0]
-			msg := fmt.Sprintf("conflict with %q using apps/v1", name)
+			name, ownerOp, _ := strings.Cut(owner, "/")
+			// As the API server prints managers: updates with their version and time.
+			msg := fmt.Sprintf("conflict with %q", name)
+			if ownerOp == "Update" {
+				msg += " using apps/v1 at 2026-11-09T10:00:00Z"
+			}
 			causes = append(causes, map[string]any{"reason": "FieldManagerConflict", "message": msg, "field": f})
 			msgs = append(msgs, msg+": "+f)
 		}
