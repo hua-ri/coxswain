@@ -14,11 +14,12 @@ import (
 
 // Request is one request the fake API server received.
 type Request struct {
-	Method string
-	Path   string
-	Query  string
-	Auth   string // Authorization header
-	Body   string
+	Method      string
+	Path        string
+	Query       string
+	Auth        string // Authorization header
+	ContentType string
+	Body        string
 }
 
 // APIServer is a minimal (TLS) Kubernetes API server: discovery for core/v1 and
@@ -65,7 +66,7 @@ func (s *APIServer) serve(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(r.Body)
 	s.mu.Lock()
 	s.requests = append(s.requests, Request{Method: r.Method, Path: r.URL.Path, Query: r.URL.RawQuery,
-		Auth: r.Header.Get("Authorization"), Body: string(body)})
+		Auth: r.Header.Get("Authorization"), ContentType: r.Header.Get("Content-Type"), Body: string(body)})
 	h := s.handlers[r.Method+" "+r.URL.Path]
 	s.mu.Unlock()
 	if h != nil {

@@ -200,6 +200,10 @@ func TestAnnotations(t *testing.T) {
 		"k8s.logs":         {ReadOnly: true, Idempotent: true, OpenWorld: true},
 		"k8s.top":          {ReadOnly: true, Idempotent: true, OpenWorld: true},
 		"k8s.exec":         {Destructive: true, OpenWorld: true},
+		"k8s.apply":        {Destructive: true, Idempotent: true, OpenWorld: true},
+		"k8s.delete":       {Destructive: true, Idempotent: true, OpenWorld: true},
+		"k8s.scale":        {Destructive: true, Idempotent: true, OpenWorld: true},
+		"k8s.rollout":      {Destructive: true, OpenWorld: true},
 	} {
 		a, ok := f.e.Registry.Get(id)
 		if !ok {
