@@ -149,3 +149,52 @@ tr.has-failure > td { border-bottom: none; }
 tr.failure > td { padding-top: 0; font-size: 12px; }
 .host-address { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .filters select { max-width: 220px; }
+
+/* Kubernetes tab: kinds | list | detail */
+.pane.k8s { display: flex; }
+.k8s-kinds { width: 150px; flex-shrink: 0; border-right: 1px solid var(--border); padding: 6px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+.k8s-context { padding: 2px 4px 8px; border-bottom: 1px solid var(--border); margin-bottom: 4px; overflow-wrap: anywhere; }
+.note-text { font-size: 11px; font-style: italic; margin-top: 3px; }
+button.kind { text-align: left; border-color: transparent; background: none; }
+button.kind.active { background: var(--panel); border-color: var(--accent); }
+.k8s-kinds input { font: inherit; font-size: 12px; width: 100%; color: var(--fg); background: var(--bg); border: 1px solid var(--border); border-radius: 5px; padding: 2px 6px; margin: 4px 0; }
+.k8s-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.k8s-detail { width: 42%; min-width: 300px; flex-shrink: 0; border-left: 1px solid var(--border); display: flex; flex-direction: column; }
+.detail-head { display: flex; justify-content: space-between; padding: 6px 10px; border-bottom: 1px solid var(--border); }
+.detail-head .close { cursor: pointer; color: var(--muted); }
+.detail-tabs { display: flex; gap: 4px; padding: 6px 10px; flex-wrap: wrap; }
+.detail-tabs button.active, .k8s button.small.active { border-color: var(--accent); background: var(--bg); }
+.detail-body { flex: 1; overflow: auto; padding: 0 10px 10px; }
+.detail-body h4 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin: 12px 0 4px; }
+.detail-body th { position: static; background: none; width: 30%; }
+table.k8s-table tbody tr { cursor: pointer; }
+table.k8s-table tbody tr:hover, tr.selected { background: var(--panel); }
+.status { padding: 0 6px; border-radius: 8px; font-size: 11px; border: 1px solid var(--border); }
+.status.ok { background: #2e9e5b; border-color: #2e9e5b; color: #fff; }
+.status.warn { background: #e8a33d; border-color: #e8a33d; color: #fff; }
+.status.bad { background: #d93025; border-color: #d93025; color: #fff; }
+.warn-text { color: #c77d00; }
+.error-box { color: #d93025; padding: 4px 10px; white-space: pre-wrap; overflow-wrap: anywhere; }
+pre.yaml, pre.log-text, pre.diff { margin: 4px 0; padding: 6px 8px; background: var(--panel); border: 1px solid var(--border); border-radius: 5px; overflow: auto; white-space: pre-wrap; }
+pre.log-text { max-height: none; }
+.logs { display: flex; flex-direction: column; }
+.logs .filters { padding: 4px 0; flex-wrap: wrap; }
+.logs .filters input { font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--border); border-radius: 5px; }
+pre.diff .add { color: #1f7a3f; background: rgba(46, 158, 91, 0.12); }
+pre.diff .del { color: #b3261e; background: rgba(217, 48, 37, 0.12); }
+pre.diff .hunk { color: var(--accent); }
+pre.diff .meta { color: var(--muted); }
+@media (prefers-color-scheme: dark) {
+  pre.diff .add { color: #7ee2a0; }
+  pre.diff .del { color: #ff9b93; }
+  .warn-text { color: #f0b85a; }
+}
+.finding { padding: 6px 8px; margin: 6px 0; border-left: 3px solid var(--border); background: var(--panel); border-radius: 4px; }
+.finding.bad { border-left-color: #d93025; }
+.finding.warn { border-left-color: #e8a33d; }
+.status.info { background: var(--bg); color: var(--muted); }
+.apply { display: flex; flex-direction: column; height: 100%; padding: 8px 10px; overflow: auto; }
+.apply textarea { min-height: 180px; resize: vertical; color: var(--fg); background: var(--bg); border: 1px solid var(--border); border-radius: 5px; padding: 6px; }
+.apply .filters { padding: 6px 0; }
+.dialog label { display: inline-block; margin: 4px 0 8px; }
+.dialog input, .dialog select { font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--border); border-radius: 5px; padding: 1px 5px; }

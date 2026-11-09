@@ -6,6 +6,8 @@ import { cox } from "./bridge";
 import type { Cox, Status } from "./cox";
 import { Confirm } from "./Confirm";
 import { FileBrowser } from "./FileBrowser";
+import { actionError, contextFromTab, isProdContext, k8sTab, terminalRequest, type ContextInfo, type ContextsOutput } from "./k8s";
+import { K8sView, type PodRef } from "./K8sView";
 import { Sidebar } from "./Sidebar";
 import { TerminalView } from "./TerminalView";
 import { needsConfirm, sessionWhere, tabTitle, tabsReducer, type Tab } from "./terminals";
@@ -48,6 +50,9 @@ function Desktop({ cox }: { cox: Cox }) {
   const [tunnels, dispatchTunnel] = useReducer(tunnelsReducer, []);
   const [closingTunnel, setClosingTunnel] = useState<Tunnel | null>(null);
   const [now, setNow] = useState(Date.now());
+  const [contexts, setContexts] = useState<ContextInfo[]>([]);
+  const [contextsError, setContextsError] = useState("");
+  const [clusters, setClusters] = useState<string[]>([]); // contexts with a K8s tab
 
   const report = useCallback((e: unknown) => setError(e instanceof Error ? e.message : String(e)), []);
 
@@ -71,13 +76,23 @@ function Desktop({ cox }: { cox: Cox }) {
     const list = (await cox.api<Tunnel[]>("GET", "/api/v1/tunnels")) ?? [];
     dispatchTunnel({ type: "sync", list });
   }, [cox]);
+  const loadContexts = useCallback(async () => {
+    const out = await cox.invoke<ContextsOutput>("k8s.contexts");
+    if (out.status !== "ok") {
+      setContextsError(actionError(out));
+      return;
+    }
+    setContextsError("");
+    setContexts(out.result?.contexts ?? []);
+  }, [cox]);
   const loadAll = useCallback(() => {
+    loadContexts().catch(report);
     loadHosts().catch(report);
     loadClients().catch(report);
     loadTerminals().catch(report);
     loadTransfers().catch(report);
     loadTunnels().catch(report);
-  }, [loadHosts, loadClients, loadTerminals, loadTransfers, loadTunnels, report]);
+  }, [loadContexts, loadHosts, loadClients, loadTerminals, loadTransfers, loadTunnels, report]);
 
   useEffect(() => {
     void cox.status().then(setStatus);
@@ -122,13 +137,14 @@ function Desktop({ cox }: { cox: Cox }) {
         if (ev.type === "action.finished" && ev.action?.startsWith("ssh.hosts.") && ev.action !== "ssh.hosts.list") {
           loadHosts().catch(report);
         }
+        if (ev.type === "action.finished" && ev.action === "k8s.contexts.tag") loadContexts().catch(report);
       })
       .then((s) => (cancelled ? s() : (stop = s)), report);
     return () => {
       cancelled = true;
       stop?.();
     };
-  }, [cox, loadClients, loadHosts, report]);
+  }, [cox, loadClients, loadHosts, loadContexts, report]);
 
   // Traffic counters change without events: refresh while the tab shows.
   useEffect(() => {
@@ -157,6 +173,24 @@ function Desktop({ cox }: { cox: Cox }) {
     },
     [cox, report],
   );
+  const openPodTerminal = async (p: PodRef & { shell?: string }) => {
+    const s = await cox.api<TermSession>("POST", "/api/v1/terminals", terminalRequest(p.context, p.namespace, p.pod, p.container, p.shell));
+    dispatch({ type: "opened", id: s.id, host: sessionWhere(s), owner: s.owner });
+    setActive(s.id);
+  };
+  const forward = async (body: Record<string, unknown>) => {
+    const t = await cox.api<Tunnel>("POST", "/api/v1/tunnels", body);
+    dispatchTunnel({ type: "event", event: { time: "", type: "tunnel.opened", detail: t } });
+    return t.listen;
+  };
+  const openCluster = (ctx: string) => {
+    setClusters((c) => (c.includes(ctx) ? c : [...c, ctx]));
+    setActive(k8sTab(ctx));
+  };
+  const closeCluster = (ctx: string) => {
+    setClusters((c) => c.filter((x) => x !== ctx));
+    setActive((a) => (a === k8sTab(ctx) ? "" : a));
+  };
   const showTerminal = (id: string) => {
     if (tabs.some((t) => t.id === id)) setActive(id);
   };
@@ -231,6 +265,9 @@ function Desktop({ cox }: { cox: Cox }) {
         <Sidebar
           hosts={hosts}
           clients={clients}
+          contexts={contexts}
+          contextsError={contextsError}
+          onOpenCluster={openCluster}
           onOpenTerminal={openTerminal}
           onOpenFiles={openFiles}
           onAllow={decide("PUT")}
@@ -264,6 +301,25 @@ function Desktop({ cox }: { cox: Cox }) {
                 </span>
               </div>
             ))}
+            {clusters.map((c) => {
+              const info = contexts.find((x) => x.name === c);
+              return (
+                <div key={c} className={active === k8sTab(c) ? "tab active" : "tab"} onClick={() => setActive(k8sTab(c))}>
+                  {info && isProdContext(info) && <span className="badge danger">env={info.tags?.env}</span>}
+                  <span>{c} · k8s</span>
+                  <span
+                    className="close"
+                    title="Close"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      closeCluster(c);
+                    }}
+                  >
+                    ×
+                  </span>
+                </div>
+              );
+            })}
             {tabs.map((t) => (
               <div key={t.id} className={active === t.id ? "tab active" : "tab"} onClick={() => setActive(t.id)}>
                 {t.owner.kind === "agent" && <span className="badge agent">agent</span>}
@@ -295,6 +351,13 @@ function Desktop({ cox }: { cox: Cox }) {
             {browsers.map((h) => (
               <FileBrowser key={h} cox={cox} host={h} active={active === FILES + h} />
             ))}
+            {clusters.map((c) => {
+              const info = contexts.find((x) => x.name === c) ?? { name: c, cluster: "", namespace: "default" };
+              return (
+                <K8sView key={c} cox={cox} context={info} active={contextFromTab(active) === c}
+                  onOpenTerminal={openPodTerminal} onForward={forward} />
+              );
+            })}
             {tabs.map((t) => (
               <TerminalView
                 key={t.id}
