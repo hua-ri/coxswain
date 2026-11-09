@@ -66,7 +66,17 @@ select { font: inherit; }
 table { border-collapse: collapse; width: 100%; }
 th { position: sticky; top: 0; background: var(--panel); text-align: left; font-weight: 600; }
 th, td { padding: 3px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
-td.detail { max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The activity table fits the window: long cells are cut (full text in a tooltip), results wrap; very narrow windows scroll sideways. */
+table.events { table-layout: fixed; min-width: 760px; }
+table.events col.c-time { width: 72px; }
+table.events col.c-client { width: 11%; }
+table.events col.c-action { width: 13%; }
+table.events col.c-host { width: 11%; }
+table.events col.c-risk { width: 86px; }
+table.events col.c-detail { width: 16%; }
+table.events td.cut { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+table.events td.result { overflow-wrap: anywhere; }
+table.events tr.expand td { white-space: normal; }
 td.error { color: #d93025; }
 tr.clickable { cursor: pointer; }
 tr.clickable:hover { background: var(--panel); }
@@ -138,3 +148,4 @@ pre.output.stderr { color: #d93025; }
 tr.has-failure > td { border-bottom: none; }
 tr.failure > td { padding-top: 0; font-size: 12px; }
 .host-address { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.filters select { max-width: 220px; }

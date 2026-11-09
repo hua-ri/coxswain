@@ -80,7 +80,16 @@ export function ActivityView({ rows, onOpenTerminal, loadOutput }: Props) {
         <span className="muted">{shown.length} events since this window opened</span>
       </div>
       <div className="table-wrap">
-        <table>
+        <table className="events">
+          <colgroup>
+            <col className="c-time" />
+            <col className="c-client" />
+            <col className="c-action" />
+            <col className="c-host" />
+            <col className="c-risk" />
+            <col className="c-detail" />
+            <col className="c-result" />
+          </colgroup>
           <thead>
             <tr>
               <th>Time</th>
@@ -101,18 +110,22 @@ export function ActivityView({ rows, onOpenTerminal, loadOutput }: Props) {
                 title={r.terminal ? "Show this terminal" : r.batch ? "Show each host" : undefined}
               >
                 <td className="mono">{time(r.time)}</td>
-                <td title={r.client}>
+                <td className="cut" title={r.client}>
                   {r.who}
                   {r.agent && <span className="badge agent">agent</span>}
                 </td>
-                <td className="mono">
+                <td className="mono cut" title={r.action}>
                   {r.batch && <span className="disclosure">{expanded.has(r.key) ? "▾" : "▸"}</span>}
                   {r.action}
                 </td>
-                <td>{r.hosts.join(", ")}</td>
+                <td className="cut" title={r.hosts.join(", ")}>
+                  {r.hosts.join(", ")}
+                </td>
                 <td>{r.risk && <span className={`badge risk-${r.risk}`}>{r.risk}</span>}</td>
-                <td className="mono detail">{r.status === "info" ? "" : (r.detail ?? "")}</td>
-                <td className={r.status === "failed" || r.status === "refused" ? "error" : "muted"}>{result(r)}</td>
+                <td className="mono cut" title={r.status === "info" ? undefined : r.detail}>
+                  {r.status === "info" ? "" : (r.detail ?? "")}
+                </td>
+                <td className={`result ${r.status === "failed" || r.status === "refused" ? "error" : "muted"}`}>{result(r)}</td>
               </tr>
               {r.batch && expanded.has(r.key) && (
                 <tr className="expand">

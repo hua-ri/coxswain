@@ -31,6 +31,7 @@ export function clientLabel(name: string): string {
 
 /** addEvent returns rows (newest first) with ev folded in. */
 export function addEvent(rows: Row[], ev: AuditEvent, key: number): Row[] {
+  if (internal(ev)) return rows;
   const actor = ev.actor;
   const client = actor?.name ?? ev.client ?? "";
   const base: Row = {
@@ -130,6 +131,11 @@ export function addEvent(rows: Row[], ev: AuditEvent, key: number): Row[] {
     default:
       return prepend(rows, { ...base, action: ev.type });
   }
+}
+
+/** internal: the desktop's own plumbing (reading batch output), kept out of the table but not the audit log. */
+function internal(ev: AuditEvent): boolean {
+  return ev.action === "artifact.read" && ev.actor?.kind === "human" && ev.actor.name === "desktop";
 }
 
 function replace(rows: Row[], i: number, row: Row): Row[] {

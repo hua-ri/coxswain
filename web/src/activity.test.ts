@@ -132,6 +132,18 @@ describe("addEvent", () => {
       error: "127.0.0.1:1 → 127.0.0.1:8080 on dev: ssh: rejected: administratively prohibited" });
   });
 
+  it("hides the desktop's own artifact reads", () => {
+    const desktop = { kind: "human" as const, name: "desktop", session: "d" };
+    const rows = feed([
+      { time: t, type: "action.requested", actor: desktop, action: "artifact.read", risk: "read", args: { id: "art_1" } },
+      { time: t, type: "action.finished", actor: desktop, action: "artifact.read", duration_ms: 1 },
+      { time: t, type: "action.failed", actor: desktop, action: "artifact.read", error: "not found" },
+      { time: t, type: "action.requested", actor: codex, action: "artifact.read", risk: "read", args: { id: "art_1" } },
+      { time: t, type: "action.requested", actor: { kind: "human", name: "cli" }, action: "artifact.read", risk: "read" },
+    ]);
+    expect(rows.map((r) => r.client)).toEqual(["cli", "codex"]);
+  });
+
   it("keeps at most 1000 rows", () => {
     let rows: Row[] = [];
     for (let i = 0; i < 1100; i++) rows = addEvent(rows, { time: t, type: "client.allowed", client: "c" }, i);
