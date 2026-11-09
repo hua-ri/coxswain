@@ -108,6 +108,9 @@ func parseManifest(manifest string) ([]map[string]any, error) {
 		}
 		if kind, _ := doc["kind"].(string); strings.HasSuffix(kind, "List") {
 			if items, ok := doc["items"].([]any); ok {
+				if v, _ := doc["apiVersion"].(string); v != "v1" {
+					return nil, fmt.Errorf("manifest: %s %s is not supported; give its items as separate documents", v, kind)
+				}
 				for _, it := range items {
 					if m, ok := it.(map[string]any); ok {
 						out = append(out, m)
@@ -188,13 +191,13 @@ func normalized(u *unstructured.Unstructured) *unstructured.Unstructured {
 
 // objectDiff is the diff between the live object (nil if none) and the
 // result of applying, with Secret values redacted.
-func objectDiff(id string, live, after *unstructured.Unstructured) (string, error) {
+func objectDiff(id string, res kube.Resource, live, after *unstructured.Unstructured) (string, error) {
 	cur, next := normalized(live), normalized(after)
-	if isSecret(next) {
-		redactSecret(next, cur)
-	}
-	if cur != nil && isSecret(cur) {
-		redactSecret(cur, nil)
+	if secretResource(res) {
+		redactSecret(next)
+		if cur != nil {
+			redactSecret(cur)
+		}
 	}
 	a := ""
 	if cur != nil {
@@ -217,21 +220,17 @@ func (p *Provider) apply() *action.Action {
 		Description: "Apply one or more objects (YAML, several documents allowed) with server-side apply (field manager cox, " +
 			"conflicts are not forced). Every object is first checked with a server-side dry run; if any fails, nothing is " +
 			"applied. Returns each object's operation (create, configure, unchanged) and diff against the live object. " +
-			"Use dry_run=true first and show the user the diff. Secret values are redacted in diffs. " + prodHint,
-		Input: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"context":   contextProperty,
-				"namespace": map[string]any{"type": "string", "description": "for objects without one; default: the context's namespace"},
-				"manifest":  map[string]any{"type": "string", "description": "YAML (or JSON) objects, separated by ---"},
-				"dry_run":   map[string]any{"type": "boolean", "description": "only show what would change"},
-			},
-			"required": []string{"context", "manifest"},
-		},
+			"Use dry_run=true first and show the user the diff. Secret values are redacted in diffs and never compared. " +
+			"Objects that depend on others in the same manifest (a Namespace and objects in it, a CRD and its custom " +
+			"resources) fail the dry run: apply them in two steps. List kinds other than v1 List are not accepted. " + prodHint,
+		Input:       applySchema,
 		Positional:  []string{"context"},
 		Annotations: writeRemote,
 		Redact:      redactApply,
 		Label: func(_ context.Context, raw json.RawMessage) (action.Assessment, error) {
+			if err := action.ExactKeys(raw, applySchema); err != nil {
+				return action.Assessment{}, err
+			}
 			var in applyInput
 			if err := action.Decode(raw, &in); err != nil {
 				return action.Assessment{}, err
@@ -243,6 +242,11 @@ func (p *Provider) apply() *action.Action {
 			risk := action.Destructive
 			if in.DryRun {
 				risk = action.Read
+				for _, pl := range objs {
+					if secretResource(pl.res) {
+						risk = action.Write // compares against a live Secret
+					}
+				}
 			}
 			var targets []action.Target
 			seen := map[string]bool{}
@@ -289,7 +293,7 @@ func (p *Provider) apply() *action.Action {
 				if err != nil {
 					return nil, fmt.Errorf("dry run of %s failed: %w; nothing was applied", pl.id(), err)
 				}
-				diff, err := objectDiff(pl.id(), live, after)
+				diff, err := objectDiff(pl.id(), pl.res, live, after)
 				if err != nil {
 					return nil, err
 				}
@@ -297,6 +301,9 @@ func (p *Provider) apply() *action.Action {
 				switch {
 				case live == nil:
 					o.Operation = "create"
+				case secretResource(pl.res):
+					// Always: "unchanged" would say the given values
+					// equal the live ones.
 				case diff == "":
 					o.Operation = "unchanged"
 				}
@@ -327,17 +334,27 @@ func (p *Provider) apply() *action.Action {
 	}
 }
 
+// applySchema is k8s.apply's input.
+var applySchema = map[string]any{
+	"type": "object",
+	"properties": map[string]any{
+		"context":   contextProperty,
+		"namespace": map[string]any{"type": "string", "description": "for objects without one; default: the context's namespace"},
+		"manifest":  map[string]any{"type": "string", "description": "YAML (or JSON) objects, separated by ---"},
+		"dry_run":   map[string]any{"type": "boolean", "description": "only show what would change"},
+	},
+	"required": []string{"context", "manifest"},
+}
+
 // redactApply is k8s.apply's arguments for the audit log: Secret values
 // in the manifest are replaced by their lengths.
 func redactApply(raw json.RawMessage) json.RawMessage {
-	var m map[string]any
-	if err := json.Unmarshal(raw, &m); err != nil {
-		return json.RawMessage(`{"redacted":"arguments are not a JSON object"}`)
+	var in applyInput
+	if action.ExactKeys(raw, applySchema) != nil || action.Decode(raw, &in) != nil {
+		return json.RawMessage(`{"redacted":"invalid arguments"}`)
 	}
-	if s, ok := m["manifest"].(string); ok {
-		m["manifest"] = redactManifest(s)
-	}
-	b, err := json.Marshal(m)
+	in.Manifest = redactManifest(in.Manifest)
+	b, err := json.Marshal(in)
 	if err != nil {
 		return json.RawMessage(`{"redacted":"arguments could not be encoded"}`)
 	}
@@ -354,8 +371,8 @@ func redactManifest(manifest string) string {
 	parts := make([]string, 0, len(docs))
 	for _, doc := range docs {
 		u := &unstructured.Unstructured{Object: doc}
-		if isSecret(u) {
-			redactSecret(u, nil)
+		if looksLikeSecret(u) {
+			redactSecret(u)
 		}
 		b, err := yaml.Marshal(u.Object)
 		if err != nil {

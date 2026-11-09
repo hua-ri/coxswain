@@ -241,7 +241,7 @@ func (p *Provider) get() *action.Action {
 				if err != nil {
 					return nil, kube.Explain(err)
 				}
-				y, err := toYAML(clean(obj))
+				y, err := toYAML(clean(obj, r.res))
 				if err != nil {
 					return nil, err
 				}
@@ -267,7 +267,7 @@ func (p *Provider) get() *action.Action {
 				out.More = true
 				items = items[:min(limit, len(items))]
 			}
-			out.Columns, out.Rows = table(r.res.Kind, items, out.AllNamespaces, p.now())
+			out.Columns, out.Rows = table(r.res, items, out.AllNamespaces, p.now())
 			out.Total = len(out.Rows)
 			return out, p.fitRows(ctx, &out)
 		},
@@ -428,7 +428,7 @@ func (p *Provider) describe() *action.Action {
 func (p *Provider) describeObject(ctx context.Context, r resolved, obj *unstructured.Unstructured) (DescribeOutput, error) {
 	now := p.now()
 	out := DescribeOutput{Context: r.client.Context, Kind: r.res.Kind, Namespace: obj.GetNamespace(), Name: obj.GetName(),
-		Summary: summaryMap(r.res.Kind, obj, now), Labels: obj.GetLabels(), Conditions: conditions(obj)}
+		Summary: summaryMap(r.res.GVR.Group, r.res.Kind, obj, now), Labels: obj.GetLabels(), Conditions: conditions(obj)}
 	for _, o := range obj.GetOwnerReferences() {
 		out.Owners = append(out.Owners, o.Kind+"/"+o.Name)
 	}

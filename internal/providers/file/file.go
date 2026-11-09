@@ -455,7 +455,23 @@ type WriteOutput struct {
 
 // redactContent replaces file.write's content with its size and SHA-256
 // for the audit log.
+// writeSchema is file.write's input.
+var writeSchema = map[string]any{
+	"type": "object",
+	"properties": map[string]any{
+		"host":        hostProperty,
+		"path":        pathProperty,
+		"content":     map[string]any{"type": "string", "description": "the complete new file content"},
+		"mode":        map[string]any{"type": "string", "description": "octal permissions, e.g. 0644"},
+		"create_only": map[string]any{"type": "boolean", "description": "fail if the file exists"},
+	},
+	"required": []string{"host", "path", "content"},
+}
+
 func redactContent(raw json.RawMessage) json.RawMessage {
+	if action.ExactKeys(raw, writeSchema) != nil {
+		return json.RawMessage(`{"redacted":"arguments with unknown keys"}`)
+	}
 	var m map[string]json.RawMessage
 	if json.Unmarshal(raw, &m) != nil {
 		return json.RawMessage(`{"redacted":true}`)
@@ -492,21 +508,14 @@ func (p *Provider) write() *action.Action {
 			"Keeps the existing permissions unless mode (octal, e.g. 0644) is given; new files get 0644. " +
 			"create_only=true refuses to replace an existing file. " +
 			"Hosts tagged env=prod are production: confirm with the user before changing them. Respect the host note.",
-		Input: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"host":        hostProperty,
-				"path":        pathProperty,
-				"content":     map[string]any{"type": "string", "description": "the complete new file content"},
-				"mode":        map[string]any{"type": "string", "description": "octal permissions, e.g. 0644"},
-				"create_only": map[string]any{"type": "boolean", "description": "fail if the file exists"},
-			},
-			"required": []string{"host", "path", "content"},
-		},
+		Input:       writeSchema,
 		Positional:  []string{"host", "path"},
 		Annotations: action.Annotations{Destructive: true, Idempotent: true, OpenWorld: true},
 		Redact:      redactContent,
 		Label: func(ctx context.Context, raw json.RawMessage) (action.Assessment, error) {
+			if err := action.ExactKeys(raw, writeSchema); err != nil {
+				return action.Assessment{}, err
+			}
 			var in writeInput
 			if err := action.Decode(raw, &in); err != nil {
 				return action.Assessment{}, err

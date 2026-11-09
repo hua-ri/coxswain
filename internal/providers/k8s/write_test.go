@@ -87,7 +87,8 @@ func TestApplyDryRun(t *testing.T) {
 		}
 	}
 	ev := f.requested(t, "k8s.apply")
-	if ev.Risk != "read" || ev.Targets[0].ID != "k8s:prod/shop" || ev.Targets[0].Tags["env"] != "prod" {
+	// A write: the manifest has a Secret, compared with the live one.
+	if ev.Risk != "write" || ev.Targets[0].ID != "k8s:prod/shop" || ev.Targets[0].Tags["env"] != "prod" {
 		t.Fatalf("audit %+v", ev)
 	}
 	if strings.Contains(string(ev.Args), "s3cr3t") || !strings.Contains(string(ev.Args), "redacted") {

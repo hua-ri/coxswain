@@ -210,7 +210,7 @@ func (p *Provider) diagnoseTarget(ctx context.Context, r resolved, d *diagnosis,
 	if err != nil {
 		return err
 	}
-	d.out.Evidence.Workload = summaryMap(kind, obj, p.now())
+	d.out.Evidence.Workload = summaryMap(controllerGroup(kind), kind, obj, p.now())
 	about := map[string]bool{kind + "/" + name: true}
 	p.controllerRules(d, kind, obj)
 
@@ -262,6 +262,14 @@ func (p *Provider) diagnoseTarget(ctx context.Context, r resolved, d *diagnosis,
 	}
 	d.out.Evidence.Events = p.pick(events, about)
 	return nil
+}
+
+// controllerGroup is the API group of a controller kind.
+func controllerGroup(kind string) string {
+	if kind == "Job" {
+		return "batch"
+	}
+	return "apps"
 }
 
 // warnings returns the namespace's Warning events, newest first.

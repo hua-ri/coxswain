@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strings"
 )
 
 // Risk is how much damage an invocation can do. Higher is riskier.
@@ -179,4 +180,32 @@ func WithAssessment(ctx context.Context, as Assessment) context.Context {
 func AssessmentFrom(ctx context.Context) (Assessment, bool) {
 	as, ok := ctx.Value(assessmentKey{}).(Assessment)
 	return as, ok
+}
+
+// ExactKeys checks that every key of args is a property of the input
+// schema, spelled exactly. encoding/json matches field names without
+// regard to case, so a Redact that looks for "content" would miss
+// "Content" while Run still used it; actions with secrets in their
+// arguments check this in Label and Redact.
+func ExactKeys(args json.RawMessage, input map[string]any) error {
+	if len(args) == 0 {
+		return nil
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(args, &m); err != nil {
+		return fmt.Errorf("invalid arguments: %w", err)
+	}
+	props, _ := input["properties"].(map[string]any)
+	for k := range m {
+		if _, ok := props[k]; ok {
+			continue
+		}
+		for p := range props {
+			if strings.EqualFold(p, k) {
+				return fmt.Errorf("invalid arguments: unknown argument %q (did you mean %q?)", k, p)
+			}
+		}
+		return fmt.Errorf("invalid arguments: unknown argument %q", k)
+	}
+	return nil
 }

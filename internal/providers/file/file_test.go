@@ -378,3 +378,22 @@ func TestWriteContentNotLogged(t *testing.T) {
 		t.Fatalf("%s %v", ev.Args, err)
 	}
 }
+
+// TestWriteKeysExact: "Content" would be written (encoding/json ignores
+// case) but missed by the audit redaction; such arguments are refused.
+func TestWriteKeysExact(t *testing.T) {
+	f := setup(t)
+	raw := json.RawMessage(`{"host":"prod","path":"x.txt","Content":"hunter2"}`)
+	if out := f.e.Invoke(context.Background(), desktop, "file.write", raw); out.Status != "error" || !strings.Contains(out.Error, "Content") {
+		t.Fatalf("%+v", out)
+	}
+	if got := string(redactContent(raw)); strings.Contains(got, "hunter2") {
+		t.Fatalf("redacted: %s", got)
+	}
+	evs, _ := f.e.Events.Read(time.Now())
+	for _, ev := range evs {
+		if strings.Contains(string(ev.Args), "hunter2") {
+			t.Fatalf("audited: %s", ev.Args)
+		}
+	}
+}

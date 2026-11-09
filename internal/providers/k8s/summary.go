@@ -2,6 +2,7 @@ package k8s
 
 import (
 	"fmt"
+	kube "github.com/hua-ri/coxswain/internal/k8s"
 	"sort"
 	"strconv"
 	"strings"
@@ -34,22 +35,23 @@ type summary struct {
 	row     func(u *unstructured.Unstructured, now time.Time) []string
 }
 
+// summaries are by group/kind: a custom resource may reuse a kind name.
 var summaries = map[string]summary{
-	"Pod":         {[]string{"name", "ready", "status", "restarts", "age", "node"}, podRow},
-	"Deployment":  {[]string{"name", "ready", "up-to-date", "available", "age"}, deploymentRow},
-	"StatefulSet": {[]string{"name", "ready", "age"}, statefulSetRow},
-	"ReplicaSet":  {[]string{"name", "desired", "current", "ready", "age"}, replicaSetRow},
-	"DaemonSet":   {[]string{"name", "desired", "current", "ready", "up-to-date", "available", "age"}, daemonSetRow},
-	"Job":         {[]string{"name", "status", "completions", "age"}, jobRow},
-	"Node":        {[]string{"name", "status", "roles", "age", "version", "internal-ip"}, nodeRow},
-	"Service":     {[]string{"name", "type", "cluster-ip", "ports", "age"}, serviceRow},
-	"Secret":      {[]string{"name", "type", "keys", "age"}, secretRow},
+	"/Pod":             {[]string{"name", "ready", "status", "restarts", "age", "node"}, podRow},
+	"apps/Deployment":  {[]string{"name", "ready", "up-to-date", "available", "age"}, deploymentRow},
+	"apps/StatefulSet": {[]string{"name", "ready", "age"}, statefulSetRow},
+	"apps/ReplicaSet":  {[]string{"name", "desired", "current", "ready", "age"}, replicaSetRow},
+	"apps/DaemonSet":   {[]string{"name", "desired", "current", "ready", "up-to-date", "available", "age"}, daemonSetRow},
+	"batch/Job":        {[]string{"name", "status", "completions", "age"}, jobRow},
+	"/Node":            {[]string{"name", "status", "roles", "age", "version", "internal-ip"}, nodeRow},
+	"/Service":         {[]string{"name", "type", "cluster-ip", "ports", "age"}, serviceRow},
+	"/Secret":          {[]string{"name", "type", "keys", "age"}, secretRow},
 }
 
 var genericSummary = summary{[]string{"name", "status", "age"}, genericRow}
 
-func summaryFor(kind string) summary {
-	if s, ok := summaries[kind]; ok {
+func summaryFor(group, kind string) summary {
+	if s, ok := summaries[group+"/"+kind]; ok {
 		return s
 	}
 	return genericSummary
@@ -57,8 +59,8 @@ func summaryFor(kind string) summary {
 
 // table summarizes items (all of one kind); with namespaces, the first
 // column is the namespace.
-func table(kind string, items []unstructured.Unstructured, namespaces bool, now time.Time) ([]string, [][]string) {
-	s := summaryFor(kind)
+func table(res kube.Resource, items []unstructured.Unstructured, namespaces bool, now time.Time) ([]string, [][]string) {
+	s := summaryFor(res.GVR.Group, res.Kind)
 	cols := s.columns
 	if namespaces {
 		cols = append([]string{"namespace"}, cols...)
@@ -75,8 +77,8 @@ func table(kind string, items []unstructured.Unstructured, namespaces bool, now 
 }
 
 // summaryMap is one object's summary as column → value.
-func summaryMap(kind string, u *unstructured.Unstructured, now time.Time) map[string]string {
-	s := summaryFor(kind)
+func summaryMap(group, kind string, u *unstructured.Unstructured, now time.Time) map[string]string {
+	s := summaryFor(group, kind)
 	row := s.row(u, now)
 	m := make(map[string]string, len(row))
 	for i, c := range s.columns {
@@ -344,43 +346,39 @@ func replicas(r *int32) int32 {
 	return *r
 }
 
-// clean returns a copy of u as shown to people and agents: without
-// managedFields, and for Secrets without values.
-func clean(u *unstructured.Unstructured) *unstructured.Unstructured {
+// clean returns a copy of u (of resource res) as shown to people and
+// agents: without managedFields, and for Secrets without values.
+func clean(u *unstructured.Unstructured, res kube.Resource) *unstructured.Unstructured {
 	c := u.DeepCopy()
 	unstructured.RemoveNestedField(c.Object, "metadata", "managedFields")
-	if isSecret(c) {
-		redactSecret(c, nil)
+	if secretResource(res) {
+		redactSecret(c)
 	}
 	return c
 }
 
-func isSecret(u *unstructured.Unstructured) bool {
-	return u.GetKind() == "Secret" && (u.GetAPIVersion() == "v1" || u.GetAPIVersion() == "")
+// secretResource reports whether res is core Secrets.
+func secretResource(res kube.Resource) bool {
+	return res.GVR.Group == "" && res.GVR.Resource == "secrets"
+}
+
+// looksLikeSecret is for objects not resolved against the cluster (the
+// manifest in the audit log): any kind spelled secret counts.
+func looksLikeSecret(u *unstructured.Unstructured) bool {
+	return strings.EqualFold(u.GetKind(), "Secret")
 }
 
 // redactSecret replaces a Secret's values with their lengths and drops
-// the last-applied annotation (which holds them too). A value that
-// differs from the one in prev (if given) is marked as changed, so a
-// diff still shows it.
-func redactSecret(u, prev *unstructured.Unstructured) {
+// the last-applied annotation (which holds them too). Values are never
+// compared with others: that would let a caller guess them.
+func redactSecret(u *unstructured.Unstructured) {
 	for _, field := range []string{"data", "stringData"} {
 		m, ok, _ := unstructured.NestedMap(u.Object, field)
 		if !ok {
 			continue
 		}
-		var old map[string]any
-		if prev != nil {
-			old, _, _ = unstructured.NestedMap(prev.Object, field)
-		}
 		for k, v := range m {
-			s := fmt.Sprintf("<redacted %d bytes>", valueLen(field, v))
-			if prev != nil {
-				if ov, ok := old[k]; !ok || ov != v {
-					s = fmt.Sprintf("<redacted %d bytes, changed>", valueLen(field, v))
-				}
-			}
-			m[k] = s
+			m[k] = fmt.Sprintf("<redacted %d bytes>", valueLen(field, v))
 		}
 		unstructured.SetNestedMap(u.Object, m, field)
 	}

@@ -3,6 +3,7 @@ package action
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -71,5 +72,23 @@ func TestAnnotationsJSON(t *testing.T) {
 	b, _ := json.Marshal(Annotations{ReadOnly: true, Idempotent: true})
 	if string(b) != `{"read_only":true,"destructive":false,"idempotent":true,"open_world":false}` {
 		t.Fatalf("got %s", b)
+	}
+}
+
+func TestExactKeys(t *testing.T) {
+	input := map[string]any{"type": "object", "properties": map[string]any{"content": map[string]any{}, "host": map[string]any{}}}
+	if err := ExactKeys(json.RawMessage(`{"host":"a","content":"x"}`), input); err != nil {
+		t.Fatal(err)
+	}
+	if err := ExactKeys(nil, input); err != nil {
+		t.Fatal(err)
+	}
+	for _, raw := range []string{`{"Content":"x"}`, `{"host":"a","extra":1}`, `[1]`} {
+		if err := ExactKeys(json.RawMessage(raw), input); err == nil {
+			t.Errorf("%s accepted", raw)
+		}
+	}
+	if err := ExactKeys(json.RawMessage(`{"CONTENT":"x"}`), input); err == nil || !strings.Contains(err.Error(), `"content"`) {
+		t.Fatalf("no hint: %v", err)
 	}
 }
