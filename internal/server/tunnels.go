@@ -44,7 +44,8 @@ func (s *server) getTunnel(w http.ResponseWriter, r *http.Request) {
 }
 
 // openTunnel opens a tunnel for the user; the body is a tunnel.Spec
-// ({host, type, local_port, remote_host, remote_port, idle_minutes}).
+// ({host, type, local_port, remote_host, remote_port, idle_minutes}, or
+// for type k8s {context, namespace, pod | service, remote_port, …}).
 // Agents open tunnels with the tunnel.open action instead.
 func (s *server) openTunnel(w http.ResponseWriter, r *http.Request) {
 	m := s.tunnels(w)
@@ -53,7 +54,8 @@ func (s *server) openTunnel(w http.ResponseWriter, r *http.Request) {
 	}
 	var in tunnel.Spec
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBody)).Decode(&in); err != nil {
-		fail(w, http.StatusBadRequest, "body must be {host, type, local_port, remote_host, remote_port, idle_minutes}: "+err.Error(), "")
+		fail(w, http.StatusBadRequest, "body must be {host, type, local_port, remote_host, remote_port, idle_minutes} "+
+			"(type k8s: {context, namespace, pod or service, remote_port, local_port, idle_minutes}): "+err.Error(), "")
 		return
 	}
 	owner := actorOf(r)

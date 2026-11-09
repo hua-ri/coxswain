@@ -4,8 +4,14 @@ import type { AuditEvent } from "./cox";
 
 export interface Tunnel {
   id: string;
-  type: "local" | "remote" | "socks";
-  host: string;
+  type: "local" | "remote" | "socks" | "k8s";
+  host: string; // SSH tunnels
+  // k8s tunnels: pod is where connections go now (a service's resolved pod).
+  context?: string;
+  namespace?: string;
+  pod?: string;
+  service?: string;
+  remote_port?: number;
   listen: string; // 127.0.0.1:port here (local, socks) or on the host (remote)
   target?: string;
   owner: { kind: "human" | "agent"; name: string };
@@ -44,6 +50,11 @@ function newestFirst(a: Tunnel, b: Tunnel): number {
 /** tunnelRoute says where connections enter and where they go. */
 export function tunnelRoute(t: Tunnel): string {
   switch (t.type) {
+    case "k8s": {
+      const ns = `${t.context ?? ""}/${t.namespace ?? ""}`;
+      if (t.service) return `${t.listen} → ${ns}/service ${t.service}:${t.remote_port ?? ""} (pod ${t.target ?? ""})`;
+      return `${t.listen} → ${ns}/${t.target ?? ""}`;
+    }
     case "local":
       return `${t.listen} → ${t.target ?? ""} on ${t.host}`;
     case "remote":
@@ -53,10 +64,15 @@ export function tunnelRoute(t: Tunnel): string {
   }
 }
 
+/** tunnelPlace is what a tunnel goes through: its host, or context/namespace. */
+export function tunnelPlace(t: Tunnel): string {
+  return t.type === "k8s" ? `${t.context ?? ""}/${t.namespace ?? ""}` : t.host;
+}
+
 /** TunnelForm is the "New tunnel" form, as typed. */
 export interface TunnelForm {
   host: string;
-  type: Tunnel["type"];
+  type: Exclude<Tunnel["type"], "k8s">;
   localPort: string;
   remoteHost: string;
   remotePort: string;

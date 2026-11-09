@@ -32,7 +32,8 @@ func (p *Provider) list() *action.Action {
 	return &action.Action{
 		ID:      "tunnel.list",
 		Summary: "List tunnels (port forwards)",
-		Description: "List the open tunnels. Each has: id; type (local, remote, socks); host; listen (where connections " +
+		Description: "List the open tunnels. Each has: id; type (local, remote, socks through an SSH host; k8s to a pod, " +
+			"opened with k8s_port_forward, with context, namespace, pod or service and remote_port); host; listen (where connections " +
 			"enter); target (where they go; empty for socks); owner (who opened it); created_at; status (open, or " +
 			"reconnecting with error saying why); connections (open now) and total_connections; bytes_out (toward the " +
 			"target) and bytes_in; idle_minutes (closes after that long unused, 0 = never); failed_connections (connections " +
@@ -176,12 +177,14 @@ func (p *Provider) close() *action.Action {
 			if !ok {
 				return action.Assessment{}, fmt.Errorf("%w: %s", tunnel.ErrNotFound, in.ID)
 			}
-			t := action.Target{Kind: "host", ID: tn.Host}
-			if h, err := p.Hosts.Get(tn.Host); err == nil {
+			t, where := action.Target{Kind: "host", ID: tn.Host}, tn.Host
+			if tn.Type == tunnel.K8s && p.Tunnels.Pods != nil {
+				t, where = p.Tunnels.Pods.Target(tn.Context, tn.Namespace), tn.Context+"/"+tn.Namespace+"/"+tn.Target
+			} else if h, err := p.Hosts.Get(tn.Host); err == nil {
 				t.Tags = h.Tags
 			}
 			return action.Assessment{Risk: action.Write, Targets: []action.Target{t},
-				Preview: fmt.Sprintf("close %s tunnel %s on %s (opened by %s)", tn.Type, tn.ID, tn.Host, tn.Owner)}, nil
+				Preview: fmt.Sprintf("close %s tunnel %s on %s (opened by %s)", tn.Type, tn.ID, where, tn.Owner)}, nil
 		},
 		Run: func(ctx context.Context, raw json.RawMessage) (any, error) {
 			var in idInput

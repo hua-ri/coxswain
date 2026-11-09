@@ -2,8 +2,10 @@ package k8stest
 
 import (
 	"context"
+	"io"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/client-go/dynamic"
+	"net"
 	"strings"
 	"sync"
 
@@ -68,6 +70,7 @@ type Fake struct {
 	Discovery *fakediscovery.FakeDiscovery
 	ExecCalls *FakeExec
 	Applies   *FakeApplier
+	Forwards  *FakeForwarder
 }
 
 // NewFake returns a fake client for context name with objs.
@@ -82,9 +85,11 @@ func NewFake(name string, objs ...runtime.Object) *Fake {
 	}, objs...)
 	exec := &FakeExec{}
 	apply := &FakeApplier{Dynamic: dyn}
+	fwd := &FakeForwarder{}
 	return &Fake{
-		Client: &k8s.Client{Context: name, Typed: typed, Dynamic: dyn, Resources: k8s.NewResolver(disc), Exec: exec, Apply: apply},
-		Typed:  typed, Dynamic: dyn, Discovery: disc, ExecCalls: exec, Applies: apply,
+		Client: &k8s.Client{Context: name, Typed: typed, Dynamic: dyn, Resources: k8s.NewResolver(disc), Exec: exec, Apply: apply,
+			Forward: fwd},
+		Typed: typed, Dynamic: dyn, Discovery: disc, ExecCalls: exec, Applies: apply, Forwards: fwd,
 	}
 }
 
@@ -206,4 +211,66 @@ func merge(dst, src map[string]any) {
 		}
 		dst[k] = v
 	}
+}
+
+// FakeForwarder imitates port-forwarding: each connection is a pipe to
+// Serve (default: echo).
+type FakeForwarder struct {
+	// Serve answers one connection to port of pod.
+	Serve func(pod string, port int, c net.Conn)
+
+	mu       sync.Mutex
+	calls    []string // namespace/pod
+	sessions []*fakeSession
+}
+
+func (f *FakeForwarder) Forward(_ context.Context, namespace, pod string) (k8s.ForwardSession, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, namespace+"/"+pod)
+	s := &fakeSession{f: f, pod: pod, done: make(chan struct{})}
+	f.sessions = append(f.sessions, s)
+	return s, nil
+}
+
+// Calls returns namespace/pod of every session opened.
+func (f *FakeForwarder) Calls() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.calls...)
+}
+
+// Drop ends every session, like a broken connection.
+func (f *FakeForwarder) Drop() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, s := range f.sessions {
+		s.Close()
+	}
+}
+
+type fakeSession struct {
+	f    *FakeForwarder
+	pod  string
+	once sync.Once
+	done chan struct{}
+}
+
+func (s *fakeSession) Dial(port int, onError func(error)) (net.Conn, error) {
+	a, b := net.Pipe()
+	s.f.mu.Lock()
+	serve := s.f.Serve
+	s.f.mu.Unlock()
+	if serve == nil {
+		serve = func(_ string, _ int, c net.Conn) { io.Copy(c, c); c.Close() }
+	}
+	go serve(s.pod, port, b)
+	return a, nil
+}
+
+func (s *fakeSession) Done() <-chan struct{} { return s.done }
+
+func (s *fakeSession) Close() error {
+	s.once.Do(func() { close(s.done) })
+	return nil
 }

@@ -39,6 +39,7 @@ type Client struct {
 	Resources *Resolver
 	Exec      Executor
 	Apply     Applier
+	Forward   Forwarder
 }
 
 // Connect builds a Client for a context's rest.Config: API requests get
@@ -64,6 +65,7 @@ func Connect(name string, rc *rest.Config) (*Client, error) {
 		Resources: NewResolver(typed.Discovery()),
 		Exec:      &RemoteExecutor{Config: stream},
 		Apply:     &DynamicApplier{Dynamic: dyn},
+		Forward:   &SPDYForwarder{Config: stream},
 	}, nil
 }
 

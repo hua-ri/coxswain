@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AuditEvent } from "./cox";
-import { failureText, tunnelRequest, tunnelRoute, tunnelsReducer, type Tunnel, type TunnelForm } from "./tunnels";
+import { failureText, tunnelPlace, tunnelRequest, tunnelRoute, tunnelsReducer, type Tunnel, type TunnelForm } from "./tunnels";
 
 const kimi = { kind: "agent" as const, name: "kimi" };
 
@@ -86,5 +86,17 @@ describe("tunnelRoute", () => {
     expect(tunnelRoute(tun({ type: "socks", listen: "127.0.0.1:1080", target: undefined }))).toBe(
       "SOCKS5 127.0.0.1:1080 → via dev",
     );
+  });
+
+  it("describes k8s tunnels as context/namespace/pod:port", () => {
+    const k8s = { type: "k8s" as const, host: "", context: "kind-test", namespace: "shop", pod: "web-1", remote_port: 8080 };
+    expect(tunnelRoute(tun({ ...k8s, listen: "127.0.0.1:5000", target: "web-1:8080" }))).toBe(
+      "127.0.0.1:5000 → kind-test/shop/web-1:8080",
+    );
+    expect(tunnelRoute(tun({ ...k8s, service: "web", listen: "127.0.0.1:5000", target: "web-1:8080", remote_port: 80 }))).toBe(
+      "127.0.0.1:5000 → kind-test/shop/service web:80 (pod web-1:8080)",
+    );
+    expect(tunnelPlace(tun({ ...k8s, listen: "127.0.0.1:5000" }))).toBe("kind-test/shop");
+    expect(tunnelPlace(tun())).toBe("dev");
   });
 });

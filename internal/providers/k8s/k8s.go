@@ -14,6 +14,7 @@ import (
 	"github.com/hua-ri/coxswain/internal/inventory"
 	kube "github.com/hua-ri/coxswain/internal/k8s"
 	"github.com/hua-ri/coxswain/internal/shaper"
+	"github.com/hua-ri/coxswain/internal/tunnel"
 	"k8s.io/client-go/dynamic"
 )
 
@@ -26,6 +27,7 @@ var humanLimits = shaper.Limits{MaxBytes: captureLimit, MaxLines: 1 << 30}
 type Provider struct {
 	Clusters  *kube.Clusters
 	Hosts     *inventory.Store // for k8s.node_host
+	Tunnels   *tunnel.Manager  // for k8s.port_forward; nil outside cox server
 	Artifacts *shaper.Artifacts
 	Now       func() time.Time // tests
 }
@@ -45,6 +47,7 @@ func (p *Provider) Register(r *action.Registry) {
 	r.Register(p.rollout())
 	r.Register(p.diagnose())
 	r.Register(p.nodeHost())
+	r.Register(p.portForward())
 }
 
 func (p *Provider) now() time.Time {

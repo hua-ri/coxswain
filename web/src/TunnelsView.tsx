@@ -11,7 +11,7 @@ interface Props {
   onCreate(body: Record<string, unknown>): Promise<void>;
 }
 
-const HELP: Record<Tunnel["type"], string> = {
+const HELP: Record<TunnelForm["type"], string> = {
   local: "Like ssh -L: a port here leads to host:port as seen from the server (default 127.0.0.1, the server itself).",
   remote: "Like ssh -R: a port on the server leads to a port here. This exposes a local service to the server.",
   socks: "Like ssh -D: a SOCKS5 proxy here whose connections leave from the server.",
@@ -71,7 +71,7 @@ export function TunnelsView({ tunnels, hosts, onClose, onCreate }: Props) {
           </label>
           <label>
             Type
-            <select value={form.type} onChange={(e) => set({ type: e.target.value as Tunnel["type"] })}>
+            <select value={form.type} onChange={(e) => set({ type: e.target.value as TunnelForm["type"] })}>
               <option value="local">local (-L)</option>
               <option value="remote">remote (-R)</option>
               <option value="socks">socks (-D)</option>

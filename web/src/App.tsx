@@ -11,7 +11,7 @@ import { TerminalView } from "./TerminalView";
 import { needsConfirm, tabTitle, tabsReducer, type Tab } from "./terminals";
 import { runningCount, transfersReducer, type Transfer, type TransferItem } from "./transfers";
 import { TransfersView } from "./TransfersView";
-import { tunnelsReducer, type Tunnel } from "./tunnels";
+import { tunnelPlace, tunnelsReducer, type Tunnel } from "./tunnels";
 import { TunnelsView } from "./TunnelsView";
 import type { ClientInfo, Host, TermSession } from "./types";
 
@@ -323,7 +323,7 @@ function Desktop({ cox }: { cox: Cox }) {
       )}
       {closingTunnel && (
         <Confirm
-          message={`${closingTunnel.owner.name} opened this tunnel (${closingTunnel.host}, ${closingTunnel.listen}). Close it? Its connections end.`}
+          message={`${closingTunnel.owner.name} opened this tunnel (${tunnelPlace(closingTunnel)}, ${closingTunnel.listen}). Close it? Its connections end.`}
           confirm="Close tunnel"
           onYes={() => closeTunnel(closingTunnel)}
           onNo={() => setClosingTunnel(null)}

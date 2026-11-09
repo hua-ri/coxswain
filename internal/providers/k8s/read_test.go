@@ -206,6 +206,7 @@ func TestAnnotations(t *testing.T) {
 		"k8s.rollout":      {Destructive: true, OpenWorld: true},
 		"k8s.diagnose":     {ReadOnly: true, Idempotent: true, OpenWorld: true},
 		"k8s.node_host":    {ReadOnly: true, Idempotent: true, OpenWorld: true},
+		"k8s.port_forward": {Destructive: true, OpenWorld: true},
 	} {
 		a, ok := f.e.Registry.Get(id)
 		if !ok {

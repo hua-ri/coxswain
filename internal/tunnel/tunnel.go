@@ -1,5 +1,6 @@
 // Package tunnel keeps the port forwards of `cox server`: local (ssh -L),
-// remote (ssh -R) and SOCKS5 (ssh -D) tunnels with an owner, traffic
+// remote (ssh -R) and SOCKS5 (ssh -D) tunnels through SSH hosts, and k8s
+// tunnels to a pod's port (kubectl port-forward), with an owner, traffic
 // counters and automatic reconnection. Every tunnel binds 127.0.0.1 only.
 package tunnel
 
@@ -48,6 +49,7 @@ const (
 	Local  = "local"  // 127.0.0.1:port here → remote_host:remote_port as seen from the host
 	Remote = "remote" // 127.0.0.1:port on the host → 127.0.0.1:local_port here
 	Socks  = "socks"  // SOCKS5 proxy on 127.0.0.1:port here; connections leave from the host
+	K8s    = "k8s"    // 127.0.0.1:port here → remote_port of a pod (or of a ready pod of a service)
 )
 
 // Statuses.
@@ -62,8 +64,14 @@ const DefaultAgentIdle = 30
 
 // Spec is what to open.
 type Spec struct {
-	Host       string `json:"host"`
-	Type       string `json:"type"`
+	Host string `json:"host,omitempty"` // SSH tunnels
+	Type string `json:"type"`
+	// k8s tunnels: a pod, or a service (one of its ready pods), in a
+	// namespace of a kubeconfig context.
+	Context    string `json:"context,omitempty"`
+	Namespace  string `json:"namespace,omitempty"`
+	Pod        string `json:"pod,omitempty"`
+	Service    string `json:"service,omitempty"`
 	LocalPort  int    `json:"local_port,omitempty"`
 	RemoteHost string `json:"remote_host,omitempty"`
 	RemotePort int    `json:"remote_port,omitempty"`
@@ -76,7 +84,14 @@ type Spec struct {
 type Tunnel struct {
 	ID   string `json:"id"`
 	Type string `json:"type"`
-	Host string `json:"host"`
+	Host string `json:"host"` // SSH tunnels
+	// k8s tunnels: where they lead. Pod is the pod connections go to now
+	// (for a service, the one it was resolved to on the last connect).
+	Context    string `json:"context,omitempty"`
+	Namespace  string `json:"namespace,omitempty"`
+	Pod        string `json:"pod,omitempty"`
+	Service    string `json:"service,omitempty"`
+	RemotePort int    `json:"remote_port,omitempty"`
 	// Listen is where connections enter: 127.0.0.1:port on this machine
 	// (local, socks) or on the host (remote).
 	Listen string `json:"listen"`
@@ -100,6 +115,37 @@ type Tunnel struct {
 	LastErrorAt       *time.Time `json:"last_error_at,omitempty"`
 }
 
+// PodDialer connects k8s tunnels.
+type PodDialer interface {
+	// Connect resolves spec's target (its pod, or a ready pod of its
+	// service) and opens a port-forward session to it. failed is called
+	// for connections the pod refuses after they were opened.
+	Connect(ctx context.Context, spec Spec, failed func(error)) (PodConn, error)
+	// Target is the audit target of a namespace of a context.
+	Target(context, namespace string) action.Target
+}
+
+// PodConn is a port-forward session to one pod.
+type PodConn interface {
+	Pod() string // the pod
+	Port() int   // the pod's port connections go to
+	Dial() (net.Conn, error)
+	Wait() error // returns when the session ends
+	Close() error
+}
+
+// upstream is what a tunnel's connections go through: an SSH connection
+// or a port-forward session.
+type upstream interface {
+	Dial(network, addr string) (net.Conn, error)
+	Wait() error
+	Close() error
+}
+
+type podUpstream struct{ PodConn }
+
+func (p podUpstream) Dial(string, string) (net.Conn, error) { return p.PodConn.Dial() }
+
 // failEvery is the least time between two tunnel.connection_failed
 // events of one tunnel.
 const failEvery = 10 * time.Second
@@ -109,6 +155,7 @@ const failEvery = 10 * time.Second
 type Manager struct {
 	Hosts  *inventory.Store
 	Dialer *sshx.Dialer
+	Pods   PodDialer     // k8s tunnels; nil disables them
 	Events *eventlog.Log // tunnel.* events; may be nil
 	// Backoff is the wait before reconnect attempt n (from 0); default
 	// 1s doubling up to 1 minute.
@@ -184,8 +231,12 @@ func (m *Manager) Open(ctx context.Context, spec Spec, owner action.Actor) (Tunn
 	if err != nil {
 		return Tunnel{}, err
 	}
-	h, err := m.Hosts.Get(spec.Host)
-	if err != nil {
+	var h inventory.Host
+	if spec.Type == K8s {
+		if m.Pods == nil {
+			return Tunnel{}, fmt.Errorf("%w: Kubernetes tunnels are not available", ErrNotAllowed)
+		}
+	} else if h, err = m.Hosts.Get(spec.Host); err != nil {
 		return Tunnel{}, err
 	}
 	release, err := m.reserve(owner)
@@ -202,19 +253,23 @@ func (m *Manager) Open(ctx context.Context, spec Spec, owner action.Actor) (Tunn
 	if err != nil {
 		return Tunnel{}, err
 	}
-	conn, err := m.Dialer.Dial(ctx, h)
-	if err != nil {
-		return Tunnel{}, err
-	}
 	t := &tunnel{
-		m: m, host: h, spec: spec, conn: conn,
+		m: m, host: h, spec: spec,
 		closing: make(chan struct{}), done: make(chan struct{}), active: map[net.Conn]struct{}{},
 		info: Tunnel{ID: id, Type: spec.Type, Host: h.Name, Target: target, Owner: owner,
 			CreatedAt: time.Now().UTC(), Status: Open, IdleMinutes: idle},
 	}
+	if spec.Type == K8s {
+		t.info.Context, t.info.Namespace, t.info.Service, t.info.RemotePort = spec.Context, spec.Namespace, spec.Service, spec.RemotePort
+	}
+	conn, err := t.dial(ctx)
+	if err != nil {
+		return Tunnel{}, err
+	}
+	t.conn = conn
 	switch spec.Type {
 	case Remote:
-		ln, err := conn.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(spec.RemotePort)))
+		ln, err := conn.(*sshx.Conn).Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(spec.RemotePort)))
 		if err != nil {
 			conn.Close()
 			return Tunnel{}, fmt.Errorf("%w on %s at 127.0.0.1:%d: %v", ErrListen, h.Name, spec.RemotePort, err)
@@ -289,6 +344,13 @@ func check(s *Spec, owner action.Actor, serverPort int) (int, string, error) {
 			return bad("an agent's tunnel must close after %d..%d idle minutes", minAgentIdle, maxAgentIdle)
 		}
 	}
+	k8s := s.Context != "" || s.Namespace != "" || s.Pod != "" || s.Service != ""
+	switch {
+	case s.Type == K8s && (s.Host != "" || s.RemoteHost != ""):
+		return bad("a k8s tunnel takes context, namespace and pod or service, not host or remote_host")
+	case s.Type != K8s && k8s:
+		return bad("context, namespace, pod and service are for k8s tunnels")
+	}
 	notAllowed := func(why string) (int, string, error) {
 		return 0, "", fmt.Errorf("%w: %s", ErrNotAllowed, why)
 	}
@@ -326,8 +388,22 @@ func check(s *Spec, owner action.Actor, serverPort int) (int, string, error) {
 		if s.RemotePort != 0 || s.RemoteHost != "" {
 			return bad("a socks tunnel takes no remote_host or remote_port")
 		}
+	case K8s:
+		switch {
+		case s.Context == "" || s.Namespace == "":
+			return bad("a k8s tunnel needs context and namespace")
+		case (s.Pod == "") == (s.Service == ""):
+			return bad("a k8s tunnel needs either pod or service")
+		case s.RemotePort == 0:
+			return bad("a k8s tunnel needs remote_port")
+		}
+		name := s.Pod
+		if name == "" {
+			name = "service/" + s.Service
+		}
+		target = fmt.Sprintf("%s:%d", name, s.RemotePort)
 	default:
-		return bad("type must be local, remote or socks, not %q", s.Type)
+		return bad("type must be local, remote, socks or k8s, not %q", s.Type)
 	}
 	return idle, target, nil
 }
@@ -418,8 +494,7 @@ func (m *Manager) log(typ string, t *tunnel, edit func(*eventlog.Event)) {
 	info := t.snapshot()
 	owner := info.Owner
 	detail, _ := json.Marshal(info)
-	ev := eventlog.Event{Type: typ, Actor: &owner, Tunnel: info.ID, Detail: detail,
-		Targets: []action.Target{{Kind: "host", ID: t.host.Name, Tags: t.host.Tags}}}
+	ev := eventlog.Event{Type: typ, Actor: &owner, Tunnel: info.ID, Detail: detail, Targets: []action.Target{t.target()}}
 	if edit != nil {
 		edit(&ev)
 	}
@@ -490,7 +565,7 @@ type tunnel struct {
 
 	mu       sync.Mutex
 	info     Tunnel
-	conn     *sshx.Conn            // nil while reconnecting
+	conn     upstream              // nil while reconnecting
 	rln      net.Listener          // remote: the forward on the current connection
 	active   map[net.Conn]struct{} // incoming connections
 	targets  map[net.Conn]struct{} // their outgoing connections
@@ -572,7 +647,31 @@ func (t *tunnel) untrack(c net.Conn) {
 	t.mu.Unlock()
 }
 
-func (t *tunnel) current() *sshx.Conn {
+// target is the tunnel's audit target: its host, or its namespace.
+func (t *tunnel) target() action.Target {
+	if t.spec.Type == K8s {
+		return t.m.Pods.Target(t.spec.Context, t.spec.Namespace)
+	}
+	return action.Target{Kind: "host", ID: t.host.Name, Tags: t.host.Tags}
+}
+
+// dial opens the tunnel's upstream: an SSH connection to its host, or a
+// port-forward session (resolving a service to a ready pod again).
+func (t *tunnel) dial(ctx context.Context) (upstream, error) {
+	if t.spec.Type != K8s {
+		return t.m.Dialer.Dial(ctx, t.host)
+	}
+	pc, err := t.m.Pods.Connect(ctx, t.spec, t.fail)
+	if err != nil {
+		return nil, err
+	}
+	t.mu.Lock()
+	t.info.Pod, t.info.Target = pc.Pod(), fmt.Sprintf("%s:%d", pc.Pod(), pc.Port())
+	t.mu.Unlock()
+	return podUpstream{pc}, nil
+}
+
+func (t *tunnel) current() upstream {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.conn
@@ -601,7 +700,9 @@ func (t *tunnel) acceptLocal() {
 }
 
 func (t *tunnel) serveLocal(c net.Conn) {
+	t.mu.Lock()
 	target := t.info.Target
+	t.mu.Unlock()
 	if t.spec.Type == Socks {
 		var err error
 		if target, err = socksHandshake(c); err != nil {
@@ -613,7 +714,11 @@ func (t *tunnel) serveLocal(c net.Conn) {
 		if t.spec.Type == Socks {
 			socksReply(c, socksGeneralFailure)
 		}
-		t.fail(errors.New("the SSH connection is down (reconnecting)"))
+		if t.spec.Type == K8s {
+			t.fail(errors.New("the port-forward connection is down (reconnecting)"))
+		} else {
+			t.fail(errors.New("the SSH connection is down (reconnecting)"))
+		}
 		return
 	}
 	up, err := conn.Dial("tcp", target)
@@ -763,10 +868,10 @@ func (t *tunnel) reconnect() bool {
 			return false
 		case <-time.After(t.m.backoff(attempt)):
 		}
-		conn, err := t.m.Dialer.Dial(ctx, t.host)
+		conn, err := t.dial(ctx)
 		var rln net.Listener
 		if err == nil && t.spec.Type == Remote {
-			rln, err = conn.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(t.remotePort)))
+			rln, err = conn.(*sshx.Conn).Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(t.remotePort)))
 			if err != nil {
 				conn.Close()
 			}

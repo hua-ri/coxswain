@@ -186,3 +186,60 @@ func TestCloseOwnership(t *testing.T) {
 	mustOK(t, invoke(t, e, other, "tunnel.close", map[string]any{"id": codexs.ID}))
 	mustOK(t, invoke(t, e, desktop, "tunnel.close", map[string]any{"id": mine.ID}))
 }
+
+// podDialer connects k8s tunnels to an echo "pod".
+type podDialer struct{}
+
+func (podDialer) Connect(_ context.Context, spec tunnel.Spec, _ func(error)) (tunnel.PodConn, error) {
+	return &podConn{pod: spec.Pod, done: make(chan struct{})}, nil
+}
+
+func (podDialer) Target(ctx, ns string) action.Target {
+	return action.Target{Kind: "k8s", ID: "k8s:" + ctx + "/" + ns, Tags: map[string]string{"env": "prod"}}
+}
+
+type podConn struct {
+	pod  string
+	done chan struct{}
+}
+
+func (c *podConn) Pod() string { return c.pod }
+func (c *podConn) Port() int   { return 80 }
+func (c *podConn) Dial() (net.Conn, error) {
+	a, b := net.Pipe()
+	go func() { io.Copy(b, b); b.Close() }()
+	return a, nil
+}
+func (c *podConn) Wait() error  { <-c.done; return nil }
+func (c *podConn) Close() error { close(c.done); return nil }
+
+// TestCloseK8sTunnel: a k8s tunnel is listed and closed like the others;
+// its audit target is the namespace with the context's tags.
+func TestCloseK8sTunnel(t *testing.T) {
+	e, m := setup(t)
+	m.Pods = podDialer{}
+	tn, err := m.Open(context.Background(), tunnel.Spec{Type: tunnel.K8s, Context: "prod", Namespace: "shop", Pod: "web-1", RemotePort: 80},
+		action.Actor{Kind: action.Agent, Name: "codex"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	list := mustOK(t, invoke(t, e, kimi, "tunnel.list", map[string]any{})).([]tunnel.Tunnel)
+	if len(list) != 1 || list[0].Pod != "web-1" || list[0].Context != "prod" {
+		t.Fatalf("%+v", list)
+	}
+	if out := invoke(t, e, kimi, "tunnel.close", map[string]any{"id": tn.ID}); out.Status != engine.StatusError {
+		t.Fatalf("kimi closed codex's tunnel: %+v", out)
+	}
+	mustOK(t, invoke(t, e, codex, "tunnel.close", map[string]any{"id": tn.ID}))
+	evs, _ := e.Events.Read(time.Now())
+	var found bool
+	for _, ev := range evs {
+		if ev.Type == eventlog.ActionRequested && ev.Action == "tunnel.close" && ev.Actor.Name == "codex" {
+			found = len(ev.Targets) == 1 && ev.Targets[0].ID == "k8s:prod/shop" && ev.Targets[0].Tags["env"] == "prod" &&
+				strings.Contains(string(ev.Args), tn.ID)
+		}
+	}
+	if !found {
+		t.Fatalf("audit: %+v", evs)
+	}
+}
