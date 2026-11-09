@@ -17,6 +17,7 @@ import (
 	"github.com/hua-ri/coxswain/internal/clients"
 	"github.com/hua-ri/coxswain/internal/eventlog"
 	"github.com/hua-ri/coxswain/internal/instance"
+	"github.com/hua-ri/coxswain/internal/k8s/k8stest"
 	"github.com/hua-ri/coxswain/internal/sshx/sshtest"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -29,20 +30,44 @@ func TestMain(m *testing.M) {
 		panic(err)
 	}
 	coxBin = filepath.Join(dir, "cox")
+	// Red line: nothing here may read the user's kubeconfig. (HOME stays:
+	// go build needs it; each sandbox has its own HOME and KUBECONFIG.)
+	os.Setenv("KUBECONFIG", filepath.Join(dir, "no-kubeconfig"))
+	violations := k8stest.InstallGuard()
 	if out, err := exec.Command("go", "build", "-ldflags", "-X main.agentAncestors=off", "-o", coxBin, ".").CombinedOutput(); err != nil {
 		panic(string(out))
 	}
 	code := m.Run()
 	os.RemoveAll(dir)
+	if v := violations(); len(v) > 0 {
+		fmt.Fprintf(os.Stderr, "red line: tests tried to read the real kubeconfig: %v\n", v)
+		code = 1
+	}
 	os.Exit(code)
 }
 
 // sandbox is an isolated HOME with ~/.ssh/config and known_hosts for an
 // sshtest server, with prod and dev aliases pointing at it.
 type sandbox struct {
-	env     []string
-	coxHome string
+	env        []string
+	coxHome    string
+	kubeconfig string
 }
+
+// sandboxKubeconfig has one context on a cluster nothing listens on.
+const sandboxKubeconfig = `apiVersion: v1
+kind: Config
+current-context: kind-test
+clusters:
+- name: kind-test
+  cluster: {server: "https://127.0.0.1:1"}
+users:
+- name: kind-test
+  user: {token: t}
+contexts:
+- name: kind-test
+  context: {cluster: kind-test, user: kind-test, namespace: apps}
+`
 
 func newSandbox(t *testing.T, srv *sshtest.Server) sandbox {
 	home := t.TempDir()
@@ -56,8 +81,12 @@ func newSandbox(t *testing.T, srv *sshtest.Server) sandbox {
 	}
 	os.WriteFile(filepath.Join(sshDir, "config"), []byte(cfg), 0o600)
 	coxHome := filepath.Join(home, ".coxswain")
-	env := append(os.Environ(), "HOME="+home, "COX_HOME="+coxHome, "SSH_AUTH_SOCK=", "COX_NO_DIALOG=1")
-	return sandbox{env: env, coxHome: coxHome}
+	kubeconfig := filepath.Join(home, ".kube", "config")
+	k8stest.Guard(t, kubeconfig)
+	os.MkdirAll(filepath.Dir(kubeconfig), 0o700)
+	os.WriteFile(kubeconfig, []byte(sandboxKubeconfig), 0o600)
+	env := append(os.Environ(), "HOME="+home, "COX_HOME="+coxHome, "SSH_AUTH_SOCK=", "COX_NO_DIALOG=1", "KUBECONFIG="+kubeconfig)
+	return sandbox{env: env, coxHome: coxHome, kubeconfig: kubeconfig}
 }
 
 // trust allows client names, as if the user had clicked Allow.
@@ -272,6 +301,23 @@ func TestEndToEnd(t *testing.T) {
 	}
 	if out, code := s.cox(t, "ssh", "hosts", "list"); code != 0 || !strings.Contains(out, `"env": "prod"`) {
 		t.Fatalf("list: %d %s", code, out)
+	}
+
+	// Kubernetes contexts come from the sandbox's kubeconfig, which stays
+	// as it was; tags go to clusters.json.
+	kubeconfig, _ := os.ReadFile(s.kubeconfig)
+	if out, code := s.cox(t, "k8s", "contexts"); code != 0 || !strings.Contains(out, `"name": "kind-test"`) ||
+		!strings.Contains(out, `"namespace": "apps"`) {
+		t.Fatalf("k8s contexts: %d %s", code, out)
+	}
+	if out, code := s.cox(t, "k8s", "contexts", "tag", "kind-test", "--set", "env=prod", "--note", "staging copy"); code != 0 {
+		t.Fatalf("k8s contexts tag: %d %s", code, out)
+	}
+	if b, err := os.ReadFile(filepath.Join(s.coxHome, "clusters.json")); err != nil || !strings.Contains(string(b), "staging copy") {
+		t.Fatalf("clusters.json: %s %v", b, err)
+	}
+	if after, _ := os.ReadFile(s.kubeconfig); string(after) != string(kubeconfig) {
+		t.Fatal("the kubeconfig changed")
 	}
 
 	// A pre-trusted agent over `cox mcp`.

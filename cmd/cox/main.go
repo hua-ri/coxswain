@@ -23,8 +23,10 @@ import (
 	"github.com/hua-ri/coxswain/internal/eventlog"
 	"github.com/hua-ri/coxswain/internal/instance"
 	"github.com/hua-ri/coxswain/internal/inventory"
+	"github.com/hua-ri/coxswain/internal/k8s"
 	"github.com/hua-ri/coxswain/internal/providers/artifact"
 	"github.com/hua-ri/coxswain/internal/providers/file"
+	k8sprov "github.com/hua-ri/coxswain/internal/providers/k8s"
 	sshprov "github.com/hua-ri/coxswain/internal/providers/ssh"
 	"github.com/hua-ri/coxswain/internal/providers/terminal"
 	tunnelprov "github.com/hua-ri/coxswain/internal/providers/tunnels"
@@ -73,6 +75,7 @@ func run() int {
 			"ssh.batch":     cli.PrintAs[sshprov.BatchOutput],
 			"terminal.read": cli.PrintAs[terminal.ReadOutput],
 			"file.read":     cli.PrintAs[file.ReadOutput],
+			"k8s.get":       cli.PrintAs[k8sprov.GetOutput],
 		},
 		Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr,
 	}
@@ -150,6 +153,7 @@ type services struct {
 	Terminals *term.Manager
 	Transfers *transfer.Manager
 	Tunnels   *tunnel.Manager
+	Clusters  *k8s.Clusters
 }
 
 // newEngine builds the engine with every provider, and the terminal
@@ -180,5 +184,13 @@ func newEngine(coxHome, userHome string, pool func(*sshx.Dialer) *sshx.Pool) ser
 		CoxHome: coxHome, UserHome: userHome}).Register(reg)
 	tunnels := &tunnel.Manager{Hosts: hosts, Dialer: dialer, Events: events}
 	(&tunnelprov.Provider{Hosts: hosts, Tunnels: tunnels}).Register(reg)
-	return services{Engine: &engine.Engine{Registry: reg, Events: events}, Terminals: terms, Transfers: transfers, Tunnels: tunnels}
+	// The kubeconfig is read on first use (never at startup, never
+	// written); tags and notes for its contexts are Coxswain's own.
+	clusters := &k8s.Clusters{
+		Kubeconfig: k8s.NewKubeconfig(k8s.DefaultPaths(os.Getenv("KUBECONFIG"), userHome)),
+		Meta:       k8s.NewMetaStore(filepath.Join(coxHome, "clusters.json")),
+	}
+	(&k8sprov.Provider{Clusters: clusters, Hosts: hosts, Artifacts: artifacts}).Register(reg)
+	return services{Engine: &engine.Engine{Registry: reg, Events: events}, Terminals: terms, Transfers: transfers, Tunnels: tunnels,
+		Clusters: clusters}
 }
