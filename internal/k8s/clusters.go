@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
+	"net"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"sync"
@@ -74,14 +77,21 @@ func Connect(name string, rc *rest.Config) (*Client, error) {
 
 // ContextInfo describes one kubeconfig context for people and agents.
 type ContextInfo struct {
-	Name      string            `json:"name"`
-	Cluster   string            `json:"cluster"`
-	Server    string            `json:"server,omitempty"`
-	User      string            `json:"user,omitempty"`
-	Namespace string            `json:"namespace"`
-	Current   bool              `json:"current,omitempty"`
-	Tags      map[string]string `json:"tags,omitempty"`
-	Note      string            `json:"note,omitempty"`
+	Name      string `json:"name"`
+	Cluster   string `json:"cluster"`
+	Server    string `json:"server,omitempty"`
+	User      string `json:"user,omitempty"`
+	Namespace string `json:"namespace"`
+	Current   bool   `json:"current,omitempty"`
+	// Tags and Note are what applies to the context: its own, plus those
+	// of every tagged context on the same cluster server (an alias cannot
+	// shed env=prod).
+	Tags map[string]string `json:"tags,omitempty"`
+	Note string            `json:"note,omitempty"`
+	// InheritedFrom names the contexts on the same server whose tags or
+	// note apply too; OwnTags are the context's own tags if they differ.
+	InheritedFrom []string          `json:"inherited_from,omitempty"`
+	OwnTags       map[string]string `json:"own_tags,omitempty"`
 }
 
 // Clusters are the kubeconfig's contexts and a cached client for each.
@@ -112,7 +122,7 @@ func (c *Clusters) Contexts() (string, []ContextInfo, error) {
 	}
 	out := make([]ContextInfo, 0, len(cfg.Contexts))
 	for name := range cfg.Contexts {
-		out = append(out, info(cfg, name, meta[name]))
+		out = append(out, effective(cfg, meta, name))
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return cfg.CurrentContext, out, nil
@@ -127,11 +137,77 @@ func (c *Clusters) Context(name string) (ContextInfo, error) {
 	if _, ok := cfg.Contexts[name]; !ok {
 		return ContextInfo{}, noContext(name)
 	}
-	meta, err := c.Meta.Get(name)
+	meta, err := c.Meta.All()
 	if err != nil {
 		return ContextInfo{}, err
 	}
-	return info(cfg, name, meta), nil
+	return effective(cfg, meta, name), nil
+}
+
+// serverKey normalises a cluster server URL for comparison.
+func serverKey(server string) string {
+	u, err := url.Parse(strings.TrimSpace(server))
+	if err != nil || u.Host == "" {
+		return strings.ToLower(strings.TrimRight(server, "/"))
+	}
+	scheme, host, port := strings.ToLower(u.Scheme), strings.ToLower(u.Hostname()), u.Port()
+	if port == "" {
+		port = map[string]string{"https": "443", "http": "80"}[scheme]
+	}
+	return scheme + "://" + net.JoinHostPort(host, port) + strings.TrimRight(u.EscapedPath(), "/")
+}
+
+func isProd(v string) bool {
+	v = strings.ToLower(v)
+	return v == "prod" || v == "production"
+}
+
+// effective is a context with the tags and notes that apply to it: its
+// own, plus those of the other contexts on the same cluster server. A
+// production env tag always wins.
+func effective(cfg *clientcmdapi.Config, meta map[string]Meta, name string) ContextInfo {
+	ci := info(cfg, name, meta[name])
+	own := meta[name]
+	tags := maps.Clone(own.Tags)
+	notes := []string{}
+	if own.Note != "" {
+		notes = append(notes, own.Note)
+	}
+	key := serverKey(ci.Server)
+	var others []string
+	for other := range cfg.Contexts {
+		if other == name || ci.Server == "" {
+			continue
+		}
+		m := meta[other]
+		if len(m.Tags) == 0 && m.Note == "" {
+			continue
+		}
+		if cl := cfg.Clusters[cfg.Contexts[other].Cluster]; cl != nil && serverKey(cl.Server) == key {
+			others = append(others, other)
+		}
+	}
+	sort.Strings(others)
+	for _, other := range others {
+		m := meta[other]
+		for k, v := range m.Tags {
+			if tags == nil {
+				tags = map[string]string{}
+			}
+			if _, ok := tags[k]; !ok || (k == "env" && isProd(v) && !isProd(tags[k])) {
+				tags[k] = v
+			}
+		}
+		if m.Note != "" {
+			notes = append(notes, m.Note+" (from "+other+")")
+		}
+		ci.InheritedFrom = append(ci.InheritedFrom, other)
+	}
+	ci.Tags, ci.Note = tags, strings.Join(notes, "; ")
+	if len(others) > 0 && len(own.Tags) > 0 && !maps.Equal(own.Tags, tags) {
+		ci.OwnTags = own.Tags
+	}
+	return ci
 }
 
 func noContext(name string) error {
@@ -159,8 +235,12 @@ func (c *Clusters) Target(context, namespace string) action.Target {
 	if namespace != "" {
 		id += "/" + namespace
 	}
-	meta, _ := c.Meta.Get(context)
-	return action.Target{Kind: "k8s", ID: id, Tags: meta.Tags}
+	ci, err := c.Context(context)
+	if err != nil {
+		meta, _ := c.Meta.Get(context)
+		ci.Tags = meta.Tags
+	}
+	return action.Target{Kind: "k8s", ID: id, Tags: ci.Tags}
 }
 
 // Client returns the context's client, building it on first use. Clients

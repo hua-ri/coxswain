@@ -39,6 +39,8 @@ current-context: dev
 clusters:
 - name: c
   cluster: {server: https://127.0.0.1:1}
+- name: c2
+  cluster: {server: https://127.0.0.2:1}
 users:
 - name: u
   user: {token: t}
@@ -46,7 +48,7 @@ contexts:
 - name: dev
   context: {cluster: c, user: u}
 - name: prod
-  context: {cluster: c, user: u, namespace: shop}
+  context: {cluster: c2, user: u, namespace: shop}
 `
 
 type fixture struct {

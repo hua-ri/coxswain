@@ -527,3 +527,54 @@ exit 1
 		t.Fatalf("%v", err2)
 	}
 }
+
+// TestAliasContextsInheritTags: a context on the same cluster server as a
+// tagged one carries its tags and note, so an alias cannot shed env=prod.
+func TestAliasContextsInheritTags(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config")
+	content := twoContexts + `- name: prod-alias
+  context: {cluster: c3, user: u1}
+- name: prod-dev-tagged
+  context: {cluster: c3, user: u1}
+- name: dev-alias
+  context: {cluster: c1, user: u1}
+`
+	content = strings.Replace(content, "users:", "- name: c3\n  cluster: {server: \"HTTPS://Prod.Example:6443/\"}\nusers:", 1)
+	meta := k8s.NewMetaStore(filepath.Join(t.TempDir(), "clusters.json"))
+	meta.Update(func(m map[string]k8s.Meta) error {
+		m["prod"] = k8s.Meta{Tags: map[string]string{"env": "prod", "team": "shop"}, Note: "ask first"}
+		m["prod-dev-tagged"] = k8s.Meta{Tags: map[string]string{"env": "dev", "owner": "me"}, Note: "mine"}
+		return nil
+	})
+	cl := &k8s.Clusters{Kubeconfig: kubeconfig(t, path, content), Meta: meta}
+	_, list, err := cl.Contexts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	by := map[string]k8s.ContextInfo{}
+	for _, c := range list {
+		by[c.Name] = c
+	}
+	alias := by["prod-alias"]
+	if alias.Tags["env"] != "prod" || alias.Tags["team"] != "shop" || alias.Note != "ask first (from prod); mine (from prod-dev-tagged)" ||
+		strings.Join(alias.InheritedFrom, ",") != "prod,prod-dev-tagged" || alias.OwnTags != nil {
+		t.Fatalf("alias: %+v", alias)
+	}
+	tagged := by["prod-dev-tagged"]
+	if tagged.Tags["env"] != "prod" || tagged.Tags["owner"] != "me" || tagged.OwnTags["env"] != "dev" ||
+		!strings.Contains(tagged.Note, "mine") || !strings.Contains(tagged.Note, "ask first (from prod)") {
+		t.Fatalf("an alias's own env=dev must not win over prod: %+v", tagged)
+	}
+	if p := by["prod"]; len(p.InheritedFrom) != 1 || p.InheritedFrom[0] != "prod-dev-tagged" || p.Tags["env"] != "prod" || p.Tags["owner"] != "me" {
+		t.Fatalf("prod: %+v", p)
+	}
+	if d := by["dev-alias"]; len(d.Tags) != 0 || len(d.InheritedFrom) != 0 {
+		t.Fatalf("untagged server: %+v", d)
+	}
+	if tg := cl.Target("prod-alias", "shop"); tg.Tags["env"] != "prod" {
+		t.Fatalf("target %+v", tg)
+	}
+	if ci, _ := cl.Context("prod-alias"); ci.Tags["env"] != "prod" {
+		t.Fatalf("Context %+v", ci)
+	}
+}

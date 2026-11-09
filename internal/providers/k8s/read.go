@@ -34,6 +34,7 @@ func (p *Provider) contexts() *action.Action {
 		Summary: "List Kubernetes contexts",
 		Description: "List the contexts of the user's kubeconfig with their cluster, default namespace, tags " +
 			"(env=prod marks production) and notes. A context's note may restrict what you may do; always respect it. " +
+			"Contexts on the same cluster server share their tags and notes (inherited_from names where they come from). " +
 			"Pass the context name to every other k8s tool; do not assume the current context.",
 		Input:       map[string]any{"type": "object", "properties": map[string]any{}},
 		Annotations: action.Annotations{ReadOnly: true, Idempotent: true},
@@ -80,7 +81,10 @@ func (p *Provider) contextsTag() *action.Action {
 			if err := action.Decode(raw, &in); err != nil {
 				return action.Assessment{}, err
 			}
-			ci, err := p.Clusters.Context(in.Context)
+			if _, err := p.Clusters.Context(in.Context); err != nil {
+				return action.Assessment{}, err
+			}
+			own, err := p.Clusters.Meta.Get(in.Context)
 			if err != nil {
 				return action.Assessment{}, err
 			}
@@ -98,7 +102,7 @@ func (p *Provider) contextsTag() *action.Action {
 					risk = action.Destructive // they tell agents how careful to be
 				}
 			}
-			if in.Note != nil && *in.Note != ci.Note {
+			if in.Note != nil && *in.Note != own.Note {
 				risk = action.Destructive // the note instructs agents, like the env tag
 			}
 			preview := fmt.Sprintf("context %s: set %v, unset %v", in.Context, in.Set, in.Unset)
