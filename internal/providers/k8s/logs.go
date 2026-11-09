@@ -502,7 +502,8 @@ func (p *Provider) exec() *action.Action {
 		Description: "Run one non-interactive command in a container and return the exit code, stdout and stderr. " +
 			"command is a string (run with sh -c, needs a shell in the image) or an array of arguments. Good for " +
 			"inspection (env, cat /etc/resolv.conf, ls); do not start interactive programs; raise timeout_sec for slow " +
-			"commands. Pods with several containers need container. " + prodHint,
+			"commands. Pods with several containers need container. A command in a container can read the secrets " +
+			"mounted in it (environment variables from Secrets, the service account token): never print them. " + prodHint,
 		Input: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -528,7 +529,9 @@ func (p *Provider) exec() *action.Action {
 				if err != nil {
 					return 0, "", err
 				}
-				return policy.ClassifyCommand(line), "$ " + line, nil
+				// At least write: any command can read the pod's secrets
+				// (secretKeyRef env vars, the service account token).
+				return max(policy.ClassifyCommand(line), action.Write), "$ " + line, nil
 			})
 		},
 		Run: func(ctx context.Context, raw json.RawMessage) (any, error) {

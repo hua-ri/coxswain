@@ -198,7 +198,7 @@ func TestExec(t *testing.T) {
 		t.Fatalf("string command: %+v", res)
 	}
 	ev := f.requested(t, "k8s.exec")
-	if ev.Risk != "read" || ev.Targets[0].ID != "k8s:prod/shop" || ev.Targets[0].Tags["env"] != "prod" {
+	if ev.Risk != "write" || ev.Targets[0].ID != "k8s:prod/shop" || ev.Targets[0].Tags["env"] != "prod" {
 		t.Fatalf("audit %+v", ev)
 	}
 
@@ -207,7 +207,8 @@ func TestExec(t *testing.T) {
 		t.Fatalf("array command: %+v", res)
 	}
 
-	for cmd, risk := range map[string]string{"rm -rf /data": "destructive", "touch /tmp/x": "write", "cat /etc/hosts": "read"} {
+	// At least write: a command can read the pod's secrets (env, mounted tokens).
+	for cmd, risk := range map[string]string{"rm -rf /data": "destructive", "touch /tmp/x": "write", "cat /etc/hosts": "write", "env": "write"} {
 		f.invoke(t, codex, "k8s.exec", args("context", "prod", "pod", "web-1", "command", cmd))
 		if ev := f.requested(t, "k8s.exec"); ev.Risk != risk {
 			t.Errorf("%v: risk %s, want %s", cmd, ev.Risk, risk)

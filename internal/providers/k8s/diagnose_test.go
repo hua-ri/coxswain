@@ -201,20 +201,38 @@ func TestDiagnoseControllers(t *testing.T) {
 }
 
 func TestNodeHost(t *testing.T) {
-	n2 := node("node-2", "10.1.0.6", true)
-	f := setup(t, node("node-1", "10.1.0.5", true), n2, node("node-3", "10.1.0.7", true))
-	f.p.Hosts.Merge([]inventory.Host{{Name: "k8s-node-1", HostName: "10.1.0.5"}, {Name: "alias-node-1", HostName: "10.1.0.5"},
-		{Name: "n2", HostName: "NODE-2"}})
+	f := setup(t, node("node-1", "10.1.0.5", true), node("node-2", "10.1.0.6", true), node("node-3", "10.1.0.7", true),
+		node("node-4", "10.1.0.8", true))
+	f.p.Hosts.Merge([]inventory.Host{
+		{Name: "k8s-node-1", HostName: "10.1.0.5"}, {Name: "staging-box", HostName: "10.1.0.5"}, // same private IP elsewhere
+		{Name: "n2", HostName: "NODE-2"},
+		{Name: "n4-tagged", HostName: "bastion.example"}, {Name: "n4-ip", HostName: "10.1.0.8"},
+	})
+	f.p.Hosts.Update(func(m map[string]inventory.Host) error {
+		h := m["n4-tagged"]
+		h.Tags = map[string]string{"k8s-node": "dev/node-4"}
+		m["n4-tagged"] = h
+		h = m["staging-box"]
+		h.Tags = map[string]string{"env": "staging"}
+		m["staging-box"] = h
+		return nil
+	})
+	// Two hosts share the address: no guess, both shown, the user is asked to tag one.
 	res := f.invoke(t, codex, "k8s.node_host", args("context", "dev", "node", "node-1")).(NodeHostOutput)
-	if res.Host != "alias-node-1" || strings.Join(res.Hosts, ",") != "alias-node-1,k8s-node-1" || res.MatchedBy != "InternalIP 10.1.0.5" {
-		t.Fatalf("%+v", res)
+	if res.Host != "" || len(res.Candidates) != 2 || res.Candidates[1].Name != "staging-box" || res.Candidates[1].Tags["env"] != "staging" ||
+		res.Candidates[0].MatchedBy != "address" || !strings.Contains(res.Note, "k8s-node=dev/node-1") {
+		t.Fatalf("ambiguous: %+v", res)
 	}
 	res = f.invoke(t, codex, "k8s.node_host", args("context", "dev", "node", "node-2")).(NodeHostOutput)
-	if res.Host != "n2" || res.MatchedBy != "Hostname node-2" {
-		t.Fatalf("by hostname: %+v", res)
+	if res.Host != "n2" || res.MatchedBy != "hostname" || len(res.Candidates) != 1 {
+		t.Fatalf("single candidate: %+v", res)
+	}
+	res = f.invoke(t, codex, "k8s.node_host", args("context", "dev", "node", "node-4")).(NodeHostOutput)
+	if res.Host != "n4-tagged" || res.MatchedBy != "tag" || len(res.Candidates) != 2 {
+		t.Fatalf("explicit tag wins: %+v", res)
 	}
 	res = f.invoke(t, codex, "k8s.node_host", args("context", "dev", "node", "node-3")).(NodeHostOutput)
-	if res.Host != "" || !strings.Contains(res.Note, "10.1.0.7") {
+	if res.Host != "" || len(res.Candidates) != 0 || !strings.Contains(res.Note, "10.1.0.7") {
 		t.Fatalf("no match: %+v", res)
 	}
 	if ev := f.requested(t, "k8s.node_host"); ev.Risk != "read" || ev.Targets[0].ID != "k8s:dev" {
@@ -222,5 +240,20 @@ func TestNodeHost(t *testing.T) {
 	}
 	if out := f.e.Invoke(context.Background(), codex, "k8s.node_host", args("context", "dev", "node", "nope")); out.Status != engine.StatusError {
 		t.Fatalf("%+v", out)
+	}
+}
+
+// TestDiagnoseAmbiguousNodeHost: with two candidate hosts, diagnose
+// shows both and gives no SSH step.
+func TestDiagnoseAmbiguousNodeHost(t *testing.T) {
+	f := setup(t, crashingPod("default", "web-1"), pressured(node("node-1", "10.1.0.5", false)))
+	f.p.Hosts.Merge([]inventory.Host{{Name: "k8s-node-1", HostName: "10.1.0.5"}, {Name: "staging-box", HostName: "10.1.0.5"}})
+	d := f.invoke(t, codex, "k8s.diagnose", args("context", "dev", "kind", "pod", "name", "web-1")).(DiagnoseOutput)
+	steps := strings.Join(d.NextSteps, "\n")
+	if strings.Contains(steps, "ssh_exec") || !strings.Contains(steps, "k8s-node=dev/node-1") {
+		t.Fatalf("next steps %v", d.NextSteps)
+	}
+	if n := d.Evidence.Nodes[0]; n.SSHHost != "" || len(n.SSHCandidates) != 2 {
+		t.Fatalf("node %+v", n)
 	}
 }

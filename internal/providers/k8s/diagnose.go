@@ -49,7 +49,10 @@ type NodeEvidence struct {
 	Name     string   `json:"name"`
 	Status   string   `json:"status"`
 	Problems []string `json:"problems,omitempty"` // conditions that are not as they should be
-	SSHHost  string   `json:"ssh_host,omitempty"` // saved SSH host of the node, if any
+	// SSHHost is the node's saved SSH host: one tagged k8s-node=<context>/<node>,
+	// or the only one whose address matches. SSHCandidates are all that match.
+	SSHHost       string          `json:"ssh_host,omitempty"`
+	SSHCandidates []HostCandidate `json:"ssh_candidates,omitempty"`
 }
 
 // Evidence is the data behind the findings.
@@ -612,64 +615,111 @@ func (p *Provider) nodeRules(ctx context.Context, r resolved, d *diagnosis, name
 			d.find(warning, "Node "+name+" has "+string(c.Type), strings.TrimSpace(c.Message), ref)
 		}
 	}
-	if hosts, _, _ := p.nodeHosts(node); len(hosts) > 0 {
-		ev.SSHHost = hosts[0]
-		if len(ev.Problems) > 0 {
-			d.next(fmt.Sprintf("Look at the node itself with ssh_exec on %s (dmesg -T | tail -50, df -h, free -m, journalctl -u kubelet -n 100)", hosts[0]))
-		}
-	} else if len(ev.Problems) > 0 {
+	m, _ := p.nodeHosts(r.client.Context, node)
+	ev.SSHHost, ev.SSHCandidates = m.Host, m.Candidates
+	switch {
+	case len(ev.Problems) == 0:
+	case m.Host != "":
+		d.next(fmt.Sprintf("Look at the node itself with ssh_exec on %s (dmesg -T | tail -50, df -h, free -m, journalctl -u kubelet -n 100)", m.Host))
+	case len(m.Candidates) > 1:
+		d.next(fmt.Sprintf("Several saved SSH hosts match node %s (%s); ask the user which one it is and to tag it "+
+			"k8s-node=%s/%s before running anything on it", name, candidateNames(m.Candidates), r.client.Context, name))
+	default:
 		d.next("Look at node " + name + " (k8s_describe kind=node); k8s_node_host finds its SSH host if it is saved")
 	}
 	d.out.Evidence.Nodes = append(d.out.Evidence.Nodes, ev)
 }
 
-// nodeHosts returns the saved SSH hosts whose HostName is one of the
-// node's addresses (InternalIP, ExternalIP, Hostname) or its name, and
-// the address that matched.
-func (p *Provider) nodeHosts(node *corev1.Node) ([]string, string, error) {
+// HostCandidate is a saved SSH host that may be a node.
+type HostCandidate struct {
+	Name      string            `json:"name"`
+	MatchedBy string            `json:"matched_by"` // tag, address or hostname
+	Address   string            `json:"address,omitempty"`
+	Tags      map[string]string `json:"tags,omitempty"`
+	Note      string            `json:"note,omitempty"`
+}
+
+// hostMatch is what is known about a node's SSH host.
+type hostMatch struct {
+	Host       string // chosen: the tagged one, or the only candidate
+	MatchedBy  string
+	Candidates []HostCandidate
+}
+
+// nodeTag marks a saved SSH host as a node: k8s-node=<context>/<node>.
+const nodeTag = "k8s-node"
+
+func candidateNames(cs []HostCandidate) string {
+	names := make([]string, len(cs))
+	for i, c := range cs {
+		names[i] = c.Name
+	}
+	return strings.Join(names, ", ")
+}
+
+// nodeHosts finds a node's saved SSH host. A host tagged
+// k8s-node=<context>/<node> is the answer; otherwise hosts whose HostName
+// is one of the node's addresses (or its name) are candidates, and one is
+// chosen only if it is the only one: private addresses are reused across
+// environments, so a guess could be the wrong machine.
+func (p *Provider) nodeHosts(context string, node *corev1.Node) (hostMatch, error) {
+	var m hostMatch
 	if p.Hosts == nil {
-		return nil, "", nil
+		return m, nil
 	}
 	hosts, err := p.Hosts.List()
 	if err != nil {
-		return nil, "", err
+		return m, err
 	}
-	type addr struct{ kind, value string }
+	want := context + "/" + node.Name
+	type addr struct{ by, value string }
 	var addrs []addr
-	for _, t := range []corev1.NodeAddressType{corev1.NodeInternalIP, corev1.NodeHostName, corev1.NodeExternalIP, corev1.NodeInternalDNS, corev1.NodeExternalDNS} {
-		for _, a := range node.Status.Addresses {
-			if a.Type == t && a.Address != "" {
-				addrs = append(addrs, addr{string(t), a.Address})
-			}
+	for _, a := range node.Status.Addresses {
+		by := "hostname"
+		if a.Type == corev1.NodeInternalIP || a.Type == corev1.NodeExternalIP {
+			by = "address"
+		}
+		if a.Address != "" {
+			addrs = append(addrs, addr{by, a.Address})
 		}
 	}
-	addrs = append(addrs, addr{"name", node.Name})
-	for _, a := range addrs {
-		var names []string
-		for _, h := range hosts {
+	addrs = append(addrs, addr{"hostname", node.Name})
+	var tagged, byAddress []HostCandidate
+	for _, h := range hosts {
+		if h.Tags[nodeTag] == want {
+			tagged = append(tagged, HostCandidate{Name: h.Name, MatchedBy: "tag", Tags: h.Tags, Note: h.Note})
+			continue
+		}
+		for _, a := range addrs {
 			if strings.EqualFold(h.HostName, a.value) {
-				names = append(names, h.Name)
+				byAddress = append(byAddress, HostCandidate{Name: h.Name, MatchedBy: a.by, Address: a.value, Tags: h.Tags, Note: h.Note})
+				break
 			}
 		}
-		if len(names) > 0 {
-			sort.Strings(names)
-			return names, a.kind + " " + a.value, nil
-		}
 	}
-	return nil, "", nil
+	m.Candidates = append(tagged, byAddress...)
+	switch {
+	case len(tagged) == 1:
+		m.Host, m.MatchedBy = tagged[0].Name, "tag"
+	case len(tagged) == 0 && len(byAddress) == 1:
+		m.Host, m.MatchedBy = byAddress[0].Name, byAddress[0].MatchedBy
+	}
+	return m, nil
 }
 
 // NodeHostOutput is the result of k8s.node_host.
 type NodeHostOutput struct {
-	Context   string            `json:"context"`
-	Node      string            `json:"node"`
-	Addresses []string          `json:"addresses"` // Type=address
-	Host      string            `json:"host,omitempty"`
-	Hosts     []string          `json:"hosts,omitempty"` // every matching saved host
-	MatchedBy string            `json:"matched_by,omitempty"`
-	HostNote  string            `json:"host_note,omitempty"`
-	HostTags  map[string]string `json:"host_tags,omitempty"`
-	Note      string            `json:"note,omitempty"`
+	Context   string   `json:"context"`
+	Node      string   `json:"node"`
+	Addresses []string `json:"addresses"` // Type=address
+	// Host is the node's host: the one tagged k8s-node=<context>/<node>,
+	// or the only candidate. MatchedBy: tag, address or hostname.
+	Host       string            `json:"host,omitempty"`
+	MatchedBy  string            `json:"matched_by,omitempty"`
+	HostNote   string            `json:"host_note,omitempty"`
+	HostTags   map[string]string `json:"host_tags,omitempty"`
+	Candidates []HostCandidate   `json:"candidates"`
+	Note       string            `json:"note,omitempty"`
 }
 
 type nodeHostInput struct {
@@ -681,8 +731,10 @@ func (p *Provider) nodeHost() *action.Action {
 	return &action.Action{
 		ID:      "k8s.node_host",
 		Summary: "Find the saved SSH host of a Kubernetes node",
-		Description: "Map a node to the saved SSH host whose HostName is the node's InternalIP, Hostname or ExternalIP, so " +
-			"you can inspect the machine with ssh_exec (dmesg, df -h, journalctl -u kubelet).",
+		Description: "Find a node's saved SSH host, so you can inspect the machine with ssh_exec (dmesg, df -h, journalctl " +
+			"-u kubelet). A host tagged k8s-node=<context>/<node> is the answer; otherwise hosts whose HostName is the node's " +
+			"InternalIP, Hostname or ExternalIP are candidates, and host is set only if there is exactly one. With several " +
+			"candidates, do not guess (private addresses repeat across environments): ask the user and have them tag the host.",
 		Input: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -726,18 +778,25 @@ func (p *Provider) nodeHost() *action.Action {
 				out.Addresses = append(out.Addresses, string(a.Type)+"="+a.Address)
 				values = append(values, a.Address)
 			}
-			hosts, by, err := p.nodeHosts(node)
+			m, err := p.nodeHosts(in.Context, node)
 			if err != nil {
 				return nil, err
 			}
-			if len(hosts) == 0 {
-				out.Note = fmt.Sprintf("no saved SSH host has HostName %s; add one to ~/.ssh/config and import it "+
-					"(ssh_hosts_import), or ask the user how to reach the node", strings.Join(append(values, in.Node), ", "))
-				return out, nil
+			out.Host, out.MatchedBy, out.Candidates = m.Host, m.MatchedBy, m.Candidates
+			if out.Candidates == nil {
+				out.Candidates = []HostCandidate{}
 			}
-			out.Host, out.Hosts, out.MatchedBy = hosts[0], hosts, by
-			if h, err := p.Hosts.Get(hosts[0]); err == nil {
-				out.HostNote, out.HostTags = h.Note, h.Tags
+			switch {
+			case len(m.Candidates) == 0:
+				out.Note = fmt.Sprintf("no saved SSH host has HostName %s or the tag k8s-node=%s/%s; add one to ~/.ssh/config and "+
+					"import it (ssh_hosts_import), or ask the user how to reach the node", strings.Join(append(values, in.Node), ", "), in.Context, in.Node)
+			case m.Host == "":
+				out.Note = fmt.Sprintf("several saved SSH hosts match (%s); do not guess: ask the user which one is the node "+
+					"and to tag it (cox ssh hosts tag <host> --set k8s-node=%s/%s)", candidateNames(m.Candidates), in.Context, in.Node)
+			default:
+				if h, err := p.Hosts.Get(m.Host); err == nil {
+					out.HostNote, out.HostTags = h.Note, h.Tags
+				}
 			}
 			return out, nil
 		},
