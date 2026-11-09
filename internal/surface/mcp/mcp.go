@@ -22,7 +22,8 @@ tunnels and Kubernetes clusters.
 - Use file_list, file_stat and file_read for remote files; file_write replaces a file atomically.
   For large or binary files use file_download: the file is saved locally and you get its path.
 - tunnel_open forwards ports through a host (local, remote, socks); close your tunnels with tunnel_close when done.
-- Kubernetes: k8s_contexts lists the user's contexts with tags and notes; always pass the context. Read with
+- Kubernetes: k8s_contexts lists the user's contexts with tags and notes; always pass the context. For an unhealthy
+  pod or workload start with k8s_diagnose (k8s_node_host maps a node to its SSH host). Read with
   k8s_get, k8s_describe and k8s_events; k8s_logs for log tails, k8s_top for usage, k8s_exec for one-off commands
   in a container. Secret values are never shown. Changes: k8s_apply (run it with dry_run first and show the
   diff), k8s_delete, k8s_scale, k8s_rollout.

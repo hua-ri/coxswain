@@ -43,6 +43,8 @@ func (p *Provider) Register(r *action.Registry) {
 	r.Register(p.delete())
 	r.Register(p.scale())
 	r.Register(p.rollout())
+	r.Register(p.diagnose())
+	r.Register(p.nodeHost())
 }
 
 func (p *Provider) now() time.Time {
