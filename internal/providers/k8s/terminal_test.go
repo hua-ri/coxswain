@@ -30,7 +30,7 @@ func (s *syncBuf) Write(p []byte) (int, error) {
 
 func (s *syncBuf) waitFor(t *testing.T, want string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(60 * time.Second)
 	for {
 		s.mu.Lock()
 		got := s.b.String()

@@ -439,7 +439,7 @@ contexts:
   context: {cluster: fake, user: exec}
 `, server, ca, plugin)
 	cl := &k8s.Clusters{Kubeconfig: kubeconfig(t, filepath.Join(dir, "config"), content), Meta: k8s.NewMetaStore(filepath.Join(dir, "m.json")),
-		CredentialTimeout: 500 * time.Millisecond}
+		CredentialTimeout: 30 * time.Second} // tests that want the timeout fire it by hand
 	return cl, dir
 }
 
@@ -458,7 +458,6 @@ n=$(( $(cat "$(dirname "$0")/runs" 2>/dev/null || echo 0) + 1 ))
 echo $n > "$(dirname "$0")/runs"
 echo '`+credential+`'
 `)
-	cl.CredentialTimeout = 10 * time.Second
 	c, err := cl.Client("exec")
 	if err != nil {
 		t.Fatal(err)
@@ -488,24 +487,61 @@ echo '`+credential+`'
 }
 
 // TestCredentialPluginTimeout: a plugin waiting for a login (device code)
-// is killed after the timeout; the error shows what it said and how to
-// log in.
+// is killed when its timeout fires; the error shows what it said and how
+// to log in. The timer is fired by hand once the plugin is waiting, so
+// the test does not depend on how fast the plugin starts.
 func TestCredentialPluginTimeout(t *testing.T) {
-	cl, dir := pluginConfig(t, nil, `echo $$ > "$(dirname "$0")/pid"
-echo "To sign in, use a web browser to open the page https://microsoft.com/devicelogin and enter the code ABCD-1234" >&2
-sleep 60
+	type timer struct {
+		d    time.Duration
+		fire func()
+	}
+	timers := make(chan timer, 1)
+	defer k8s.SetPluginTimer(func(d time.Duration, f func()) func() bool {
+		timers <- timer{d, f}
+		return func() bool { return true }
+	})()
+	cl, dir := pluginConfig(t, nil, `echo "To sign in, use a web browser to open the page https://microsoft.com/devicelogin and enter the code ABCD-1234" >&2
+echo $$ > "$(dirname "$0")/pid"
+exec sleep 600
 `)
-	start := time.Now()
-	_, err := cl.Client("exec")
+	cl.CredentialTimeout = 7 * time.Second
+	errs := make(chan error, 1)
+	go func() {
+		_, err := cl.Client("exec")
+		errs <- err
+	}()
+	tm := <-timers
+	if tm.d != 7*time.Second {
+		t.Fatalf("timeout %v", tm.d)
+	}
+	pidFile := filepath.Join(dir, "pid")
+	for { // wait until the plugin has printed and blocks
+		if b, _ := os.ReadFile(pidFile); strings.TrimSpace(string(b)) != "" {
+			break
+		}
+		select {
+		case err := <-errs:
+			t.Fatalf("returned before the timeout: %v", err)
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	fired := time.Now()
+	tm.fire()
+	var err error
+	select {
+	case err = <-errs:
+	case <-time.After(60 * time.Second):
+		t.Fatal("the plugin was not stopped")
+	}
+	if d := time.Since(fired); d > 5*time.Second {
+		t.Fatalf("took %v after the timeout", d)
+	}
 	if err == nil || !strings.Contains(err.Error(), "devicelogin") || !strings.Contains(err.Error(), "ABCD-1234") ||
-		!strings.Contains(err.Error(), "did not finish within") ||
+		!strings.Contains(err.Error(), "did not finish within 7s") ||
 		!strings.Contains(err.Error(), "log in once in a terminal (e.g. run kubectl with this context), then retry") {
 		t.Fatalf("%v", err)
 	}
-	if d := time.Since(start); d > 5*time.Second {
-		t.Fatalf("took %v", d)
-	}
-	pid, _ := os.ReadFile(filepath.Join(dir, "pid"))
+	pid, _ := os.ReadFile(pidFile)
 	if out, err := exec.Command("kill", "-0", strings.TrimSpace(string(pid))).CombinedOutput(); err == nil {
 		t.Fatalf("plugin still running: %s", out)
 	}

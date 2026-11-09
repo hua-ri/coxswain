@@ -179,9 +179,18 @@ func (c *capped) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// errPluginTimeout ends a plugin run that took too long.
+var errPluginTimeout = errors.New("credential plugin timed out")
+
+// afterTimeout starts a plugin run's timeout; tests replace it to fire it
+// by hand.
+var afterTimeout = func(d time.Duration, f func()) (stop func() bool) { return time.AfterFunc(d, f).Stop }
+
 func (p *credPlugin) run(parent context.Context) (credentials, error) {
-	ctx, cancel := context.WithTimeout(parent, p.timeout)
-	defer cancel()
+	ctx, cancel := context.WithCancelCause(parent)
+	defer cancel(nil)
+	stop := afterTimeout(p.timeout, func() { cancel(errPluginTimeout) })
+	defer stop()
 	info := execCredential{APIVersion: p.cfg.APIVersion, Kind: "ExecCredential"}
 	info.Spec.Cluster = p.cluster
 	infoJSON, err := json.Marshal(info)
@@ -208,7 +217,7 @@ func (p *credPlugin) run(parent context.Context) (credentials, error) {
 	switch {
 	case parent.Err() != nil:
 		return credentials{}, parent.Err()
-	case errors.Is(ctx.Err(), context.DeadlineExceeded):
+	case errors.Is(context.Cause(ctx), errPluginTimeout):
 		return credentials{}, credentialError("credential plugin %s did not finish within %s (it may be waiting for a login)%s",
 			p.cfg.Command, p.timeout, said)
 	case errors.Is(err, exec.ErrNotFound) || errors.Is(err, os.ErrNotExist):

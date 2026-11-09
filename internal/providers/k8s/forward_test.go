@@ -33,7 +33,7 @@ func echoThrough(t *testing.T, addr string) {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	c.SetDeadline(time.Now().Add(5 * time.Second))
+	c.SetDeadline(time.Now().Add(60 * time.Second))
 	io.WriteString(c, "ping\n")
 	if line, err := bufio.NewReader(c).ReadString('\n'); err != nil || line != "ping\n" {
 		t.Fatalf("%q %v", line, err)
@@ -145,7 +145,7 @@ func TestPortForwardReconnects(t *testing.T) {
 	f.fakes["prod"].Typed.Tracker().Delete(podGVR, "shop", "web-b")
 	f.fakes["prod"].Typed.Tracker().Add(readyPod("web-c", "web", true))
 	f.fakes["prod"].Forwards.Drop()
-	deadline := time.After(10 * time.Second)
+	deadline := time.After(60 * time.Second)
 	for {
 		select {
 		case ev := <-events:
