@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import type { Cox } from "./cox";
 import {
-  actionError,
+  ActionError,
+  applyArgs,
+  conflictsOf,
+  takeoverText,
+  type Conflict,
   contextBadges,
   diffLines,
   envOf,
@@ -122,7 +126,7 @@ export function K8sView({ cox, context, active, onOpenTerminal, onForward }: Pro
   const invoke = useCallback(
     async <T,>(id: string, args: Record<string, unknown>): Promise<T> => {
       const out = await cox.invoke<T>(id, { context: ctx, ...args });
-      if (out.status !== "ok") throw new Error(actionError(out));
+      if (out.status !== "ok") throw new ActionError(out);
       return out.result as T;
     },
     [cox, ctx],
@@ -601,23 +605,30 @@ function ApplyPanel({ invoke, badge, ctx }: { invoke: Invoke; badge: string; ctx
   const [yaml, setYaml] = useState("");
   const [preview, setPreview] = useState<ApplyOutput | null>(null);
   const [result, setResult] = useState<ApplyOutput | null>(null);
+  const [conflicts, setConflicts] = useState<Conflict[]>([]);
+  const [force, setForce] = useState<Conflict[] | null>(null); // taking these over
   const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const run = async (dry: boolean) => {
+  const run = async (dry: boolean, takeover: Conflict[] | null) => {
     setBusy(true);
     setError("");
+    setConflicts([]);
     try {
-      const out = await invoke<ApplyOutput>("k8s.apply", { manifest: yaml, dry_run: dry });
+      const out = await invoke<ApplyOutput>("k8s.apply", applyArgs(yaml, dry, takeover !== null));
+      setForce(takeover);
       if (dry) {
         setPreview(out);
         setResult(null);
       } else {
         setResult(out);
         setPreview(null);
+        setForce(null);
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+      setConflicts(conflictsOf(e));
+      setPreview(null);
     } finally {
       setBusy(false);
       setConfirming(false);
@@ -627,13 +638,34 @@ function ApplyPanel({ invoke, badge, ctx }: { invoke: Invoke; badge: string; ctx
   return (
     <div className="apply">
       <textarea className="mono" value={yaml} placeholder="Paste YAML (several documents allowed)…"
-        onChange={(e) => { setYaml(e.target.value); setPreview(null); setResult(null); }} />
+        onChange={(e) => { setYaml(e.target.value); setPreview(null); setResult(null); setConflicts([]); setForce(null); }} />
       <div className="filters">
-        <button disabled={!yaml.trim() || busy} onClick={() => void run(true)}>Preview diff</button>
+        <button disabled={!yaml.trim() || busy} onClick={() => void run(true, null)}>Preview diff</button>
         <button className="danger" disabled={!preview || busy} onClick={() => setConfirming(true)}>Apply</button>
         {busy && <span className="muted">Working…</span>}
+        {force && preview && <span className="warn-text">Taking over fields of other managers</span>}
       </div>
-      {error && <div className="error-box">{error}</div>}
+      {conflicts.length > 0 ? (
+        <div className="conflicts">
+          <p>These fields were set by other field managers; applying would change them:</p>
+          <table>
+            <tbody>
+              {conflicts.map((c, i) => (
+                <tr key={i}>
+                  <td>{c.object}</td>
+                  <td className="mono">{c.field}</td>
+                  <td>{c.manager} <span className="muted">({c.operation.toLowerCase()})</span></td>
+                  <td className="muted">{c.hint ? `usually changed with ${c.hint}` : ""}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p className="muted">Leave these fields out of the YAML, change them with the matching action, or take them over.</p>
+          <button className="danger" disabled={busy} onClick={() => void run(true, conflicts)}>Take over these fields</button>
+        </div>
+      ) : (
+        error && <div className="error-box">{error}</div>
+      )}
       {shown && (
         <div className="apply-result">
           {result && <p>Applied to {ctx}.</p>}
@@ -653,7 +685,9 @@ function ApplyPanel({ invoke, badge, ctx }: { invoke: Invoke; badge: string; ctx
       )}
       {confirming && preview && (
         <Dialog badge={badge} title={`Apply ${preview.objects.length} object(s) to ${ctx}${badge ? " — a production cluster" : ""}?`}
-          ok="Apply" danger onOk={() => void run(false)} onCancel={() => setConfirming(false)} />
+          ok={force ? "Take over and apply" : "Apply"} danger onOk={() => void run(false, force)} onCancel={() => setConfirming(false)}>
+          {force && <p className="warn-text">{takeoverText(force)}</p>}
+        </Dialog>
       )}
     </div>
   );

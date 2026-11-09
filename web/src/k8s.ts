@@ -306,3 +306,47 @@ export function forwardRequest(context: string, namespace: string, pod: string, 
   if (local) body.local_port = local;
   return body;
 }
+
+/** ActionError is a failed action, with its outcome (details included). */
+export class ActionError extends Error {
+  outcome: Outcome;
+  constructor(outcome: Outcome) {
+    super(actionError(outcome));
+    this.outcome = outcome;
+  }
+}
+
+/** Conflict is a field another field manager set, which an apply would change. */
+export interface Conflict {
+  object: string;
+  field: string;
+  manager: string;
+  operation: string; // Update or Apply
+  hint?: string;
+}
+
+/** conflictsOf are the apply conflicts an error reports, if any. */
+export function conflictsOf(e: unknown): Conflict[] {
+  if (!(e instanceof ActionError)) return [];
+  const d = e.outcome.details as { conflicts?: Conflict[] } | undefined;
+  return d?.conflicts ?? [];
+}
+
+/** applyArgs are k8s.apply's arguments; force takes conflicting fields over. */
+export function applyArgs(manifest: string, dryRun: boolean, force: boolean): Record<string, unknown> {
+  const args: Record<string, unknown> = { manifest, dry_run: dryRun };
+  if (force) args.force_conflicts = true;
+  return args;
+}
+
+/** takeoverText says whose fields a forced apply overrides. */
+export function takeoverText(conflicts: Conflict[]): string {
+  const byManager = new Map<string, Map<string, string[]>>();
+  for (const c of conflicts) {
+    const objects = byManager.get(c.manager) ?? new Map<string, string[]>();
+    objects.set(c.object, [...(objects.get(c.object) ?? []), c.field]);
+    byManager.set(c.manager, objects);
+  }
+  const parts = [...byManager].map(([m, objects]) => `${m} (${[...objects].map(([o, f]) => `${o} ${f.join(", ")}`).join("; ")})`);
+  return `This overrides fields managed by: ${parts.join("; ")}.`;
+}

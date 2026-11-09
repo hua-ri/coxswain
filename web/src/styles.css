@@ -198,3 +198,5 @@ pre.diff .meta { color: var(--muted); }
 .apply .filters { padding: 6px 0; }
 .dialog label { display: inline-block; margin: 4px 0 8px; }
 .dialog input, .dialog select { font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--border); border-radius: 5px; padding: 1px 5px; }
+.conflicts { padding: 6px 8px; border: 1px solid #e8a33d; border-radius: 6px; margin: 6px 0; }
+.conflicts p { margin: 4px 0; }

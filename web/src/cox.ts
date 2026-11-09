@@ -32,6 +32,7 @@ export interface Outcome<T = unknown> {
   result?: T;
   error?: string;
   hint?: string;
+  details?: unknown; // structured detail of an error (e.g. apply conflicts)
 }
 
 /** The functions Go binds into the page. */

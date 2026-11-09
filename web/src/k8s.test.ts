@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  ActionError,
   actionError,
+  applyArgs,
+  conflictsOf,
+  takeoverText,
   contextBadges,
   contextFromTab,
   diffLines,
@@ -138,5 +142,32 @@ describe("requests", () => {
     expect(terminalRequest("kind", "shop", "web-1")).toEqual({ pod: { context: "kind", namespace: "shop", pod: "web-1" }, cols: 80, rows: 24 });
     expect(forwardRequest("kind", "shop", "web-1", 8080)).toEqual({ type: "k8s", context: "kind", namespace: "shop", pod: "web-1", remote_port: 8080 });
     expect(forwardRequest("kind", "shop", "web-1", 8080, 5000).local_port).toBe(5000);
+  });
+});
+
+describe("apply conflicts", () => {
+  const conflicts = [
+    { object: "Deployment/web", field: ".spec.replicas", manager: "cox-ops", operation: "Update", hint: "k8s_scale" },
+    { object: "Deployment/web", field: ".spec.paused", manager: "cox-ops", operation: "Update" },
+    { object: "Deployment/api", field: ".spec.replicas", manager: "helm", operation: "Apply" },
+  ];
+
+  it("come with the action's error", () => {
+    const e = new ActionError({ status: "error", error: "Applying … conflicts", details: { conflicts } });
+    expect(e.message).toBe("Applying … conflicts");
+    expect(conflictsOf(e)).toEqual(conflicts);
+    expect(conflictsOf(new ActionError({ status: "error", error: "boom" }))).toEqual([]);
+    expect(conflictsOf(new Error("x"))).toEqual([]);
+  });
+
+  it("are taken over only when asked", () => {
+    expect(applyArgs("a: 1", true, false)).toEqual({ manifest: "a: 1", dry_run: true });
+    expect(applyArgs("a: 1", false, true)).toEqual({ manifest: "a: 1", dry_run: false, force_conflicts: true });
+  });
+
+  it("say whose fields are overridden", () => {
+    expect(takeoverText(conflicts)).toBe(
+      "This overrides fields managed by: cox-ops (Deployment/web .spec.replicas, .spec.paused); helm (Deployment/api .spec.replicas).",
+    );
   });
 });
