@@ -47,11 +47,26 @@ func (p *Provider) target(id string) (term.Session, action.Target, error) {
 	if !ok {
 		return s, action.Target{}, fmt.Errorf("%w: %s", term.ErrNotFound, id)
 	}
+	if s.Kind == term.KindPod && p.Terms.Pods != nil {
+		return s, p.Terms.Pods.Target(s.Context, s.Namespace), nil
+	}
 	t := action.Target{Kind: "host", ID: s.Host}
 	if h, err := p.Hosts.Get(s.Host); err == nil {
 		t.Tags = h.Tags
 	}
 	return s, t, nil
+}
+
+// where is where a terminal runs: its host, or context/namespace/pod[/container].
+func where(s term.Session) string {
+	if s.Kind != term.KindPod {
+		return s.Host
+	}
+	w := s.Context + "/" + s.Namespace + "/" + s.Pod
+	if s.Container != "" {
+		w += "/" + s.Container
+	}
+	return w
 }
 
 type idInput struct {
@@ -70,7 +85,7 @@ func (p *Provider) labelID(risk action.Risk, verb string) func(context.Context, 
 			return action.Assessment{}, err
 		}
 		return action.Assessment{Risk: risk, Targets: []action.Target{t},
-			Preview: fmt.Sprintf("%s terminal %s on %s (opened by %s)", verb, s.ID, s.Host, s.Owner)}, nil
+			Preview: fmt.Sprintf("%s terminal %s on %s (opened by %s)", verb, s.ID, where(s), s.Owner)}, nil
 	}
 }
 
@@ -78,7 +93,7 @@ func (p *Provider) list() *action.Action {
 	return &action.Action{
 		ID:      "terminal.list",
 		Summary: "List shared terminals",
-		Description: "List the shared terminals in Coxswain: id, host, who opened it (the user or an agent), size, " +
+		Description: "List the shared terminals in Coxswain: id, kind (ssh or pod), host or context/namespace/pod/container, who opened it (the user or an agent), size, " +
 			"and whether it has ended. Read one with terminal_read.",
 		Input:       map[string]any{"type": "object", "properties": map[string]any{}},
 		Annotations: action.Annotations{ReadOnly: true, Idempotent: true},
@@ -90,23 +105,37 @@ func (p *Provider) list() *action.Action {
 }
 
 type openInput struct {
-	Host string `json:"host"`
-	Cols int    `json:"cols"`
-	Rows int    `json:"rows"`
+	Host string        `json:"host"`
+	Pod  *term.PodSpec `json:"pod"`
+	Cols int           `json:"cols"`
+	Rows int           `json:"rows"`
+}
+
+func (in openInput) check() error {
+	switch {
+	case (in.Host == "") == (in.Pod == nil):
+		return fmt.Errorf("give either host or pod")
+	case in.Pod != nil && (in.Pod.Context == "" || in.Pod.Pod == ""):
+		return fmt.Errorf("pod needs context and pod")
+	}
+	return nil
 }
 
 // OpenOutput is the result of terminal.open.
 type OpenOutput struct {
 	term.Session
-	HostNote string            `json:"host_note,omitempty"`
-	HostTags map[string]string `json:"host_tags,omitempty"`
+	HostNote    string            `json:"host_note,omitempty"`
+	HostTags    map[string]string `json:"host_tags,omitempty"`
+	ContextTags map[string]string `json:"context_tags,omitempty"` // pod terminals
 }
 
 func (p *Provider) open() *action.Action {
 	return &action.Action{
 		ID:      "terminal.open",
-		Summary: "Open a shared terminal on a saved SSH host",
-		Description: "Open an interactive shell on a saved SSH host as a shared terminal. The user sees it at once in the " +
+		Summary: "Open a shared terminal on a saved SSH host or in a pod",
+		Description: "Open an interactive shell on a saved SSH host (host), or in a Kubernetes pod's container (pod: " +
+			"{context, namespace, pod, container, shell}; shell defaults to sh, and sh is used if the given one is missing), " +
+			"as a shared terminal. The user sees it at once in the " +
 			"Coxswain desktop app and can type in it too. Use terminals for long-running work or work the user should " +
 			"watch (builds, deploys, following logs); use ssh_exec for one-off commands. " +
 			"Then type with terminal_send and read with terminal_read; close it with terminal_close when done. " +
@@ -115,10 +144,16 @@ func (p *Provider) open() *action.Action {
 			"type": "object",
 			"properties": map[string]any{
 				"host": map[string]any{"type": "string", "description": "saved host name (see ssh_hosts_list)"},
+				"pod": map[string]any{"type": "object", "description": "instead of host: a shell in a pod", "properties": map[string]any{
+					"context":   map[string]any{"type": "string", "description": "kubeconfig context (see k8s_contexts)"},
+					"namespace": map[string]any{"type": "string", "description": "default: the context's namespace"},
+					"pod":       map[string]any{"type": "string"},
+					"container": map[string]any{"type": "string", "description": "required if the pod has several containers"},
+					"shell":     map[string]any{"type": "string", "description": "e.g. bash; default sh"},
+				}, "required": []string{"context", "pod"}},
 				"cols": map[string]any{"type": "integer", "minimum": 1, "maximum": 1000, "description": "default 80"},
 				"rows": map[string]any{"type": "integer", "minimum": 1, "maximum": 1000, "description": "default 24"},
 			},
-			"required": []string{"host"},
 		},
 		Positional:  []string{"host"},
 		Annotations: action.Annotations{Destructive: true, OpenWorld: true},
@@ -126,6 +161,17 @@ func (p *Provider) open() *action.Action {
 			var in openInput
 			if err := action.Decode(raw, &in); err != nil {
 				return action.Assessment{}, err
+			}
+			if err := in.check(); err != nil {
+				return action.Assessment{}, err
+			}
+			if in.Pod != nil {
+				if p.Terms.Pods == nil {
+					return action.Assessment{}, fmt.Errorf("pod terminals are not available")
+				}
+				t := p.Terms.Pods.Target(in.Pod.Context, in.Pod.Namespace)
+				return action.Assessment{Risk: action.Write, Targets: []action.Target{t},
+					Preview: fmt.Sprintf("open a terminal in pod %s (%s)", in.Pod.Pod, t.ID)}, nil
 			}
 			h, err := p.Hosts.Get(in.Host)
 			if err != nil {
@@ -139,12 +185,22 @@ func (p *Provider) open() *action.Action {
 			if err := action.Decode(raw, &in); err != nil {
 				return nil, err
 			}
-			h, err := p.Hosts.Get(in.Host)
-			if err != nil {
+			if err := in.check(); err != nil {
 				return nil, err
 			}
 			who, _ := action.ActorFrom(ctx)
 			who.Session = "" // the owner is the client, not one of its sessions
+			if in.Pod != nil {
+				s, err := p.Terms.OpenPod(ctx, *in.Pod, who, in.Cols, in.Rows)
+				if err != nil {
+					return nil, err
+				}
+				return OpenOutput{Session: s, ContextTags: p.Terms.Pods.Target(s.Context, s.Namespace).Tags}, nil
+			}
+			h, err := p.Hosts.Get(in.Host)
+			if err != nil {
+				return nil, err
+			}
 			s, err := p.Terms.Open(ctx, h, who, in.Cols, in.Rows)
 			if err != nil {
 				return nil, err
@@ -199,7 +255,7 @@ func (p *Provider) send() *action.Action {
 				return action.Assessment{}, err
 			}
 			return action.Assessment{Risk: policy.ClassifyCommand(in.Text), Targets: []action.Target{t},
-				Preview: fmt.Sprintf("%s [%s]$ %s", s.Host, s.ID, in.Text)}, nil
+				Preview: fmt.Sprintf("%s [%s]$ %s", where(s), s.ID, in.Text)}, nil
 		},
 		Run: func(_ context.Context, raw json.RawMessage) (any, error) {
 			var in sendInput

@@ -177,7 +177,13 @@ func newEngine(coxHome, userHome string, pool func(*sshx.Dialer) *sshx.Pool) ser
 	if pool != nil {
 		p.Pool = pool(dialer)
 	}
-	terms := &term.Manager{Hosts: hosts, Dialer: dialer, Events: events}
+	// The kubeconfig is read on first use (never at startup, never
+	// written); tags and notes for its contexts are Coxswain's own.
+	clusters := &k8s.Clusters{
+		Kubeconfig: k8s.NewKubeconfig(k8s.DefaultPaths(os.Getenv("KUBECONFIG"), userHome)),
+		Meta:       k8s.NewMetaStore(filepath.Join(coxHome, "clusters.json")),
+	}
+	terms := &term.Manager{Hosts: hosts, Dialer: dialer, Events: events, Pods: &k8sprov.Terminals{Clusters: clusters}}
 	reg := action.NewRegistry()
 	p.Register(reg)
 	artifact.Register(reg, artifacts)
@@ -186,12 +192,6 @@ func newEngine(coxHome, userHome string, pool func(*sshx.Dialer) *sshx.Pool) ser
 	(&file.Provider{Hosts: hosts, Dialer: dialer, Pool: p.Pool, Artifacts: artifacts, Transfers: transfers,
 		DownloadDir: filepath.Join(coxHome, "downloads"), UploadDir: filepath.Join(coxHome, "uploads"),
 		CoxHome: coxHome, UserHome: userHome}).Register(reg)
-	// The kubeconfig is read on first use (never at startup, never
-	// written); tags and notes for its contexts are Coxswain's own.
-	clusters := &k8s.Clusters{
-		Kubeconfig: k8s.NewKubeconfig(k8s.DefaultPaths(os.Getenv("KUBECONFIG"), userHome)),
-		Meta:       k8s.NewMetaStore(filepath.Join(coxHome, "clusters.json")),
-	}
 	tunnels := &tunnel.Manager{Hosts: hosts, Dialer: dialer, Events: events, Pods: &k8sprov.Forwarder{Clusters: clusters}}
 	(&tunnelprov.Provider{Hosts: hosts, Tunnels: tunnels}).Register(reg)
 	(&k8sprov.Provider{Clusters: clusters, Hosts: hosts, Artifacts: artifacts, Tunnels: tunnels}).Register(reg)

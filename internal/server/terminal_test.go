@@ -5,13 +5,16 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/hua-ri/coxswain/internal/action"
 	"github.com/hua-ri/coxswain/internal/eventlog"
 	"github.com/hua-ri/coxswain/internal/inventory"
 	"github.com/hua-ri/coxswain/internal/sshx"
@@ -276,5 +279,50 @@ func TestRunClosesTerminals(t *testing.T) {
 	stop()
 	if list := f.cfg.Terminals.List(); len(list) != 0 {
 		t.Fatalf("%+v", list)
+	}
+}
+
+// echoPods opens pod shells that echo their input.
+type echoPods struct{}
+
+func (echoPods) OpenPod(_ context.Context, spec term.PodSpec, _, _ int, out io.Writer) (term.Backend, term.PodSpec, error) {
+	spec.Namespace = "shop"
+	return &echoShell{out: out, done: make(chan struct{})}, spec, nil
+}
+
+func (echoPods) Target(ctx, ns string) action.Target {
+	return action.Target{Kind: "k8s", ID: "k8s:" + ctx + "/" + ns}
+}
+
+type echoShell struct {
+	out  io.Writer
+	once sync.Once
+	done chan struct{}
+}
+
+func (s *echoShell) Write(p []byte) (int, error) { return s.out.Write(p) }
+func (s *echoShell) Resize(int, int) error       { return nil }
+func (s *echoShell) Wait() *int                  { <-s.done; return nil }
+func (s *echoShell) Close() error                { s.once.Do(func() { close(s.done) }); return nil }
+
+func TestTerminalAPIPod(t *testing.T) {
+	f := newConfig(t)
+	withTerminals(t, &f)
+	h := New(f.cfg)
+	desktop := map[string]string{"X-Cox-Client": "desktop"}
+	if w := request(t, h, "POST", "/api/v1/terminals", `{"pod":{"context":"kind","pod":"web-1"}}`, desktop); w.Code != 503 {
+		t.Fatalf("without pods: %d %s", w.Code, w.Body)
+	}
+	f.cfg.Terminals.Pods = echoPods{}
+	w := request(t, h, "POST", "/api/v1/terminals", `{"pod":{"context":"kind","pod":"web-1","container":"app"},"cols":90,"rows":20}`, desktop)
+	var s term.Session
+	if err := json.Unmarshal(w.Body.Bytes(), &s); w.Code != 201 || err != nil || s.Kind != term.KindPod || s.Pod != "web-1" ||
+		s.Namespace != "shop" || s.Container != "app" || s.Cols != 90 {
+		t.Fatalf("%d %s", w.Code, w.Body)
+	}
+	for _, body := range []string{`{"host":"dev","pod":{"context":"kind","pod":"web-1"}}`, `{}`, `{"pod":{"pod":"web-1"}}`} {
+		if w := request(t, h, "POST", "/api/v1/terminals", body, desktop); w.Code != 400 {
+			t.Errorf("%s: %d %s", body, w.Code, w.Body)
+		}
 	}
 }

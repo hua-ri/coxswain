@@ -8,7 +8,7 @@ import { Confirm } from "./Confirm";
 import { FileBrowser } from "./FileBrowser";
 import { Sidebar } from "./Sidebar";
 import { TerminalView } from "./TerminalView";
-import { needsConfirm, tabTitle, tabsReducer, type Tab } from "./terminals";
+import { needsConfirm, sessionWhere, tabTitle, tabsReducer, type Tab } from "./terminals";
 import { runningCount, transfersReducer, type Transfer, type TransferItem } from "./transfers";
 import { TransfersView } from "./TransfersView";
 import { tunnelPlace, tunnelsReducer, type Tunnel } from "./tunnels";
@@ -107,7 +107,10 @@ function Desktop({ cox }: { cox: Cox }) {
         if (ev.type.startsWith("client.")) loadClients().catch(report);
         if (ev.type === "terminal.opened" && ev.terminal && ev.actor) {
           const { kind, name } = ev.actor;
-          dispatch({ type: "opened", id: ev.terminal, host: ev.targets?.[0]?.id ?? "", owner: { kind, name } });
+          dispatch({
+            type: "opened", id: ev.terminal, owner: { kind, name },
+            host: ev.detail ? sessionWhere(ev.detail as TermSession) : (ev.targets?.[0]?.id ?? ""),
+          });
         }
         if (ev.type === "terminal.closed" && ev.terminal) {
           dispatch({ type: "closed", id: ev.terminal, code: ev.exit_code });
@@ -147,7 +150,7 @@ function Desktop({ cox }: { cox: Cox }) {
       cox
         .api<TermSession>("POST", "/api/v1/terminals", { host, cols: 80, rows: 24 })
         .then((s) => {
-          dispatch({ type: "opened", id: s.id, host: s.host, owner: s.owner });
+          dispatch({ type: "opened", id: s.id, host: sessionWhere(s), owner: s.owner });
           setActive(s.id);
         })
         .catch(report);

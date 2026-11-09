@@ -3,8 +3,10 @@ package terminal
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -194,5 +196,74 @@ func TestCloseOwnership(t *testing.T) {
 	mustOK(t, invoke(t, e, cli, "terminal.close", map[string]any{"id": mine.ID}))
 	if list := terms.List(); len(list) != 0 {
 		t.Fatalf("%+v", list)
+	}
+}
+
+// echoPods opens echoing pod shells.
+type echoPods struct{}
+
+func (echoPods) OpenPod(_ context.Context, spec term.PodSpec, _, _ int, out io.Writer) (term.Backend, term.PodSpec, error) {
+	if spec.Namespace == "" {
+		spec.Namespace = "shop"
+	}
+	spec.Container = "app"
+	out.Write([]byte("$ "))
+	return &echoShell{out: out, done: make(chan struct{})}, spec, nil
+}
+
+func (echoPods) Target(ctx, ns string) action.Target {
+	if ns == "" {
+		ns = "shop"
+	}
+	return action.Target{Kind: "k8s", ID: "k8s:" + ctx + "/" + ns, Tags: map[string]string{"env": "prod"}}
+}
+
+type echoShell struct {
+	out  io.Writer
+	once sync.Once
+	done chan struct{}
+}
+
+func (s *echoShell) Write(p []byte) (int, error) { return s.out.Write(p) }
+func (s *echoShell) Resize(int, int) error       { return nil }
+func (s *echoShell) Wait() *int                  { <-s.done; return nil }
+func (s *echoShell) Close() error                { s.once.Do(func() { close(s.done) }); return nil }
+
+func TestPodTerminal(t *testing.T) {
+	e, terms := setup(t)
+	terms.Pods = echoPods{}
+	res := mustOK(t, invoke(t, e, codex, "terminal.open", map[string]any{"pod": map[string]any{"context": "prod", "pod": "web-1"}})).(OpenOutput)
+	if res.Kind != term.KindPod || res.Context != "prod" || res.Namespace != "shop" || res.Pod != "web-1" || res.Container != "app" ||
+		res.Host != "" || res.Owner.Session != "" || res.ContextTags["env"] != "prod" {
+		t.Fatalf("%+v", res)
+	}
+	mustOK(t, invoke(t, e, codex, "terminal.send", map[string]any{"id": res.ID, "text": "rm -rf /tmp/x"}))
+	readUntil(t, e, kimi, res.ID, "$ rm -rf /tmp/x", 10)
+	evs, _ := e.Events.Read(time.Now())
+	risks := map[string]string{}
+	for _, ev := range evs {
+		if ev.Type == eventlog.ActionRequested && strings.HasPrefix(ev.Action, "terminal.") && ev.Action != "terminal.list" {
+			if len(ev.Targets) != 1 || ev.Targets[0].ID != "k8s:prod/shop" || ev.Targets[0].Tags["env"] != "prod" {
+				t.Fatalf("%s targets %+v", ev.Action, ev.Targets)
+			}
+			risks[ev.Action] = ev.Risk
+		}
+	}
+	if risks["terminal.open"] != "write" || risks["terminal.send"] != "destructive" || risks["terminal.read"] != "read" {
+		t.Fatalf("risks %v", risks)
+	}
+	if out := invoke(t, e, kimi, "terminal.close", map[string]any{"id": res.ID}); out.Status != engine.StatusError {
+		t.Fatalf("kimi closed codex's terminal: %+v", out)
+	}
+	mustOK(t, invoke(t, e, codex, "terminal.close", map[string]any{"id": res.ID}))
+
+	for _, bad := range []map[string]any{
+		{},
+		{"host": "prod", "pod": map[string]any{"context": "prod", "pod": "web-1"}},
+		{"pod": map[string]any{"context": "prod"}},
+	} {
+		if out := invoke(t, e, codex, "terminal.open", bad); out.Status != engine.StatusError {
+			t.Errorf("%v: %+v", bad, out)
+		}
 	}
 }

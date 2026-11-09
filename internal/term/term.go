@@ -1,12 +1,13 @@
 // Package term keeps shared terminal sessions in `cox server`: a person
 // (desktop, CLI) and agents can open, watch, type into and read the same
-// remote shells.
+// remote shells, on SSH hosts or in Kubernetes pods.
 package term
 
 import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -26,6 +27,9 @@ var (
 	ErrClosed   = errors.New("terminal is closed")
 	ErrSize     = errors.New("terminal size must be 1..1000 columns and rows")
 	ErrTooMany  = errors.New("too many open terminals; close some first")
+	// ErrNoPods: pod terminals are not available (no PodOpener).
+	ErrNoPods  = errors.New("pod terminals are not available")
+	ErrPodSpec = errors.New("a pod terminal needs context and pod")
 )
 
 const (
@@ -39,10 +43,22 @@ const (
 	maxSize          = 1000
 )
 
+// Kinds of terminals.
+const (
+	KindSSH = "ssh" // a login shell on a saved SSH host
+	KindPod = "pod" // a shell in a pod's container
+)
+
 // Session describes one terminal.
 type Session struct {
-	ID        string       `json:"id"`
-	Host      string       `json:"host"`
+	ID   string `json:"id"`
+	Kind string `json:"kind"` // ssh or pod
+	Host string `json:"host"` // ssh
+	// pod terminals: where the shell runs.
+	Context   string       `json:"context,omitempty"`
+	Namespace string       `json:"namespace,omitempty"`
+	Pod       string       `json:"pod,omitempty"`
+	Container string       `json:"container,omitempty"`
 	Owner     action.Actor `json:"owner"` // who opened it
 	CreatedAt time.Time    `json:"created_at"`
 	Cols      int          `json:"cols"`
@@ -63,11 +79,43 @@ type Chunk struct {
 	Code *int
 }
 
-// Manager holds the sessions. Each session has its own SSH connection
-// (not the pool's), a pty and a login shell.
+// Backend is the process behind a terminal.
+type Backend interface {
+	Write(p []byte) (int, error) // input (keystrokes)
+	Resize(cols, rows int) error
+	// Wait blocks until the process ends and returns its exit code, or
+	// nil if there is none (e.g. it was closed).
+	Wait() *int
+	Close() error // ends the process
+}
+
+// PodSpec is a shell in a pod.
+type PodSpec struct {
+	Context   string `json:"context"`
+	Namespace string `json:"namespace,omitempty"` // default: the context's
+	Pod       string `json:"pod"`
+	Container string `json:"container,omitempty"` // required if the pod has several
+	Shell     string `json:"shell,omitempty"`     // default sh; falls back to sh if missing
+}
+
+// PodOpener starts shells in pods.
+type PodOpener interface {
+	// OpenPod starts an interactive shell with a TTY of cols×rows in the
+	// pod, writing its output to out, and returns it with spec completed
+	// (namespace, container).
+	OpenPod(ctx context.Context, spec PodSpec, cols, rows int, out io.Writer) (Backend, PodSpec, error)
+	// Target is the audit target of a namespace of a context ("" is the
+	// context's default namespace).
+	Target(context, namespace string) action.Target
+}
+
+// Manager holds the sessions. Each SSH session has its own SSH
+// connection (not the pool's), a pty and a login shell; each pod session
+// its own exec stream with a TTY.
 type Manager struct {
 	Hosts  *inventory.Store
 	Dialer *sshx.Dialer
+	Pods   PodOpener     // pod terminals; nil disables them
 	Events *eventlog.Log // terminal.opened / terminal.closed; may be nil
 	// Retain is how long an ended session's output stays readable;
 	// default 10 minutes. Sessions closed with Close go at once.
@@ -91,47 +139,87 @@ func (m *Manager) OpenHost(ctx context.Context, name string, owner action.Actor,
 // Open connects to h, requests an xterm-256color pty of cols×rows (0
 // means 80×24) and starts a shell.
 func (m *Manager) Open(ctx context.Context, h inventory.Host, owner action.Actor, cols, rows int) (Session, error) {
-	if cols == 0 && rows == 0 {
-		cols, rows = defaultCols, defaultRows
-	}
-	if err := checkSize(cols, rows); err != nil {
-		return Session{}, err
-	}
-	if m.openCount() >= m.maxOpen() {
-		return Session{}, ErrTooMany
-	}
-	id, err := newID()
+	s, err := m.newSession(owner, &cols, &rows)
 	if err != nil {
 		return Session{}, err
 	}
+	s.info.Kind, s.info.Host = KindSSH, h.Name
+	s.target = action.Target{Kind: "host", ID: h.Name, Tags: h.Tags}
 	conn, err := m.Dialer.Dial(ctx, h)
 	if err != nil {
 		return Session{}, err
 	}
-	s := &session{
-		info: Session{ID: id, Host: h.Name, Owner: owner, CreatedAt: time.Now().UTC(), Cols: cols, Rows: rows},
-		host: h, conn: conn, done: make(chan struct{}),
-	}
-	if err := s.start(); err != nil {
+	b, err := startSSH(conn, cols, rows, writerFunc(s.output))
+	if err != nil {
 		conn.Close()
 		return Session{}, fmt.Errorf("start shell on %s: %w", h.Name, err)
 	}
+	return m.add(s, b), nil
+}
+
+// OpenPod starts a shell (TTY of cols×rows, 0 means 80×24) in a pod.
+func (m *Manager) OpenPod(ctx context.Context, spec PodSpec, owner action.Actor, cols, rows int) (Session, error) {
+	if m.Pods == nil {
+		return Session{}, ErrNoPods
+	}
+	if spec.Context == "" || spec.Pod == "" {
+		return Session{}, ErrPodSpec
+	}
+	s, err := m.newSession(owner, &cols, &rows)
+	if err != nil {
+		return Session{}, err
+	}
+	b, spec, err := m.Pods.OpenPod(ctx, spec, cols, rows, writerFunc(s.output))
+	if err != nil {
+		return Session{}, err
+	}
+	s.info.Kind, s.info.Context, s.info.Namespace, s.info.Pod, s.info.Container = KindPod, spec.Context, spec.Namespace, spec.Pod, spec.Container
+	s.target = m.Pods.Target(spec.Context, spec.Namespace)
+	return m.add(s, b), nil
+}
+
+// newSession checks the size (0×0 means 80×24) and the limit and returns
+// a session yet to be started.
+func (m *Manager) newSession(owner action.Actor, cols, rows *int) (*session, error) {
+	if *cols == 0 && *rows == 0 {
+		*cols, *rows = defaultCols, defaultRows
+	}
+	if err := checkSize(*cols, *rows); err != nil {
+		return nil, err
+	}
+	if m.openCount() >= m.maxOpen() {
+		return nil, ErrTooMany
+	}
+	id, err := newID()
+	if err != nil {
+		return nil, err
+	}
+	return &session{
+		info: Session{ID: id, Owner: owner, CreatedAt: time.Now().UTC(), Cols: *cols, Rows: *rows},
+		done: make(chan struct{}),
+	}, nil
+}
+
+// add registers a started session.
+func (m *Manager) add(s *session, b Backend) Session {
+	s.backend = b
 	m.mu.Lock()
 	if m.sessions == nil {
 		m.sessions = map[string]*session{}
 	}
-	m.sessions[id] = s
+	m.sessions[s.info.ID] = s
 	m.mu.Unlock()
-	m.log(eventlog.Event{Type: eventlog.TerminalOpened, Actor: &owner, Terminal: id, Targets: s.targets()})
+	owner := s.info.Owner
+	info := s.snapshot()
+	detail, _ := json.Marshal(info)
+	m.log(eventlog.Event{Type: eventlog.TerminalOpened, Actor: &owner, Terminal: info.ID, Targets: s.targets(), Detail: detail})
 	go m.wait(s)
-	return s.snapshot(), nil
+	return info
 }
 
 // wait records the end of a session.
 func (m *Manager) wait(s *session) {
-	err := s.ssh.Wait()
-	code := exitCode(err)
-	s.conn.Close()
+	code := s.backend.Wait()
 	reason := s.finish(code)
 	owner := s.info.Owner
 	m.log(eventlog.Event{Type: eventlog.TerminalClosed, Actor: &owner, Terminal: s.info.ID,
@@ -191,7 +279,7 @@ func (m *Manager) Write(id string, p []byte) error {
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	if _, err := s.stdin.Write(p); err != nil {
+	if _, err := s.backend.Write(p); err != nil {
 		return fmt.Errorf("%w: %v", ErrClosed, err)
 	}
 	return nil
@@ -206,7 +294,7 @@ func (m *Manager) Resize(id string, cols, rows int) error {
 	if err != nil {
 		return err
 	}
-	if err := s.ssh.WindowChange(rows, cols); err != nil {
+	if err := s.backend.Resize(cols, rows); err != nil {
 		return err
 	}
 	s.mu.Lock()
@@ -268,8 +356,7 @@ func (m *Manager) close(id, reason string) error {
 		s.reason = reason
 	}
 	s.mu.Unlock()
-	s.ssh.Close()
-	s.conn.Close()
+	s.backend.Close()
 	<-s.done
 	m.remove(id)
 	return nil
@@ -353,13 +440,11 @@ func newID() (string, error) {
 
 // session is one terminal and its subscribers.
 type session struct {
-	host inventory.Host
-	conn *sshx.Conn
-	ssh  *ssh.Session
-	done chan struct{} // closed once the end is recorded
+	target  action.Target // the host, or the pod's namespace
+	backend Backend
+	done    chan struct{} // closed once the end is recorded
 
 	writeMu sync.Mutex
-	stdin   io.WriteCloser
 
 	mu      sync.Mutex
 	info    Session
@@ -371,27 +456,45 @@ type session struct {
 
 type subscriber struct{ ch chan Chunk }
 
-// start requests the pty and the shell.
-func (s *session) start() error {
-	ss, err := s.conn.NewSession()
-	if err != nil {
-		return err
-	}
-	s.ssh = ss
-	if s.stdin, err = ss.StdinPipe(); err != nil {
-		return err
-	}
-	w := writerFunc(s.output)
-	ss.Stdout, ss.Stderr = w, w
-	if err := ss.RequestPty("xterm-256color", s.info.Rows, s.info.Cols, ssh.TerminalModes{}); err != nil {
-		return err
-	}
-	return ss.Shell()
+// sshShell is a login shell on an SSH host.
+type sshShell struct {
+	conn  *sshx.Conn
+	ss    *ssh.Session
+	stdin io.WriteCloser
 }
 
-func (s *session) targets() []action.Target {
-	return []action.Target{{Kind: "host", ID: s.host.Name, Tags: s.host.Tags}}
+// startSSH requests an xterm-256color pty and a shell on conn.
+func startSSH(conn *sshx.Conn, cols, rows int, out io.Writer) (*sshShell, error) {
+	ss, err := conn.NewSession()
+	if err != nil {
+		return nil, err
+	}
+	b := &sshShell{conn: conn, ss: ss}
+	if b.stdin, err = ss.StdinPipe(); err != nil {
+		return nil, err
+	}
+	ss.Stdout, ss.Stderr = out, out
+	if err := ss.RequestPty("xterm-256color", rows, cols, ssh.TerminalModes{}); err != nil {
+		return nil, err
+	}
+	return b, ss.Shell()
 }
+
+func (b *sshShell) Write(p []byte) (int, error) { return b.stdin.Write(p) }
+func (b *sshShell) Resize(cols, rows int) error { return b.ss.WindowChange(rows, cols) }
+
+func (b *sshShell) Wait() *int {
+	code := exitCode(b.ss.Wait())
+	b.conn.Close()
+	return code
+}
+
+func (b *sshShell) Close() error {
+	b.ss.Close()
+	return b.conn.Close()
+}
+
+func (s *session) targets() []action.Target { return []action.Target{s.target} }
 
 func (s *session) snapshot() Session {
 	s.mu.Lock()

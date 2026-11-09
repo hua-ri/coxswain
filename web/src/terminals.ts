@@ -3,7 +3,7 @@ import type { TermSession } from "./types";
 
 export interface Tab {
   id: string;
-  host: string;
+  host: string; // where it runs: the host, or context/namespace/pod[/container]
   owner: { kind: "human" | "agent"; name: string };
   closed: boolean;
   exitCode?: number;
@@ -24,7 +24,7 @@ export function tabsReducer(tabs: Tab[], a: TabAction): Tab[] {
       const out = tabs.map((t) => (live.has(t.id) || t.closed ? t : { ...t, closed: true }));
       for (const s of a.sessions) {
         if (!s.closed && !tabs.some((t) => t.id === s.id)) {
-          out.push({ id: s.id, host: s.host, owner: { kind: s.owner.kind, name: s.owner.name }, closed: false });
+          out.push({ id: s.id, host: sessionWhere(s), owner: { kind: s.owner.kind, name: s.owner.name }, closed: false });
         }
       }
       return out;
@@ -41,7 +41,13 @@ export function tabsReducer(tabs: Tab[], a: TabAction): Tab[] {
   }
 }
 
-/** tabTitle is "host · opener"; the user is "you". */
+/** sessionWhere is where a terminal runs: its host, or context/namespace/pod[/container]. */
+export function sessionWhere(s: TermSession): string {
+  if (s.kind !== "pod") return s.host;
+  return [s.context, s.namespace, s.pod, s.container].filter((x) => x).join("/");
+}
+
+/** tabTitle is "where · opener"; the user is "you". */
 export function tabTitle(t: Tab): string {
   return `${t.host} · ${t.owner.kind === "agent" ? t.owner.name : "you"}`;
 }

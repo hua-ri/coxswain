@@ -19,7 +19,13 @@ export interface ClientInfo {
 
 export interface TermSession {
   id: string;
-  host: string;
+  kind?: "ssh" | "pod";
+  host: string; // ssh
+  // pod terminals
+  context?: string;
+  namespace?: string;
+  pod?: string;
+  container?: string;
   owner: { kind: "human" | "agent"; name: string };
   created_at: string;
   cols: number;

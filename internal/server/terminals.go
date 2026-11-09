@@ -16,11 +16,12 @@ import (
 // maxInput bounds one terminal input request.
 const maxInput = 64 << 10
 
-// OpenTerminal is the body of POST /api/v1/terminals.
+// OpenTerminal is the body of POST /api/v1/terminals: a host, or a pod.
 type OpenTerminal struct {
-	Host string `json:"host"`
-	Cols int    `json:"cols"`
-	Rows int    `json:"rows"`
+	Host string        `json:"host,omitempty"`
+	Pod  *term.PodSpec `json:"pod,omitempty"`
+	Cols int           `json:"cols"`
+	Rows int           `json:"rows"`
 }
 
 // TerminalSize is the body of POST /api/v1/terminals/{id}/resize.
@@ -65,10 +66,20 @@ func (s *server) openTerminal(w http.ResponseWriter, r *http.Request) {
 	}
 	var in OpenTerminal
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBody)).Decode(&in); err != nil {
-		fail(w, http.StatusBadRequest, "body must be {host, cols, rows}: "+err.Error(), "")
+		fail(w, http.StatusBadRequest, "body must be {host, cols, rows} or {pod: {context, namespace, pod, container, shell}, cols, rows}: "+err.Error(), "")
 		return
 	}
-	sess, err := m.OpenHost(r.Context(), in.Host, actorOf(r), in.Cols, in.Rows)
+	if (in.Host == "") == (in.Pod == nil) {
+		fail(w, http.StatusBadRequest, "give either host or pod", "")
+		return
+	}
+	var sess term.Session
+	var err error
+	if in.Pod != nil {
+		sess, err = m.OpenPod(r.Context(), *in.Pod, actorOf(r), in.Cols, in.Rows)
+	} else {
+		sess, err = m.OpenHost(r.Context(), in.Host, actorOf(r), in.Cols, in.Rows)
+	}
 	if err != nil {
 		terminalError(w, err)
 		return
@@ -200,8 +211,10 @@ func terminalError(w http.ResponseWriter, err error) {
 		code = http.StatusNotFound
 	case errors.Is(err, term.ErrClosed), errors.Is(err, term.ErrTooMany):
 		code = http.StatusConflict
-	case errors.Is(err, term.ErrSize):
+	case errors.Is(err, term.ErrSize), errors.Is(err, term.ErrPodSpec):
 		code = http.StatusBadRequest
+	case errors.Is(err, term.ErrNoPods):
+		code = http.StatusServiceUnavailable
 	}
 	fail(w, code, err.Error(), "")
 }
