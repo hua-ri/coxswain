@@ -50,17 +50,42 @@ func clean(p string) string {
 
 // Forbidden reports why reading path would touch the user's real
 // kubeconfig, or "" if it is fine.
-func Forbidden(path string) string {
-	p := clean(path)
-	for _, h := range realHomes {
-		dir := clean(filepath.Join(h, ".kube"))
-		if p == dir || strings.HasPrefix(p, dir+string(filepath.Separator)) {
-			return fmt.Sprintf("kubeconfig %s is under the real user's %s", p, dir)
+func Forbidden(path string) string { return ForbiddenIn(path, realHomes, realKubeconfig) }
+
+// resolved is p with symlinks resolved, as far as it exists.
+func resolved(p string) string {
+	p = clean(p)
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		return r
+	}
+	parent := filepath.Dir(p)
+	if parent == p {
+		return p
+	}
+	return filepath.Join(resolved(parent), filepath.Base(p))
+}
+
+// ForbiddenIn reports why path is (or, following symlinks, leads to) a
+// file under one of homes' .kube or one of kubeconfigs. Only path and the
+// home directories themselves are resolved: the real kubeconfig files and
+// .kube directories are never looked at.
+func ForbiddenIn(path string, homes, kubeconfigs []string) string {
+	paths := []string{clean(path), resolved(path)}
+	for _, h := range homes {
+		for _, home := range []string{clean(h), resolved(h)} {
+			dir := filepath.Join(home, ".kube")
+			for _, p := range paths {
+				if p == dir || strings.HasPrefix(p, dir+string(filepath.Separator)) {
+					return fmt.Sprintf("kubeconfig %s is under the real user's %s", path, dir)
+				}
+			}
 		}
 	}
-	for _, k := range realKubeconfig {
-		if p == k {
-			return fmt.Sprintf("kubeconfig %s is the real user's $KUBECONFIG", p)
+	for _, k := range kubeconfigs {
+		for _, p := range paths {
+			if p == clean(k) {
+				return fmt.Sprintf("kubeconfig %s is the real user's $KUBECONFIG %s", path, k)
+			}
 		}
 	}
 	return ""

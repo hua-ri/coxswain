@@ -3,10 +3,15 @@ package k8s
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hua-ri/coxswain/internal/engine"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 )
 
 // TestApplySecretNoOracle: a dry run must not tell whether given Secret
@@ -71,5 +76,73 @@ func TestSummariesByGroup(t *testing.T) {
 	}
 	if got := summaryFor("", "Pod"); got.columns[1] != "ready" {
 		t.Fatalf("%v", got.columns)
+	}
+}
+
+func TestGetByteBudget(t *testing.T) {
+	var objs []runtime.Object
+	for i := range 50 {
+		objs = append(objs, &corev1.ConfigMap{ObjectMeta: meta("default", fmt.Sprintf("cm-%02d", i), time.Hour),
+			Data: map[string]string{"k": strings.Repeat("v", 1000)}})
+	}
+	f := setup(t, objs...)
+	defer func(b int) { listBudget = b }(listBudget)
+	listBudget = 10 << 10
+	res := f.invoke(t, desktop, "k8s.get", args("context", "dev", "kind", "cm")).(GetOutput)
+	if len(res.Rows) == 0 || len(res.Rows) >= 50 || !res.More {
+		t.Fatalf("rows %d more %v", len(res.Rows), res.More)
+	}
+}
+
+func TestEventsBounded(t *testing.T) {
+	var objs []runtime.Object
+	for i := range 40 {
+		objs = append(objs, event("default", fmt.Sprintf("p-%02d", i), "Pod", "Warning", "BackOff", strings.Repeat("x", 1000), time.Minute))
+	}
+	f := setup(t, objs...)
+	res := f.invoke(t, codex, "k8s.events", args("context", "dev")).(EventsOutput)
+	if !res.Truncated || res.ArtifactID == "" || len(res.Events) == 0 || len(res.Events) >= 40 || len(res.Events[0].Message) > 310 {
+		t.Fatalf("events %d truncated %v msg %d", len(res.Events), res.Truncated, len(res.Events[0].Message))
+	}
+	defer func(n int) { maxEvents = n }(maxEvents)
+	maxEvents = 5
+	res = f.invoke(t, desktop, "k8s.events", args("context", "dev")).(EventsOutput)
+	if len(res.Events) != 5 || !res.Incomplete {
+		t.Fatalf("cap: %d %v", len(res.Events), res.Incomplete)
+	}
+}
+
+func TestDeleteAllNamespacesRefused(t *testing.T) {
+	f := setup(t, runningPod("default", "web-1", "node-1"))
+	if out := f.e.Invoke(context.Background(), codex, "k8s.delete", args("context", "dev", "kind", "pod", "name", "web-1", "all_namespaces", true)); out.Status != engine.StatusError ||
+		!strings.Contains(out.Error, "all_namespaces") {
+		t.Fatalf("%+v", out)
+	}
+}
+
+func TestUndoPausedRefused(t *testing.T) {
+	d := deployment("shop", "web", 1, 1)
+	d.Spec.Paused = true
+	d.Annotations = map[string]string{"deployment.kubernetes.io/revision": "2"}
+	f := setup(t, d, testRS(d, "1", "web:1"), testRS(d, "2", "web:2"))
+	if out := f.e.Invoke(context.Background(), codex, "k8s.rollout", args("context", "prod", "kind", "deploy", "name", "web", "action", "undo")); out.Status != engine.StatusError ||
+		!strings.Contains(out.Error, "paused") {
+		t.Fatalf("%+v", out)
+	}
+}
+
+func TestDiagnoseSelectors(t *testing.T) {
+	empty := deployment("default", "web", 1, 0)
+	empty.Spec.Selector = &metav1.LabelSelector{}
+	bad := deployment("default", "api", 1, 0)
+	bad.Spec.Selector = &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{{Key: "app", Operator: "Bogus"}}}
+	f := setup(t, empty, bad, crashingPod("default", "web-1"))
+	d := f.invoke(t, codex, "k8s.diagnose", args("context", "dev", "kind", "deployment", "name", "web")).(DiagnoseOutput)
+	if got := findings(d); !strings.Contains(got, "empty selector") || strings.Contains(got, "web-1") || len(d.Evidence.Pods) != 0 {
+		t.Fatalf("empty:\n%s", got)
+	}
+	d = f.invoke(t, codex, "k8s.diagnose", args("context", "dev", "kind", "deployment", "name", "api")).(DiagnoseOutput)
+	if got := findings(d); !strings.Contains(got, "invalid selector") {
+		t.Fatalf("invalid:\n%s", got)
 	}
 }

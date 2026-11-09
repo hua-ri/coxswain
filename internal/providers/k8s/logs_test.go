@@ -238,6 +238,7 @@ func TestExecShapedAndTimedOut(t *testing.T) {
 	fe := f.fakes["dev"].ExecCalls
 	fe.Run = func(ctx context.Context, req kube.ExecRequest) error {
 		if req.Command[2] == "sleep" {
+			fmt.Fprintln(req.Stdout, "started")
 			<-ctx.Done()
 			return ctx.Err()
 		}
@@ -250,8 +251,9 @@ func TestExecShapedAndTimedOut(t *testing.T) {
 	if !res.Stdout.Truncated || res.Stdout.ArtifactID == "" {
 		t.Fatalf("not shaped: %d lines", res.Stdout.TotalLines)
 	}
-	out := f.e.Invoke(context.Background(), codex, "k8s.exec", args("context", "dev", "pod", "web-1", "command", "sleep", "timeout_sec", 1))
-	if out.Status != engine.StatusError || !strings.Contains(out.Error, "timed out") {
-		t.Fatalf("timeout: %+v", out)
+	// A timed-out command keeps what it printed.
+	res = f.invoke(t, codex, "k8s.exec", args("context", "dev", "pod", "web-1", "command", "sleep", "timeout_sec", 1)).(ExecOutput)
+	if !res.TimedOut || res.Stdout.Text != "started\n" || !strings.Contains(res.Error, "timed out") {
+		t.Fatalf("timeout: %+v", res)
 	}
 }

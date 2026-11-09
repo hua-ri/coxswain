@@ -98,3 +98,24 @@ func TestResolveGVK(t *testing.T) {
 		t.Fatal("unknown GVK resolved")
 	}
 }
+
+// TestUnknownKindRefreshLimited: unknown kinds refresh discovery at most
+// once every 30 seconds.
+func TestUnknownKindRefreshLimited(t *testing.T) {
+	r, disc := resolver(t)
+	now := time.Unix(0, 0)
+	r.Now = func() time.Time { return now }
+	r.Resolve("pods")
+	r.Resolve("gizmo")
+	calls := len(disc.Actions())
+	r.Resolve("gizmo")
+	r.Resolve("widgetz")
+	if len(disc.Actions()) != calls {
+		t.Fatal("refreshed again within 30s")
+	}
+	now = now.Add(31 * time.Second)
+	r.Resolve("gizmo")
+	if len(disc.Actions()) == calls {
+		t.Fatal("not refreshed after 30s")
+	}
+}

@@ -32,10 +32,11 @@ type Resolver struct {
 	disc discovery.DiscoveryInterface
 	Now  func() time.Time
 
-	mu     sync.Mutex
-	at     time.Time
-	list   []Resource
-	groups map[string]bool
+	mu       sync.Mutex
+	at       time.Time
+	forcedAt time.Time // last refresh for an unknown kind
+	list     []Resource
+	groups   map[string]bool
 }
 
 func NewResolver(disc discovery.DiscoveryInterface) *Resolver { return &Resolver{disc: disc} }
@@ -47,10 +48,21 @@ func (r *Resolver) now() time.Time {
 	return time.Now()
 }
 
-// resources returns the cached discovery, refreshing it if stale or force.
+// unknownRefreshEvery bounds how often an unknown kind refreshes discovery.
+const unknownRefreshEvery = 30 * time.Second
+
+// resources returns the cached discovery, refreshing it if stale, or if
+// force and the last forced refresh was unknownRefreshEvery ago.
 func (r *Resolver) resources(force bool) ([]Resource, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if force && r.list != nil {
+		if !r.forcedAt.IsZero() && r.now().Sub(r.forcedAt) < unknownRefreshEvery {
+			force = false
+		} else {
+			r.forcedAt = r.now()
+		}
+	}
 	if !force && r.list != nil && r.now().Sub(r.at) < DiscoveryTTL {
 		return r.list, nil
 	}

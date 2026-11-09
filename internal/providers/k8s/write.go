@@ -420,8 +420,12 @@ func (p *Provider) delete() *action.Action {
 		Annotations: writeRemote,
 		Label: func(_ context.Context, raw json.RawMessage) (action.Assessment, error) {
 			as, in, _, err := p.label(raw, action.Destructive, "delete")
-			if err == nil && in.Name == "" {
+			switch {
+			case err != nil:
+			case in.Name == "":
 				err = fmt.Errorf("name is required")
+			case in.AllNamespaces:
+				err = fmt.Errorf("delete takes one object: all_namespaces is not allowed")
 			}
 			return as, err
 		},
@@ -430,7 +434,9 @@ func (p *Provider) delete() *action.Action {
 			if err := action.Decode(raw, &in); err != nil {
 				return nil, err
 			}
-			in.AllNamespaces = false
+			if in.AllNamespaces {
+				return nil, fmt.Errorf("delete takes one object: all_namespaces is not allowed")
+			}
 			r, err := p.resolve(in)
 			if err != nil {
 				return nil, err
@@ -667,6 +673,9 @@ func (p *Provider) rollout() *action.Action {
 				err = p.patch(ctx, r, in.Name, types.MergePatchType, []byte(fmt.Sprintf(`{"spec":{"paused":%v}}`, in.Action == "pause")))
 				out.Message = in.Action + "d"
 			case "undo":
+				if paused, _, _ := unstructured.NestedBool(obj.Object, "spec", "paused"); paused {
+					return nil, fmt.Errorf("%s/%s is paused; resume it before rolling back", r.res.Kind, in.Name)
+				}
 				out.ToRevision, err = p.undo(ctx, r, obj, in.ToRevision)
 				out.Message = fmt.Sprintf("rolled back to revision %d", out.ToRevision)
 			}

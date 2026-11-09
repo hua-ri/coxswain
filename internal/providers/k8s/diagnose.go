@@ -3,9 +3,11 @@ package k8s
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/hua-ri/coxswain/internal/action"
 	kube "github.com/hua-ri/coxswain/internal/k8s"
@@ -207,7 +209,13 @@ func (p *Provider) diagnoseTarget(ctx context.Context, r resolved, d *diagnosis,
 		return nil
 	}
 	obj, selector, err := p.controller(ctx, c, ns, kind, name)
-	if err != nil {
+	switch {
+	case errors.Is(err, errEmptySelector):
+		d.find(warning, kind+" has an empty selector", "its pods cannot be told apart from the others in the namespace; they were not diagnosed",
+			strings.ToLower(kind)+"/"+name)
+	case errors.Is(err, errBadSelector):
+		d.find(warning, kind+" has an invalid selector", err.Error(), strings.ToLower(kind)+"/"+name)
+	case err != nil:
 		return err
 	}
 	d.out.Evidence.Workload = summaryMap(controllerGroup(kind), kind, obj, p.now())
@@ -273,15 +281,18 @@ func controllerGroup(kind string) string {
 }
 
 // warnings returns the namespace's Warning events, newest first.
+// warningWindow is how far back diagnose looks for warning events.
+const warningWindow = 6 * time.Hour
+
 func (p *Provider) warnings(ctx context.Context, c *kube.Client, ns string) ([]corev1.Event, error) {
-	list, err := c.Typed.CoreV1().Events(ns).List(ctx, metav1.ListOptions{
-		FieldSelector: fields.OneTermEqualSelector("type", corev1.EventTypeWarning).String()})
+	list, _, err := listEvents(ctx, c, ns, fields.OneTermEqualSelector("type", corev1.EventTypeWarning).String())
 	if err != nil {
-		return nil, kube.Explain(err)
+		return nil, err
 	}
+	cutoff := p.now().Add(-warningWindow)
 	var out []corev1.Event
-	for _, e := range list.Items {
-		if e.Type == corev1.EventTypeWarning {
+	for _, e := range list {
+		if e.Type == corev1.EventTypeWarning && !eventTime(&e).Before(cutoff) {
 			out = append(out, e)
 		}
 	}
@@ -299,6 +310,11 @@ func (p *Provider) pick(events []corev1.Event, about map[string]bool) []EventRow
 	}
 	return p.eventRows(out, false)
 }
+
+var (
+	errEmptySelector = errors.New("empty selector")
+	errBadSelector   = errors.New("invalid selector")
+)
 
 // controller fetches a controller and the selector of its pods.
 func (p *Provider) controller(ctx context.Context, c *kube.Client, ns, kind, name string) (*unstructured.Unstructured, labels.Selector, error) {
@@ -331,12 +347,13 @@ func (p *Provider) controller(ctx context.Context, c *kube.Client, ns, kind, nam
 			return nil, nil, err
 		}
 	}
-	if sel == nil {
-		return u, nil, nil
+	if sel == nil || (len(sel.MatchLabels) == 0 && len(sel.MatchExpressions) == 0) {
+		// An empty selector would select every pod in the namespace.
+		return u, nil, errEmptySelector
 	}
 	s, err := metav1.LabelSelectorAsSelector(sel)
 	if err != nil {
-		return nil, nil, err
+		return u, nil, fmt.Errorf("%w: %v", errBadSelector, err)
 	}
 	return u, s, nil
 }

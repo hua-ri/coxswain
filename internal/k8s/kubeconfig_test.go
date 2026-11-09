@@ -578,3 +578,27 @@ func TestAliasContextsInheritTags(t *testing.T) {
 		t.Fatalf("Context %+v", ci)
 	}
 }
+
+// TestGuardFollowsSymlinks: a symlink into a (fake) real home's .kube is
+// caught too.
+func TestGuardFollowsSymlinks(t *testing.T) {
+	home := t.TempDir()
+	os.MkdirAll(filepath.Join(home, ".kube"), 0o700)
+	os.WriteFile(filepath.Join(home, ".kube", "config"), nil, 0o600)
+	link := filepath.Join(t.TempDir(), "kubeconfig")
+	os.Symlink(filepath.Join(home, ".kube", "config"), link)
+	dirLink := filepath.Join(t.TempDir(), "kube")
+	os.Symlink(filepath.Join(home, ".kube"), dirLink)
+	for _, p := range []string{link, filepath.Join(dirLink, "config"), filepath.Join(dirLink, "missing")} {
+		if k8stest.ForbiddenIn(p, []string{home}, nil) == "" {
+			t.Errorf("%s let through", p)
+		}
+	}
+	if why := k8stest.ForbiddenIn(filepath.Join(t.TempDir(), "config"), []string{home}, nil); why != "" {
+		t.Fatal(why)
+	}
+	target, _ := filepath.EvalSymlinks(filepath.Join(home, ".kube", "config"))
+	if k8stest.ForbiddenIn(link, nil, []string{target}) == "" {
+		t.Error("symlink to a $KUBECONFIG file let through")
+	}
+}

@@ -257,20 +257,75 @@ func (p *Provider) get() *action.Action {
 				limit = 200
 			}
 			limit = min(limit, 1000)
-			list, err := r.resource().List(ctx, metav1.ListOptions{LabelSelector: in.LabelSelector, FieldSelector: in.FieldSelector, Limit: int64(limit)})
+			items, more, err := listObjects(ctx, r, metav1.ListOptions{LabelSelector: in.LabelSelector, FieldSelector: in.FieldSelector}, limit)
 			if err != nil {
-				return nil, kube.Explain(err)
+				return nil, err
 			}
-			items := list.Items
 			sortObjects(items)
-			if len(items) > limit || list.GetContinue() != "" {
-				out.More = true
-				items = items[:min(limit, len(items))]
-			}
+			out.More = more
 			out.Columns, out.Rows = table(r.res, items, out.AllNamespaces, p.now())
 			out.Total = len(out.Rows)
 			return out, p.fitRows(ctx, &out)
 		},
+	}
+}
+
+// Bounds of a listing: pages of pageSize objects, at most listBudget
+// bytes (as JSON) held in memory.
+const pageSize = 250
+
+var listBudget = 8 << 20
+
+// listObjects lists up to limit objects page by page within listBudget;
+// more reports that there are others.
+func listObjects(ctx context.Context, r resolved, opts metav1.ListOptions, limit int) ([]unstructured.Unstructured, bool, error) {
+	var items []unstructured.Unstructured
+	size := 0
+	for {
+		opts.Limit = pageSize
+		list, err := r.resource().List(ctx, opts)
+		if err != nil {
+			return nil, false, kube.Explain(err)
+		}
+		for _, it := range list.Items {
+			b, _ := json.Marshal(it.Object)
+			size += len(b)
+			if len(items) == limit || size > listBudget {
+				return items, true, nil
+			}
+			items = append(items, it)
+		}
+		if opts.Continue = list.GetContinue(); opts.Continue == "" {
+			return items, false, nil
+		}
+	}
+}
+
+// Bounds of an events listing.
+const eventPage = 500
+
+var maxEvents = 5000
+
+// listEvents returns the events of a namespace ("" all) matching the
+// field selector, at most maxEvents of them (incomplete says there were
+// more), page by page.
+func listEvents(ctx context.Context, c *kube.Client, ns, selector string) ([]corev1.Event, bool, error) {
+	var out []corev1.Event
+	opts := metav1.ListOptions{FieldSelector: selector, Limit: eventPage}
+	for {
+		list, err := c.Typed.CoreV1().Events(ns).List(ctx, opts)
+		if err != nil {
+			return nil, false, kube.Explain(err)
+		}
+		for _, e := range list.Items {
+			if len(out) == maxEvents {
+				return out, true, nil
+			}
+			out = append(out, e)
+		}
+		if opts.Continue = list.GetContinue(); opts.Continue == "" {
+			return out, false, nil
+		}
 	}
 }
 
@@ -328,7 +383,7 @@ func (p *Provider) eventRows(evs []corev1.Event, namespaces bool) []EventRow {
 	for i := range evs {
 		e := &evs[i]
 		row := EventRow{Type: e.Type, Reason: e.Reason, Object: e.InvolvedObject.Kind + "/" + e.InvolvedObject.Name,
-			Message: strings.TrimSpace(e.Message), Count: e.Count, Age: age(now, eventTime(e))}
+			Message: clipLine(e.Message, 300), Count: e.Count, Age: age(now, eventTime(e))}
 		if t := eventTime(e); !t.IsZero() {
 			row.LastSeen = t.UTC().Format(time.RFC3339)
 		}
@@ -343,12 +398,12 @@ func (p *Provider) eventRows(evs []corev1.Event, namespaces bool) []EventRow {
 // objectEvents returns up to max events about one object, newest first.
 func (p *Provider) objectEvents(ctx context.Context, c *kube.Client, ns, kind, name string, max int) ([]EventRow, error) {
 	sel := fields.Set{"involvedObject.name": name, "involvedObject.kind": kind}.AsSelector().String()
-	list, err := c.Typed.CoreV1().Events(ns).List(ctx, metav1.ListOptions{FieldSelector: sel})
+	list, _, err := listEvents(ctx, c, ns, sel)
 	if err != nil {
-		return nil, kube.Explain(err)
+		return nil, err
 	}
 	var evs []corev1.Event
-	for _, e := range list.Items { // field selectors are not applied by every server (or fake)
+	for _, e := range list { // field selectors are not applied by every server (or fake)
 		if e.InvolvedObject.Name == name && strings.EqualFold(e.InvolvedObject.Kind, kind) {
 			evs = append(evs, e)
 		}
@@ -521,6 +576,35 @@ type EventsOutput struct {
 	Namespace string     `json:"namespace,omitempty"`
 	Events    []EventRow `json:"events"`
 	More      bool       `json:"more,omitempty"`
+	// Incomplete: the namespace has more events than were looked at.
+	Incomplete bool   `json:"incomplete,omitempty"`
+	Truncated  bool   `json:"truncated,omitempty"`
+	ArtifactID string `json:"artifact_id,omitempty"` // all the events, if truncated
+}
+
+// fitEvents shortens the events for agents like fitRows does tables.
+func (p *Provider) fitEvents(ctx context.Context, out *EventsOutput) error {
+	lim := limits(ctx)
+	lines := make([]string, len(out.Events))
+	size := 0
+	for i, e := range out.Events {
+		lines[i] = strings.Join([]string{e.Age, e.Namespace, e.Type, e.Reason, e.Object, e.Message}, "\t")
+		size += len(lines[i]) + 1
+	}
+	if size <= lim.MaxBytes && len(lines) <= lim.MaxLines {
+		return nil
+	}
+	id, err := p.Artifacts.Save(strings.Join(lines, "\n") + "\n")
+	if err != nil {
+		return err
+	}
+	n, used := 0, 0
+	for n < len(lines) && n < lim.MaxLines/2 && used+len(lines[n])+64 <= lim.MaxBytes/2 {
+		used += len(lines[n]) + 64
+		n++
+	}
+	out.Events, out.Truncated, out.ArtifactID = out.Events[:n], true, id
+	return nil
 }
 
 type eventsInput struct {
@@ -602,26 +686,26 @@ func (p *Provider) events() *action.Action {
 			if err != nil {
 				return nil, err
 			}
-			opts := metav1.ListOptions{}
+			sel := ""
 			if typ != "" {
-				opts.FieldSelector = fields.OneTermEqualSelector("type", typ).String()
+				sel = fields.OneTermEqualSelector("type", typ).String()
 			}
-			list, err := r.client.Typed.CoreV1().Events(r.ns).List(ctx, opts)
+			list, incomplete, err := listEvents(ctx, r.client, r.ns, sel)
 			if err != nil {
-				return nil, kube.Explain(err)
+				return nil, err
 			}
 			cutoff := p.now().Add(-since)
 			var evs []corev1.Event
-			for _, e := range list.Items {
+			for _, e := range list {
 				if (typ == "" || e.Type == typ) && !eventTime(&e).Before(cutoff) {
 					evs = append(evs, e)
 				}
 			}
-			out := EventsOutput{Context: in.Context, Namespace: r.ns, Events: p.eventRows(evs, in.AllNamespaces)}
+			out := EventsOutput{Context: in.Context, Namespace: r.ns, Events: p.eventRows(evs, in.AllNamespaces), Incomplete: incomplete}
 			if len(out.Events) > limit {
 				out.Events, out.More = out.Events[:limit], true
 			}
-			return out, nil
+			return out, p.fitEvents(ctx, &out)
 		},
 	}
 }

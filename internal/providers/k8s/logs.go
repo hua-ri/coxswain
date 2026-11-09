@@ -449,6 +449,10 @@ type ExecOutput struct {
 	Stderr      shaper.Shaped     `json:"stderr"`
 	DurationMs  int64             `json:"duration_ms"`
 	Capped      bool              `json:"capture_truncated,omitempty"`
+	// TimedOut: the command did not finish within timeout_sec (it may
+	// still run in the container); ExitCode is then -1.
+	TimedOut bool   `json:"timed_out,omitempty"`
+	Error    string `json:"error,omitempty"`
 }
 
 // PrintCLI writes the output as-is and returns the command's exit code.
@@ -564,10 +568,12 @@ func (p *Provider) exec() *action.Action {
 			if code, ok := kube.ExitCode(err); ok {
 				out.ExitCode, err = code, nil
 			}
+			if err != nil && errors.Is(runCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
+				// Keep what it printed so far.
+				out.ExitCode, out.TimedOut, err = -1, true, nil
+				out.Error = fmt.Sprintf("timed out after %s (the command may still be running in the container)", timeout)
+			}
 			if err != nil {
-				if errors.Is(runCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
-					return nil, fmt.Errorf("timed out after %s (the command may still be running in the container)", timeout)
-				}
 				return nil, err
 			}
 			lim := limits(ctx)

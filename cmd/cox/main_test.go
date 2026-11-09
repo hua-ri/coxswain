@@ -30,8 +30,12 @@ func TestMain(m *testing.M) {
 		panic(err)
 	}
 	coxBin = filepath.Join(dir, "cox")
-	// Red line: nothing here may read the user's kubeconfig. (HOME stays:
-	// go build needs it; each sandbox has its own HOME and KUBECONFIG.)
+	// Red line: nothing here may read the user's kubeconfig. What protects
+	// the cox processes these tests start is their environment: every
+	// sandbox (newSandbox) gives them their own HOME and KUBECONFIG, checked
+	// with k8stest.Guard. This process's KUBECONFIG and the BeforeRead guard
+	// only cover code running in the test process itself. (Its HOME stays:
+	// go build needs it.)
 	os.Setenv("KUBECONFIG", filepath.Join(dir, "no-kubeconfig"))
 	violations := k8stest.InstallGuard()
 	if out, err := exec.Command("go", "build", "-ldflags", "-X main.agentAncestors=off", "-o", coxBin, ".").CombinedOutput(); err != nil {
