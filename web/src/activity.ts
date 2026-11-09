@@ -115,12 +115,17 @@ export function addEvent(rows: Row[], ev: AuditEvent, key: number): Row[] {
     case "tunnel.opened":
     case "tunnel.reconnecting":
     case "tunnel.reconnected":
-    case "tunnel.closed": {
+    case "tunnel.closed":
+    case "tunnel.connection_failed": {
       const t = ev.detail as Tunnel | undefined;
       let detail = t ? tunnelRoute(t) : undefined;
       const why = ev.reason ?? ev.error;
       if (why) detail = `${detail ?? ""}: ${why}`;
-      return prepend(rows, { ...base, action: ev.type, hosts: base.hosts.length ? base.hosts : t ? [t.host] : [], detail });
+      const hosts = base.hosts.length ? base.hosts : t ? [t.host] : [];
+      if (ev.type === "tunnel.connection_failed") {
+        return prepend(rows, { ...base, action: ev.type, hosts, status: "failed", error: detail });
+      }
+      return prepend(rows, { ...base, action: ev.type, hosts, detail });
     }
     default:
       return prepend(rows, { ...base, action: ev.type });

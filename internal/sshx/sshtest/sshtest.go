@@ -40,6 +40,11 @@ type Server struct {
 	// Sizes receives every pty-req (with Term) and window-change request.
 	Sizes   chan Size
 	Accepts atomic.Int32 // TCP connections accepted
+	// RefuseDirectTCPIP rejects direct-tcpip channels ("ssh -L") as
+	// administratively prohibited, like sshd with AllowTcpForwarding no.
+	RefuseDirectTCPIP atomic.Bool
+	// RefuseTCPIPForward refuses tcpip-forward requests ("ssh -R").
+	RefuseTCPIPForward atomic.Bool
 
 	mu    sync.Mutex
 	conns []net.Conn
@@ -130,7 +135,7 @@ func (s *Server) serve(c net.Conn, cfg *ssh.ServerConfig) {
 		c.Close()
 		return
 	}
-	fw := &forwards{conn: sc}
+	fw := &forwards{conn: sc, refuse: &s.RefuseTCPIPForward}
 	defer fw.closeAll()
 	go fw.serve(reqs)
 	for nc := range chans {
@@ -138,6 +143,10 @@ func (s *Server) serve(c net.Conn, cfg *ssh.ServerConfig) {
 		case "session":
 			go s.session(nc)
 		case "direct-tcpip":
+			if s.RefuseDirectTCPIP.Load() {
+				nc.Reject(ssh.Prohibited, "TCP forwarding is disabled")
+				continue
+			}
 			go directTCPIP(nc)
 		default:
 			nc.Reject(ssh.UnknownChannelType, "unsupported")

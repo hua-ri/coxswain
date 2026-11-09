@@ -1,6 +1,6 @@
-import { useState } from "react";
-import { formatBytes, ownerLabel } from "./format";
-import { tunnelRequest, tunnelRoute, type Tunnel, type TunnelForm } from "./tunnels";
+import { Fragment, useState } from "react";
+import { formatBytes, formatTime, ownerLabel } from "./format";
+import { failureText, tunnelRequest, tunnelRoute, type Tunnel, type TunnelForm } from "./tunnels";
 import type { Host } from "./types";
 
 interface Props {
@@ -131,7 +131,8 @@ export function TunnelsView({ tunnels, hosts, onClose, onCreate }: Props) {
           </thead>
           <tbody>
             {tunnels.map((t) => (
-              <tr key={t.id}>
+              <Fragment key={t.id}>
+              <tr className={failureText(t) ? "has-failure" : undefined}>
                 <td>
                   <span className={t.type === "remote" ? "badge risk-destructive" : "badge"}>{t.type}</span>
                 </td>
@@ -155,6 +156,16 @@ export function TunnelsView({ tunnels, hosts, onClose, onCreate }: Props) {
                   </button>
                 </td>
               </tr>
+              {failureText(t) && (
+                <tr className="failure">
+                  <td />
+                  <td colSpan={8} className="error" title={t.last_error}>
+                    {failureText(t)}
+                    {t.last_error_at && <span className="muted"> ({formatTime(t.last_error_at)})</span>}
+                  </td>
+                </tr>
+              )}
+              </Fragment>
             ))}
           </tbody>
         </table>

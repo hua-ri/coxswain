@@ -66,6 +66,9 @@ Prefer the MCP tools when they are available:
 - `tunnel_open` returns the address to use (`listen`). Close every tunnel you open with
   `tunnel_close` as soon as you are done; unused ones close themselves after `idle_minutes`
   (default 30, at most 240). You may have at most 16 open.
+- Check the first connection through a new tunnel yourself (curl, nc). If it is closed at once,
+  `tunnel_list` shows why in `last_error` (often the host forbids forwarding: sshd
+  `AllowTcpForwarding no`). Tell the user rather than retrying.
 - You cannot open `remote` tunnels (they expose the user's machine to the host). If one is needed,
   ask the user to open it in the desktop app or with `cox tunnel open`.
 - The user can close any tunnel. If yours disappears, it was closed on purpose: do not reopen it

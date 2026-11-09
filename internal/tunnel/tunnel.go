@@ -92,7 +92,17 @@ type Tunnel struct {
 	BytesIn          int64        `json:"bytes_in"`  // back from the target
 	IdleMinutes      int          `json:"idle_minutes"`
 	Error            string       `json:"error,omitempty"` // why it is reconnecting
+	// FailedConnections counts connections that could not reach the
+	// target: the host refused the forward (e.g. sshd's
+	// AllowTcpForwarding no) or the target refused the connection.
+	FailedConnections int64      `json:"failed_connections"`
+	LastError         string     `json:"last_error,omitempty"` // why the last one failed
+	LastErrorAt       *time.Time `json:"last_error_at,omitempty"`
 }
+
+// failEvery is the least time between two tunnel.connection_failed
+// events of one tunnel.
+const failEvery = 10 * time.Second
 
 // Manager holds the tunnels. Each has its own SSH connection (not the
 // pool's) and reconnects when it breaks, keeping its ports.
@@ -110,6 +120,8 @@ type Manager struct {
 	after func(time.Duration, func()) (stop func() bool)
 	// afterInsert, if set, runs when Open has added a tunnel (tests).
 	afterInsert func()
+	// now is the clock of connection failures; tests replace it.
+	now func() time.Time
 
 	serverPort atomic.Int64
 
@@ -428,6 +440,13 @@ func (m *Manager) afterFunc(d time.Duration, f func()) func() bool {
 	return time.AfterFunc(d, f).Stop
 }
 
+func (m *Manager) clock() time.Time {
+	if m.now != nil {
+		return m.now()
+	}
+	return time.Now()
+}
+
 func (m *Manager) maxOpen() int {
 	if m.MaxOpen > 0 {
 		return m.MaxOpen
@@ -478,6 +497,8 @@ type tunnel struct {
 	closed   bool
 	idleStop func() bool
 	idleGen  int
+	failed   atomic.Int64
+	failLog  time.Time // when the last tunnel.connection_failed was logged
 }
 
 func (t *tunnel) snapshot() Tunnel {
@@ -486,7 +507,26 @@ func (t *tunnel) snapshot() Tunnel {
 	info.Connections = len(t.active)
 	t.mu.Unlock()
 	info.TotalConnections, info.BytesOut, info.BytesIn = t.total.Load(), t.out.Load(), t.in.Load()
+	info.FailedConnections = t.failed.Load()
 	return info
+}
+
+// fail records a connection that could not reach the target, and logs
+// it unless the tunnel logged one less than failEvery ago.
+func (t *tunnel) fail(err error) {
+	now := t.m.clock().UTC()
+	msg := err.Error()
+	t.mu.Lock()
+	t.failed.Add(1)
+	t.info.LastError, t.info.LastErrorAt = msg, &now
+	logIt := !t.closed && (t.failLog.IsZero() || now.Sub(t.failLog) >= failEvery)
+	if logIt {
+		t.failLog = now
+	}
+	t.mu.Unlock()
+	if logIt {
+		t.m.log(eventlog.TunnelConnectionFailed, t, func(ev *eventlog.Event) { ev.Error = msg })
+	}
 }
 
 // armIdle starts the idle timer if the tunnel has one and is unused.
@@ -573,10 +613,12 @@ func (t *tunnel) serveLocal(c net.Conn) {
 		if t.spec.Type == Socks {
 			socksReply(c, socksGeneralFailure)
 		}
+		t.fail(errors.New("the SSH connection is down (reconnecting)"))
 		return
 	}
 	up, err := conn.Dial("tcp", target)
 	if err != nil {
+		t.fail(fmt.Errorf("%s: %w", target, err))
 		if t.spec.Type == Socks {
 			socksReply(c, socksRefused)
 		}
@@ -611,6 +653,7 @@ func (t *tunnel) acceptRemote(ln net.Listener) {
 			defer c.Close()
 			up, err := net.Dial("tcp", t.info.Target)
 			if err != nil {
+				t.fail(err)
 				return
 			}
 			defer up.Close()

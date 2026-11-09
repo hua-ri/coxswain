@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AuditEvent } from "./cox";
-import { tunnelRequest, tunnelRoute, tunnelsReducer, type Tunnel, type TunnelForm } from "./tunnels";
+import { failureText, tunnelRequest, tunnelRoute, tunnelsReducer, type Tunnel, type TunnelForm } from "./tunnels";
 
 const kimi = { kind: "agent" as const, name: "kimi" };
 
@@ -31,6 +31,16 @@ describe("tunnelsReducer", () => {
     // A late event for a closed tunnel does not bring it back.
     s = tunnelsReducer(s, { type: "event", event: ev("tunnel.reconnected", tun()) });
     expect(s.map((t) => t.id)).toEqual(["tn_2"]);
+  });
+
+  it("records failed connections", () => {
+    let s = tunnelsReducer([], { type: "event", event: ev("tunnel.opened", tun()) });
+    const failed = tun({ failed_connections: 3, last_error: "administratively prohibited", last_error_at: "2026-11-09T10:00:00Z" });
+    s = tunnelsReducer(s, { type: "event", event: ev("tunnel.connection_failed", failed, { error: "administratively prohibited" }) });
+    expect(s[0]).toMatchObject({ status: "open", failed_connections: 3, last_error: "administratively prohibited" });
+    expect(failureText(s[0])).toBe("3 failed connections; last: administratively prohibited");
+    expect(failureText(tun({ failed_connections: 1, last_error: "refused" }))).toBe("1 failed connection; last: refused");
+    expect(failureText(tun())).toBe("");
   });
 
   it("syncs with the server's list and ignores other events", () => {

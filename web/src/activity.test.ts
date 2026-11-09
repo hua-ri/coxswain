@@ -121,6 +121,17 @@ describe("addEvent", () => {
     expect(rows[0].batch?.hosts).toEqual([{ host: "a", status: "failed", exitCode: 1, durationMs: 2 }]);
   });
 
+  it("shows failed tunnel connections with the error", () => {
+    const kimi = { kind: "agent" as const, name: "kimi" };
+    const rows = feed([
+      { time: t, type: "tunnel.connection_failed", actor: kimi, tunnel: "f_1", error: "ssh: rejected: administratively prohibited",
+        targets: [{ kind: "host", id: "dev" }],
+        detail: { id: "f_1", type: "local", host: "dev", listen: "127.0.0.1:1", target: "127.0.0.1:8080" } },
+    ]);
+    expect(rows[0]).toMatchObject({ action: "tunnel.connection_failed", status: "failed",
+      error: "127.0.0.1:1 → 127.0.0.1:8080 on dev: ssh: rejected: administratively prohibited" });
+  });
+
   it("keeps at most 1000 rows", () => {
     let rows: Row[] = [];
     for (let i = 0; i < 1100; i++) rows = addEvent(rows, { time: t, type: "client.allowed", client: "c" }, i);

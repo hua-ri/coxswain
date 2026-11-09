@@ -135,3 +135,5 @@ tr.expand > td { background: var(--panel); padding: 6px 12px 8px 28px; }
 .badge.host-failed { background: #d93025; border-color: #d93025; color: #fff; }
 pre.output { margin: 2px 0; padding: 6px 8px; max-height: 320px; overflow: auto; background: var(--bg); border: 1px solid var(--border); border-radius: 5px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; white-space: pre-wrap; }
 pre.output.stderr { color: #d93025; }
+tr.has-failure > td { border-bottom: none; }
+tr.failure > td { padding-top: 0; font-size: 12px; }

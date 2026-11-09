@@ -45,6 +45,10 @@ const (
 	TunnelReconnecting = "tunnel.reconnecting" // the SSH connection broke; Error says why
 	TunnelReconnected  = "tunnel.reconnected"
 	TunnelClosed       = "tunnel.closed" // Reason says why
+	// A connection through the tunnel failed (the host refused the
+	// forward, or the target refused the connection); Error says why. At
+	// most one per tunnel every 10 seconds; Detail counts them all.
+	TunnelConnectionFailed = "tunnel.connection_failed"
 
 	// Batch runs (ssh.batch). Actor is the caller.
 	BatchStarted  = "batch.started"

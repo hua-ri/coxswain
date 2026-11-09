@@ -16,7 +16,10 @@ export interface Tunnel {
   bytes_out: number;
   bytes_in: number;
   idle_minutes: number;
-  error?: string;
+  error?: string; // why it is reconnecting
+  failed_connections?: number; // connections that could not reach the target
+  last_error?: string;
+  last_error_at?: string;
 }
 
 export type TunnelAction = { type: "sync"; list: Tunnel[] } | { type: "event"; event: AuditEvent };
@@ -86,4 +89,11 @@ export function tunnelRequest(f: TunnelForm): { body: Record<string, unknown> } 
       break;
   }
   return { body };
+}
+
+/** failureText summarizes a tunnel's failed connections, or "" if none. */
+export function failureText(t: Tunnel): string {
+  const n = t.failed_connections ?? 0;
+  if (n === 0) return "";
+  return `${n} failed connection${n === 1 ? "" : "s"}; last: ${t.last_error ?? "unknown error"}`;
 }

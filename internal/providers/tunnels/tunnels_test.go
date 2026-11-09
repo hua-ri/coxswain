@@ -112,6 +112,14 @@ func TestOpenListClose(t *testing.T) {
 		res.HostNote != "no restarts" || res.HostTags["env"] != "prod" || res.IdleMinutes != 30 || !strings.Contains(res.Hint, res.Listen) {
 		t.Fatalf("%+v", res)
 	}
+	// The host may refuse forwards: say how to check the first connection.
+	if !strings.Contains(res.Hint, "first connection") || !strings.Contains(res.Hint, "last_error") {
+		t.Fatalf("hint %q", res.Hint)
+	}
+	if a, _ := e.Registry.Get("tunnel.list"); !strings.Contains(a.Description, "failed_connections") ||
+		!strings.Contains(a.Description, "last_error_at") {
+		t.Fatalf("tunnel.list description %q", a.Description)
+	}
 	if ev := requested(t, e); ev.Risk != "write" || ev.Targets[0].Tags["env"] != "prod" {
 		t.Fatalf("%+v", ev)
 	}

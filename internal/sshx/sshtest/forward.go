@@ -6,6 +6,7 @@ import (
 	"net"
 	"strconv"
 	"sync"
+	"sync/atomic"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -14,7 +15,8 @@ import (
 // tcpip-forward request listens on 127.0.0.1 and sends accepted
 // connections back as forwarded-tcpip channels.
 type forwards struct {
-	conn *ssh.ServerConn
+	conn   *ssh.ServerConn
+	refuse *atomic.Bool // refuse every tcpip-forward
 
 	mu        sync.Mutex
 	listeners map[string]net.Listener // by "addr:port" as the client asked
@@ -30,6 +32,10 @@ func (f *forwards) serve(reqs <-chan *ssh.Request) {
 	for req := range reqs {
 		switch req.Type {
 		case "tcpip-forward":
+			if f.refuse != nil && f.refuse.Load() {
+				req.Reply(false, nil)
+				continue
+			}
 			f.listen(req)
 		case "cancel-tcpip-forward":
 			var p forwardReq

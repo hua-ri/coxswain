@@ -659,3 +659,134 @@ func TestLoopback(t *testing.T) {
 		}
 	}
 }
+
+// fakeClock is a settable clock for the failure-event throttle.
+type fakeClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func (c *fakeClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *fakeClock) Add(d time.Duration) {
+	c.mu.Lock()
+	c.now = c.now.Add(d)
+	c.mu.Unlock()
+}
+
+// refused connects through addr and expects the tunnel to close the
+// connection without data.
+func refused(t *testing.T, addr string) {
+	t.Helper()
+	c, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	c.SetDeadline(time.Now().Add(5 * time.Second))
+	if b, err := io.ReadAll(c); len(b) != 0 || err != nil {
+		t.Fatalf("read %q %v", b, err)
+	}
+}
+
+func TestConnectionFailed(t *testing.T) {
+	f := setup(t)
+	clock := &fakeClock{now: time.Date(2026, 11, 9, 10, 0, 0, 0, time.UTC)}
+	f.m.now = clock.Now
+	port := echo(t)
+	tn, err := f.m.Open(context.Background(), Spec{Host: "dev", Type: Local, RemotePort: port}, codex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.srv.RefuseDirectTCPIP.Store(true) // like AllowTcpForwarding no
+
+	refused(t, tn.Listen)
+	ev := next(t, f.events, eventlog.TunnelConnectionFailed)
+	if ev.Tunnel != tn.ID || ev.Actor.Name != "codex" || !strings.Contains(ev.Error, "prohibited") {
+		t.Fatalf("%+v", ev)
+	}
+	d := detail(t, ev)
+	if d.FailedConnections != 1 || d.LastError != ev.Error || !d.LastErrorAt.Equal(clock.Now()) || d.Status != Open {
+		t.Fatalf("%+v", d)
+	}
+
+	// Within 10s: counted, but no new event.
+	clock.Add(5 * time.Second)
+	refused(t, tn.Listen)
+	waitFor(t, f.m, tn.ID, func(tn Tunnel) bool { return tn.FailedConnections == 2 })
+	clock.Add(6 * time.Second)
+	f.srv.RefuseDirectTCPIP.Store(false)
+	closed, _ := net.Listen("tcp", "127.0.0.1:0") // a port nobody listens on
+	closed.Close()
+	tn2, err := f.m.Open(context.Background(), Spec{Host: "dev", Type: Local, RemotePort: closed.Addr().(*net.TCPAddr).Port}, codex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.srv.RefuseDirectTCPIP.Store(true)
+	refused(t, tn.Listen)
+	if d := detail(t, next(t, f.events, eventlog.TunnelConnectionFailed)); d.ID != tn.ID || d.FailedConnections != 3 {
+		t.Fatalf("throttled event expected for the 3rd failure: %+v", d)
+	}
+
+	// The target refusing is a failure too (the throttle is per tunnel).
+	f.srv.RefuseDirectTCPIP.Store(false)
+	refused(t, tn2.Listen)
+	ev = next(t, f.events, eventlog.TunnelConnectionFailed)
+	if ev.Tunnel != tn2.ID || ev.Error == "" || strings.Contains(ev.Error, "prohibited") {
+		t.Fatalf("%+v", ev)
+	}
+	// A working connection keeps the last error for the user to see.
+	f.m.Close(tn2.ID, desktop)
+	roundTrip(t, tn.Listen)
+	if got, _ := f.m.Get(tn.ID); got.FailedConnections != 3 || got.LastError == "" {
+		t.Fatalf("%+v", got)
+	}
+}
+
+func TestRemoteConnectionFailed(t *testing.T) {
+	f := setup(t)
+	closed, _ := net.Listen("tcp", "127.0.0.1:0")
+	closed.Close()
+	tn, err := f.m.Open(context.Background(), Spec{Host: "dev", Type: Remote, LocalPort: closed.Addr().(*net.TCPAddr).Port}, desktop)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refused(t, tn.Listen)
+	ev := next(t, f.events, eventlog.TunnelConnectionFailed)
+	if ev.Tunnel != tn.ID || !strings.Contains(ev.Error, "refused") || detail(t, ev).FailedConnections != 1 {
+		t.Fatalf("%+v", ev)
+	}
+}
+
+func TestSocksConnectionFailed(t *testing.T) {
+	f := setup(t)
+	tn, err := f.m.Open(context.Background(), Spec{Host: "dev", Type: Socks}, desktop)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.srv.RefuseDirectTCPIP.Store(true)
+	c, code := socks(t, tn.Listen, 1, 1, []byte{127, 0, 0, 1}, echo(t))
+	c.Close()
+	if code != socksRefused {
+		t.Fatalf("reply %d", code)
+	}
+	if ev := next(t, f.events, eventlog.TunnelConnectionFailed); !strings.Contains(ev.Error, "prohibited") {
+		t.Fatalf("%+v", ev)
+	}
+}
+
+func TestRemoteForwardRefused(t *testing.T) {
+	f := setup(t)
+	f.srv.RefuseTCPIPForward.Store(true)
+	_, err := f.m.Open(context.Background(), Spec{Host: "dev", Type: Remote, LocalPort: echo(t)}, desktop)
+	if !errors.Is(err, ErrListen) || !strings.Contains(err.Error(), "dev") {
+		t.Fatalf("%v", err)
+	}
+	if len(f.m.List()) != 0 {
+		t.Fatal("a refused tunnel is listed")
+	}
+}

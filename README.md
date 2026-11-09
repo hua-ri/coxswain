@@ -82,8 +82,9 @@ cox desktop   # needs a running cox server
   batch run (`ssh.batch`) to see each host's result and, on request, its output.
 - **Transfers**: uploads and downloads, yours and your agents', with progress and speed. Cancel a
   running one; it can be resumed later.
-- **Tunnels**: every open tunnel with its route, owner, connections and traffic. Close any of
-  them, or open one with *New tunnel*.
+- **Tunnels**: every open tunnel with its route, owner, connections and traffic, and its last
+  failed connection (e.g. the host forbids forwarding). Close any of them, or open one with
+  *New tunnel*.
 - **Terminals**, one tab per shared terminal.
 - **Agents**: allow or revoke them, like `cox clients allow|revoke`.
 

@@ -32,8 +32,12 @@ func (p *Provider) list() *action.Action {
 	return &action.Action{
 		ID:      "tunnel.list",
 		Summary: "List tunnels (port forwards)",
-		Description: "List the open tunnels: id, type, host, where connections enter (listen) and go (target), who opened " +
-			"it, status (open or reconnecting), open and total connections, bytes sent and received.",
+		Description: "List the open tunnels. Each has: id; type (local, remote, socks); host; listen (where connections " +
+			"enter); target (where they go; empty for socks); owner (who opened it); created_at; status (open, or " +
+			"reconnecting with error saying why); connections (open now) and total_connections; bytes_out (toward the " +
+			"target) and bytes_in; idle_minutes (closes after that long unused, 0 = never); failed_connections (connections " +
+			"that could not reach the target: the host refused the forward, e.g. sshd AllowTcpForwarding no, or the " +
+			"target refused) with last_error and last_error_at for the latest one.",
 		Input:       map[string]any{"type": "object", "properties": map[string]any{}},
 		Annotations: action.Annotations{ReadOnly: true, Idempotent: true},
 		Label: func(context.Context, json.RawMessage) (action.Assessment, error) {
@@ -118,6 +122,11 @@ func (p *Provider) open() *action.Action {
 				out.Hint = fmt.Sprintf("use socks5h://%s as a proxy (e.g. curl -x socks5h://%s URL)", tn.Listen, tn.Listen)
 			case tunnel.Remote:
 				out.Hint = fmt.Sprintf("on %s, %s leads to %s on this machine", tn.Host, tn.Listen, tn.Target)
+			}
+			if tn.Type != tunnel.Remote {
+				out.Hint += "; check the first connection with your own client (e.g. curl or nc): the host may refuse " +
+					"forwards or the target may refuse, which shows only as a closed connection here — then tunnel_list " +
+					"shows why in last_error"
 			}
 			out.Hint += fmt.Sprintf("; close it with tunnel_close %s when done", tn.ID)
 			return out, nil
