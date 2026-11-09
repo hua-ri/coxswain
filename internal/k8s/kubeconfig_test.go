@@ -601,7 +601,7 @@ func TestAliasContextsInheritTags(t *testing.T) {
 		!strings.Contains(tagged.Note, "mine") || !strings.Contains(tagged.Note, "ask first (from prod)") {
 		t.Fatalf("an alias's own env=dev must not win over prod: %+v", tagged)
 	}
-	if p := by["prod"]; len(p.InheritedFrom) != 1 || p.InheritedFrom[0] != "prod-dev-tagged" || p.Tags["env"] != "prod" || p.Tags["owner"] != "me" {
+	if p := by["prod"]; p.OwnTags["team"] != "shop" || p.OwnTags["owner"] != "" || len(p.InheritedFrom) != 1 || p.InheritedFrom[0] != "prod-dev-tagged" || p.Tags["env"] != "prod" || p.Tags["owner"] != "me" {
 		t.Fatalf("prod: %+v", p)
 	}
 	if d := by["dev-alias"]; len(d.Tags) != 0 || len(d.InheritedFrom) != 0 {

@@ -37,6 +37,25 @@ describe("addEvent", () => {
     expect(rows[0].detail).toBe("/var/log/app.log");
   });
 
+  it("shows where and what of k8s actions", () => {
+    const k8s = (action: string, args: Record<string, unknown>) =>
+      ({ time: t, type: "action.requested", actor: codex, action, risk: "write",
+        targets: [{ kind: "k8s", id: "k8s:prod/shop", tags: { env: "prod" } }], args }) as AuditEvent;
+    const rows = feed([
+      k8s("k8s.scale", { context: "prod", kind: "deploy", name: "web", replicas: 0 }),
+      k8s("k8s.rollout", { context: "prod", kind: "deployment", name: "web", action: "undo" }),
+      k8s("k8s.exec", { context: "prod", pod: "web-1", command: ["ls", "-l"] }),
+      k8s("k8s.logs", { context: "prod", pod: "web-1", container: "app" }),
+      k8s("k8s.apply", { context: "prod", manifest: "a: 1\nb: 2\n", dry_run: true }),
+      k8s("k8s.port_forward", { context: "prod", service: "web", remote_port: 80 }),
+    ]);
+    expect(rows.map((r) => r.detail)).toEqual([
+      "service/web :80", "manifest, 2 lines (dry run)", "pod/web-1/app", "pod/web-1 $ ls -l", "deployment/web undo",
+      "deploy/web replicas=0",
+    ]);
+    expect(rows[0].hosts).toEqual(["k8s:prod/shop"]);
+  });
+
   it("records refusals, client and terminal events", () => {
     const rows = feed([
       { time: t, type: "action.refused", actor: codex, action: "ssh.exec", reason: "revoked" },

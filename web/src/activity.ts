@@ -170,7 +170,30 @@ export function filterOptions(rows: Row[]): { clients: string[]; hosts: string[]
 
 /** requestDetail summarises a request's arguments: the command, the text typed, the file (with the size
  * written; file contents are not in the activity stream) or the host. */
+/** k8sDetail says what a k8s action is about: kind/name, pod, and the specifics. */
+function k8sDetail(args: Record<string, unknown>): string {
+  const str = (k: string) => (typeof args[k] === "string" ? (args[k] as string) : "");
+  const parts: string[] = [];
+  if (str("manifest")) {
+    const lines = str("manifest").replace(/\n$/, "").split("\n").length;
+    parts.push(`manifest, ${lines} lines${args.dry_run ? " (dry run)" : ""}`);
+  } else if (str("pod")) {
+    parts.push(["pod", str("pod"), str("container")].filter((x) => x).join("/"));
+  } else if (str("service")) {
+    parts.push(`service/${str("service")}`);
+  } else if (str("kind")) {
+    parts.push(str("name") ? `${str("kind")}/${str("name")}` : str("kind"));
+  }
+  if (typeof args.replicas === "number") parts.push(`replicas=${args.replicas}`);
+  if (str("action")) parts.push(str("action"));
+  if (typeof args.remote_port === "number") parts.push(`:${args.remote_port}`);
+  const cmd = Array.isArray(args.command) ? args.command.join(" ") : str("command");
+  if (cmd) parts.push("$ " + cmd);
+  return parts.join(" ");
+}
+
 function requestDetail(args: Record<string, unknown>): string | undefined {
+  if (typeof args.context === "string") return k8sDetail(args) || undefined;
   const path = [args.path, args.remote_path].find((v) => typeof v === "string") as string | undefined;
   if (path !== undefined) {
     const content = args.content as { bytes?: unknown } | undefined;

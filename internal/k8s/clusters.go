@@ -89,7 +89,8 @@ type ContextInfo struct {
 	Tags map[string]string `json:"tags,omitempty"`
 	Note string            `json:"note,omitempty"`
 	// InheritedFrom names the contexts on the same server whose tags or
-	// note apply too; OwnTags are the context's own tags if they differ.
+	// note apply too; OwnTags are then the context's own tags (absent if
+	// it has none), so tags not among them are inherited.
 	InheritedFrom []string          `json:"inherited_from,omitempty"`
 	OwnTags       map[string]string `json:"own_tags,omitempty"`
 }
@@ -204,7 +205,7 @@ func effective(cfg *clientcmdapi.Config, meta map[string]Meta, name string) Cont
 		ci.InheritedFrom = append(ci.InheritedFrom, other)
 	}
 	ci.Tags, ci.Note = tags, strings.Join(notes, "; ")
-	if len(others) > 0 && len(own.Tags) > 0 && !maps.Equal(own.Tags, tags) {
+	if len(others) > 0 {
 		ci.OwnTags = own.Tags
 	}
 	return ci
