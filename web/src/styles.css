@@ -39,8 +39,8 @@ select { font: inherit; }
 .sidebar h3 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin: 12px 0 6px; }
 .sidebar ul { list-style: none; margin: 0; padding: 0; }
 .hosts li { padding: 6px 0; border-bottom: 1px solid var(--border); }
-.host-head { display: flex; justify-content: space-between; align-items: center; }
-.host-name { font-weight: 600; }
+.host-head { display: flex; justify-content: space-between; align-items: center; gap: 6px; }
+.host-name { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tags { margin-top: 3px; display: flex; flex-wrap: wrap; gap: 3px; }
 .clients li { display: flex; gap: 8px; align-items: center; padding: 4px 0; }
 .clients li > span:first-child { flex: 1; }
@@ -92,7 +92,7 @@ div.tab.active { background: var(--bg); border-color: var(--accent); }
 button.danger { background: #d93025; border-color: #d93025; color: #fff; }
 
 /* Fixed panels and file browsers */
-.host-buttons { display: flex; gap: 4px; }
+.host-buttons { display: flex; gap: 4px; flex-shrink: 0; }
 .tab .count { background: var(--accent); color: #fff; border-radius: 8px; font-size: 10px; padding: 0 5px; line-height: 15px; }
 .pane.scroll { overflow: auto; }
 .panel { padding: 8px 14px; }
@@ -137,3 +137,4 @@ pre.output { margin: 2px 0; padding: 6px 8px; max-height: 320px; overflow: auto;
 pre.output.stderr { color: #d93025; }
 tr.has-failure > td { border-bottom: none; }
 tr.failure > td { padding-top: 0; font-size: 12px; }
+.host-address { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

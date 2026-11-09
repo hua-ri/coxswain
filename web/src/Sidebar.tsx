@@ -18,7 +18,9 @@ export function Sidebar({ hosts, clients, onOpenTerminal, onOpenFiles, onAllow, 
         {hosts.map((h) => (
           <li key={h.name} title={h.note || undefined}>
             <div className="host-head">
-              <span className="host-name">{h.name}</span>
+              <span className="host-name" title={h.name}>
+                {h.name}
+              </span>
               <span className="host-buttons">
                 <button className="small" onClick={() => onOpenFiles(h.name)} title="Browse files">
                   Files
@@ -28,7 +30,9 @@ export function Sidebar({ hosts, clients, onOpenTerminal, onOpenFiles, onAllow, 
                 </button>
               </span>
             </div>
-            <div className="muted">{address(h)}</div>
+            <div className="muted host-address" title={address(h)}>
+              {address(h)}
+            </div>
             <div className="tags">
               {Object.entries(h.tags ?? {}).map(([k, v]) => (
                 <span key={k} className={k === "env" && v === "prod" ? "badge danger" : "badge"}>
