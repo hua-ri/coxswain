@@ -44,6 +44,7 @@ func newManager(t *testing.T) (*Manager, <-chan eventlog.Event, *clock) {
 	ch, cancel := events.Subscribe()
 	t.Cleanup(cancel)
 	c := &clock{now: time.Date(2026, 11, 8, 10, 0, 0, 0, time.UTC)}
+	events.Now = c.Now // the audit log's day follows the test clock
 	m := &Manager{Events: events, Now: c.Now}
 	t.Cleanup(m.CancelAll)
 	return m, ch, c
