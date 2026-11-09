@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/user"
 	"path/filepath"
 	"strings"
@@ -287,6 +288,17 @@ users:
         idp-certificate-authority-data: %[4]s
         client-id: cox-test
         client-secret: s
+        id-token: %[5]s
+        refresh-token: old-refresh
+- name: oidc-expired
+  user:
+    auth-provider:
+      name: oidc
+      config:
+        idp-issuer-url: %[1]s
+        idp-certificate-authority-data: %[4]s
+        client-id: cox-test-expired
+        client-secret: s
         id-token: %[3]s
         refresh-token: old-refresh
 contexts:
@@ -296,7 +308,9 @@ contexts:
   context: {cluster: fake, user: exec}
 - name: oidc
   context: {cluster: fake, user: oidc}
-`, api.URL, plugin, jwt(time.Now().Add(-time.Hour)), api.CAData())
+- name: oidc-expired
+  context: {cluster: fake, user: oidc-expired}
+`, api.URL, plugin, jwt(time.Now().Add(-time.Hour)), api.CAData(), fresh)
 	kc := kubeconfig(t, path, content)
 	old := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
 	if err := os.Chtimes(path, old, old); err != nil {
@@ -324,12 +338,20 @@ contexts:
 			t.Fatalf("%s: auth %q, want %q", ctxName, last.Auth, auth)
 		}
 	}
-	var refreshed bool
-	for _, r := range api.Requests() {
-		refreshed = refreshed || r.Path == "/token"
+	// An expired OIDC id-token is never refreshed (a refresh could
+	// rotate the user's refresh token and log them out): the user is told
+	// to log in.
+	c, err := cl.Client("oidc-expired")
+	if err == nil {
+		_, err = c.Typed.CoreV1().Namespaces().List(context.Background(), metav1.ListOptions{})
 	}
-	if !refreshed {
-		t.Fatal("the OIDC token was not refreshed; the test proves nothing")
+	if err == nil || !strings.Contains(err.Error(), "log in once in a terminal") {
+		t.Fatalf("expired id-token: %v", err)
+	}
+	for _, r := range api.Requests() {
+		if r.Path == "/token" || strings.HasPrefix(r.Path, "/.well-known") {
+			t.Fatalf("cox talked to the identity provider: %+v", r)
+		}
 	}
 	after, _ := os.ReadFile(path)
 	st, _ := os.Stat(path)
@@ -383,5 +405,125 @@ func TestMissingKubeconfig(t *testing.T) {
 	}
 	if _, err := cl.Client("x"); !errors.Is(err, k8s.ErrNoContext) {
 		t.Fatalf("%v", err)
+	}
+}
+
+// pluginConfig is a kubeconfig whose context "exec" runs plugin (with
+// argument x and FOO=bar) against api.
+func pluginConfig(t *testing.T, api *k8stest.APIServer, script string) (*k8s.Clusters, string) {
+	t.Helper()
+	dir := t.TempDir()
+	plugin := filepath.Join(dir, "plugin")
+	os.WriteFile(plugin, []byte("#!/bin/sh\n"+script), 0o700)
+	server, ca := "https://127.0.0.1:1", ""
+	if api != nil {
+		server, ca = api.URL, api.CAData()
+	}
+	content := fmt.Sprintf(`apiVersion: v1
+kind: Config
+clusters:
+- name: fake
+  cluster: {server: %q, certificate-authority-data: %q}
+users:
+- name: exec
+  user:
+    exec:
+      apiVersion: client.authentication.k8s.io/v1
+      command: %s
+      args: [x]
+      env: [{name: FOO, value: bar}]
+      provideClusterInfo: true
+      interactiveMode: Always
+contexts:
+- name: exec
+  context: {cluster: fake, user: exec}
+`, server, ca, plugin)
+	cl := &k8s.Clusters{Kubeconfig: kubeconfig(t, filepath.Join(dir, "config"), content), Meta: k8s.NewMetaStore(filepath.Join(dir, "m.json")),
+		CredentialTimeout: 500 * time.Millisecond}
+	return cl, dir
+}
+
+const credential = `{"apiVersion":"client.authentication.k8s.io/v1","kind":"ExecCredential","status":{"token":"tok-'"$n"'"}}`
+
+// TestCredentialPluginProtocol: the plugin gets its args, env and
+// KUBERNETES_EXEC_INFO (not interactive, with the cluster), no stdin, and
+// its token is used until it is rejected.
+func TestCredentialPluginProtocol(t *testing.T) {
+	api := k8stest.NewAPIServer(t)
+	cl, dir := pluginConfig(t, api, `
+[ "$1" = x ] && [ "$FOO" = bar ] || exit 2
+case "$KUBERNETES_EXEC_INFO" in *'"interactive":false'*'"server":"`+api.URL+`"'*) ;; *) echo "$KUBERNETES_EXEC_INFO" >&2; exit 3;; esac
+if read -r line; then exit 4; fi
+n=$(( $(cat "$(dirname "$0")/runs" 2>/dev/null || echo 0) + 1 ))
+echo $n > "$(dirname "$0")/runs"
+echo '`+credential+`'
+`)
+	cl.CredentialTimeout = 10 * time.Second
+	c, err := cl.Client("exec")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if _, err := c.Typed.CoreV1().Namespaces().List(context.Background(), metav1.ListOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reqs := api.Requests()
+	if last := reqs[len(reqs)-1]; last.Auth != "Bearer tok-1" {
+		t.Fatalf("auth %q", last.Auth)
+	}
+	// A rejected token is fetched again.
+	api.Handle("GET", "/api/v1/namespaces", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"kind":"Status","apiVersion":"v1","status":"Failure","code":401}`, http.StatusUnauthorized)
+	})
+	c.Typed.CoreV1().Namespaces().List(context.Background(), metav1.ListOptions{})
+	c.Typed.CoreV1().Namespaces().List(context.Background(), metav1.ListOptions{})
+	reqs = api.Requests()
+	if last := reqs[len(reqs)-1]; last.Auth != "Bearer tok-2" {
+		t.Fatalf("after 401: auth %q", last.Auth)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, "runs")); strings.TrimSpace(string(b)) != "2" {
+		t.Fatalf("runs %q", b)
+	}
+}
+
+// TestCredentialPluginTimeout: a plugin waiting for a login (device code)
+// is killed after the timeout; the error shows what it said and how to
+// log in.
+func TestCredentialPluginTimeout(t *testing.T) {
+	cl, dir := pluginConfig(t, nil, `echo $$ > "$(dirname "$0")/pid"
+echo "To sign in, use a web browser to open the page https://microsoft.com/devicelogin and enter the code ABCD-1234" >&2
+sleep 60
+`)
+	start := time.Now()
+	_, err := cl.Client("exec")
+	if err == nil || !strings.Contains(err.Error(), "devicelogin") || !strings.Contains(err.Error(), "ABCD-1234") ||
+		!strings.Contains(err.Error(), "did not finish within") ||
+		!strings.Contains(err.Error(), "log in once in a terminal (e.g. run kubectl with this context), then retry") {
+		t.Fatalf("%v", err)
+	}
+	if d := time.Since(start); d > 5*time.Second {
+		t.Fatalf("took %v", d)
+	}
+	pid, _ := os.ReadFile(filepath.Join(dir, "pid"))
+	if out, err := exec.Command("kill", "-0", strings.TrimSpace(string(pid))).CombinedOutput(); err == nil {
+		t.Fatalf("plugin still running: %s", out)
+	}
+}
+
+func TestCredentialPluginFails(t *testing.T) {
+	cl, _ := pluginConfig(t, nil, `echo "error: you must be logged in to the server (the refresh token has expired)" >&2
+exit 1
+`)
+	_, err := cl.Client("exec")
+	if err == nil || !strings.Contains(err.Error(), "refresh token has expired") || !strings.Contains(err.Error(), "exit status 1") ||
+		!strings.Contains(err.Error(), "log in once in a terminal") {
+		t.Fatalf("%v", err)
+	}
+	// Failures are remembered briefly instead of running the plugin again
+	// for every call.
+	_, err2 := cl.Client("exec")
+	if err2 == nil || err2.Error() != err.Error() {
+		t.Fatalf("%v", err2)
 	}
 }

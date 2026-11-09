@@ -1,8 +1,10 @@
 package k8s
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"sort"
 	"strings"
 	"sync"
@@ -11,7 +13,6 @@ import (
 	"github.com/hua-ri/coxswain/internal/action"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
-	_ "k8s.io/client-go/plugin/pkg/client/auth/oidc" // OIDC auth-provider kubeconfigs (tokens are refreshed in memory only)
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
@@ -40,6 +41,8 @@ type Client struct {
 	Exec      Executor
 	Apply     Applier
 	Forward   Forwarder
+
+	expires time.Time // when its credentials expire (zero: unknown)
 }
 
 // Connect builds a Client for a context's rest.Config: API requests get
@@ -88,6 +91,8 @@ type Clusters struct {
 	// NewClient builds a context's client; default Connect. Tests replace
 	// it with fakes.
 	NewClient func(name string, rc *rest.Config) (*Client, error)
+	// CredentialTimeout bounds one run of a credential plugin; default 30s.
+	CredentialTimeout time.Duration
 
 	mu      sync.Mutex
 	gen     int
@@ -159,7 +164,9 @@ func (c *Clusters) Target(context, namespace string) action.Target {
 }
 
 // Client returns the context's client, building it on first use. Clients
-// are rebuilt after the kubeconfig changes.
+// are rebuilt after the kubeconfig changes and when their credentials
+// expire. Building one may run the context's credential plugin, bounded
+// by CredentialTimeout.
 func (c *Clusters) Client(name string) (*Client, error) {
 	cfg, gen, err := c.Kubeconfig.Load()
 	if err != nil {
@@ -169,14 +176,16 @@ func (c *Clusters) Client(name string) (*Client, error) {
 		return nil, noContext(name)
 	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if gen != c.gen || c.clients == nil {
 		c.gen, c.clients = gen, map[string]*Client{}
 	}
-	if cl, ok := c.clients[name]; ok {
+	if cl, ok := c.clients[name]; ok && (cl.expires.IsZero() || time.Now().Before(cl.expires)) {
+		c.mu.Unlock()
 		return cl, nil
 	}
-	rc, err := RESTConfig(cfg, name)
+	c.mu.Unlock()
+
+	rc, expires, err := c.restConfig(cfg, name)
 	if err != nil {
 		return nil, err
 	}
@@ -188,45 +197,77 @@ func (c *Clusters) Client(name string) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("context %q: %w", name, err)
 	}
-	cl.Context = name
+	cl.Context, cl.expires = name, expires
 	if cl.Namespace == "" {
 		cl.Namespace = info(cfg, name, Meta{}).Namespace
 	}
-	c.clients[name] = cl
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if gen == c.gen {
+		c.clients[name] = cl
+	}
 	return cl, nil
 }
 
-// loginHint is shown when a credential plugin needs an interactive login.
-const loginHint = "cox server cannot answer a login prompt: log in in a terminal first " +
-	"(e.g. run any kubectl command for this context there), then try again"
-
-// Explain adds a hint to errors from credential plugins that could not
-// get credentials, e.g. because they need an interactive login.
+// Explain adds the login hint to errors that mean the credentials need
+// the user.
 func Explain(err error) error {
 	if err == nil {
 		return nil
 	}
+	var ce *CredentialError
+	if errors.As(err, &ce) {
+		return err // says so already
+	}
 	msg := err.Error()
-	if strings.Contains(msg, "getting credentials") || strings.Contains(msg, "standard input is") {
+	if strings.Contains(msg, "getting credentials") || strings.Contains(msg, "standard input is") ||
+		strings.Contains(msg, "Unauthorized") {
 		return fmt.Errorf("%w (%s)", err, loginHint)
 	}
 	return err
 }
 
-// RESTConfig is a context's client configuration. It is built without
-// ConfigAccess, so refreshed credentials are never written back to the
-// kubeconfig, and credential plugins never get a terminal to prompt on.
-func RESTConfig(cfg *clientcmdapi.Config, name string) (*rest.Config, error) {
+// restConfig is a context's client configuration, and when its
+// credentials expire (zero: unknown). It is built without ConfigAccess,
+// so nothing is ever written back to the kubeconfig. Credentials that
+// would need client-go to run or refresh something are handled here
+// instead: exec plugins run under a timeout without a terminal (see
+// credPlugin), and OIDC id-tokens are used as they are, never refreshed.
+func (c *Clusters) restConfig(cfg *clientcmdapi.Config, name string) (*rest.Config, time.Time, error) {
 	rc, err := clientcmd.NewNonInteractiveClientConfig(*cfg, name, &clientcmd.ConfigOverrides{}, nil).ClientConfig()
 	if err != nil {
-		return nil, fmt.Errorf("context %q: %w", name, err)
+		return nil, time.Time{}, fmt.Errorf("context %q: %w", name, err)
 	}
 	rc.AuthConfigPersister = nil
-	if rc.ExecProvider != nil {
-		exec := *rc.ExecProvider // shared with the loaded config
-		rc.ExecProvider = &exec
-		rc.ExecProvider.StdinUnavailable = true
-		rc.ExecProvider.StdinUnavailableMessage = loginHint
+	var expires time.Time
+	if ap := rc.AuthProvider; ap != nil {
+		rc.AuthProvider = nil
+		if ap.Name != "oidc" {
+			return nil, time.Time{}, fmt.Errorf("context %q: auth provider %q is not supported (use an exec credential plugin)", name, ap.Name)
+		}
+		tok, exp, err := oidcToken(ap.Config, time.Now())
+		if err != nil {
+			return nil, time.Time{}, fmt.Errorf("context %q: %w", name, err)
+		}
+		rc.BearerToken, rc.BearerTokenFile, expires = tok, "", exp
 	}
-	return rc, nil
+	if ep := rc.ExecProvider; ep != nil {
+		rc.ExecProvider = nil
+		p := newCredPlugin(ep, rc, c.CredentialTimeout)
+		cred, err := p.get(context.Background())
+		if err != nil {
+			return nil, time.Time{}, fmt.Errorf("context %q: %w", name, err)
+		}
+		if cred.cert != "" {
+			// A client certificate: used until it expires, then the
+			// client is built again (running the plugin again).
+			rc.TLSClientConfig.CertData, rc.TLSClientConfig.KeyData = []byte(cred.cert), []byte(cred.key)
+			rc.TLSClientConfig.CertFile, rc.TLSClientConfig.KeyFile = "", ""
+			expires = cred.expiry
+		}
+		if cred.token != "" {
+			rc.Wrap(func(rt http.RoundTripper) http.RoundTripper { return &tokenTransport{rt: rt, p: p} })
+		}
+	}
+	return rc, expires, nil
 }
