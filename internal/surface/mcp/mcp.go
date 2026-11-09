@@ -23,7 +23,8 @@ tunnels and Kubernetes clusters.
   For large or binary files use file_download: the file is saved locally and you get its path.
 - tunnel_open forwards ports through a host (local, remote, socks); close your tunnels with tunnel_close when done.
 - Kubernetes: k8s_contexts lists the user's contexts with tags and notes; always pass the context. Read with
-  k8s_get, k8s_describe and k8s_events; Secret values are never shown.
+  k8s_get, k8s_describe and k8s_events; k8s_logs for log tails, k8s_top for usage, k8s_exec for one-off commands
+  in a container. Secret values are never shown.
 - Hosts and contexts tagged env=prod are production: confirm with the user before changing them.
 - You never handle credentials; never ask the user for passwords or keys.
 - Large outputs are truncated; read more with artifact_read.`

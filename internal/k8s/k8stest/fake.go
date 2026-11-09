@@ -1,11 +1,15 @@
 package k8stest
 
 import (
+	"context"
 	"strings"
+	"sync"
 
 	"github.com/hua-ri/coxswain/internal/k8s"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	fakediscovery "k8s.io/client-go/discovery/fake"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	"k8s.io/client-go/kubernetes/fake"
@@ -59,6 +63,7 @@ type Fake struct {
 	Typed     *fake.Clientset
 	Dynamic   *dynamicfake.FakeDynamicClient
 	Discovery *fakediscovery.FakeDiscovery
+	ExecCalls *FakeExec
 }
 
 // NewFake returns a fake client for context name with objs.
@@ -66,9 +71,57 @@ func NewFake(name string, objs ...runtime.Object) *Fake {
 	typed := fake.NewClientset(objs...)
 	disc := typed.Discovery().(*fakediscovery.FakeDiscovery)
 	disc.Resources = Resources()
-	dyn := dynamicfake.NewSimpleDynamicClient(scheme.Scheme, objs...)
+	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(scheme.Scheme, map[schema.GroupVersionResource]string{
+		{Group: "metrics.k8s.io", Version: "v1beta1", Resource: "pods"}:  "PodMetricsList",
+		{Group: "metrics.k8s.io", Version: "v1beta1", Resource: "nodes"}: "NodeMetricsList",
+		{Group: "example.com", Version: "v1beta1", Resource: "widgets"}:  "WidgetList",
+	}, objs...)
+	exec := &FakeExec{}
 	return &Fake{
-		Client: &k8s.Client{Context: name, Typed: typed, Dynamic: dyn, Resources: k8s.NewResolver(disc)},
-		Typed:  typed, Dynamic: dyn, Discovery: disc,
+		Client: &k8s.Client{Context: name, Typed: typed, Dynamic: dyn, Resources: k8s.NewResolver(disc), Exec: exec},
+		Typed:  typed, Dynamic: dyn, Discovery: disc, ExecCalls: exec,
 	}
+}
+
+// WithMetrics makes the fake serve metrics.k8s.io with the given
+// PodMetrics and NodeMetrics.
+func (f *Fake) WithMetrics(objs ...*unstructured.Unstructured) *Fake {
+	f.Discovery.Resources = append(f.Discovery.Resources, MetricsResources())
+	for _, o := range objs {
+		res := "pods"
+		if o.GetKind() == "NodeMetrics" {
+			res = "nodes"
+		}
+		gvr := schema.GroupVersionResource{Group: "metrics.k8s.io", Version: "v1beta1", Resource: res}
+		if err := f.Dynamic.Tracker().Create(gvr, o, o.GetNamespace()); err != nil {
+			panic(err)
+		}
+	}
+	return f
+}
+
+// FakeExec records exec requests and answers them with Run (default:
+// no output, exit 0).
+type FakeExec struct {
+	mu    sync.Mutex
+	calls []k8s.ExecRequest
+	Run   func(ctx context.Context, req k8s.ExecRequest) error
+}
+
+func (f *FakeExec) Exec(ctx context.Context, req k8s.ExecRequest) error {
+	f.mu.Lock()
+	f.calls = append(f.calls, req)
+	run := f.Run
+	f.mu.Unlock()
+	if run == nil {
+		return nil
+	}
+	return run(ctx, req)
+}
+
+// Calls returns the requests so far.
+func (f *FakeExec) Calls() []k8s.ExecRequest {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]k8s.ExecRequest(nil), f.calls...)
 }

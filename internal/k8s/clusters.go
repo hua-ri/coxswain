@@ -37,6 +37,7 @@ type Client struct {
 	Typed     kubernetes.Interface
 	Dynamic   dynamic.Interface
 	Resources *Resolver
+	Exec      Executor
 }
 
 // Connect builds a Client for a context's rest.Config: API requests get
@@ -60,6 +61,7 @@ func Connect(name string, rc *rest.Config) (*Client, error) {
 		Typed:     typed,
 		Dynamic:   dyn,
 		Resources: NewResolver(typed.Discovery()),
+		Exec:      &RemoteExecutor{Config: stream},
 	}, nil
 }
 

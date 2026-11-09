@@ -36,6 +36,9 @@ func (p *Provider) Register(r *action.Registry) {
 	r.Register(p.get())
 	r.Register(p.describe())
 	r.Register(p.events())
+	r.Register(p.logs())
+	r.Register(p.top())
+	r.Register(p.exec())
 }
 
 func (p *Provider) now() time.Time {

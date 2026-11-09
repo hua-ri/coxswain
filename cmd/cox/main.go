@@ -76,6 +76,9 @@ func run() int {
 			"terminal.read": cli.PrintAs[terminal.ReadOutput],
 			"file.read":     cli.PrintAs[file.ReadOutput],
 			"k8s.get":       cli.PrintAs[k8sprov.GetOutput],
+			"k8s.logs":      cli.PrintAs[k8sprov.LogsOutput],
+			"k8s.top":       cli.PrintAs[k8sprov.TopOutput],
+			"k8s.exec":      cli.PrintAs[k8sprov.ExecOutput],
 		},
 		Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr,
 	}
