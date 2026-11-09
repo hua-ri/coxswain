@@ -291,6 +291,9 @@ func (p *Provider) apply() *action.Action {
 				}
 				after, err := c.Apply.Apply(ctx, pl.res, pl.ns, pl.obj, true)
 				if err != nil {
+					if msg, ok := conflictMessage(pl.id(), err); ok {
+						return nil, fmt.Errorf("%s\nNothing was applied.", msg)
+					}
 					return nil, fmt.Errorf("dry run of %s failed: %w; nothing was applied", pl.id(), err)
 				}
 				diff, err := objectDiff(pl.id(), pl.res, live, after)
@@ -321,6 +324,9 @@ func (p *Provider) apply() *action.Action {
 			}
 			for i, pl := range objs {
 				if _, err := c.Apply.Apply(ctx, pl.res, pl.ns, pl.obj, false); err != nil {
+					if msg, ok := conflictMessage(pl.id(), err); ok {
+						err = errors.New(msg)
+					}
 					done := []string{}
 					for _, prev := range objs[:i] {
 						done = append(done, prev.id())
@@ -344,6 +350,42 @@ var applySchema = map[string]any{
 		"dry_run":   map[string]any{"type": "boolean", "description": "only show what would change"},
 	},
 	"required": []string{"context", "manifest"},
+}
+
+// fieldHints say which operation changes a field managed outside apply.
+var fieldHints = map[string]string{
+	".spec.replicas": "k8s_scale",
+	".spec.paused":   "k8s_rollout action=pause or resume",
+	".spec.template.metadata.annotations." + restartedAt: "k8s_rollout action=restart",
+}
+
+// conflictMessage explains a server-side apply conflict: each field, who
+// manages it, and what to do instead. Conflicts are never forced.
+func conflictMessage(id string, err error) (string, bool) {
+	if !apierrors.IsConflict(err) {
+		return "", false
+	}
+	var status apierrors.APIStatus
+	if !errors.As(err, &status) || status.Status().Details == nil {
+		return "", false
+	}
+	var lines []string
+	for _, c := range status.Status().Details.Causes {
+		if c.Type != metav1.CauseTypeFieldManagerConflict {
+			continue
+		}
+		line := fmt.Sprintf("  %s: %s", c.Field, c.Message)
+		if hint := fieldHints[c.Field]; hint != "" {
+			line += " (change it with " + hint + ")"
+		}
+		lines = append(lines, line)
+	}
+	if len(lines) == 0 {
+		return "", false
+	}
+	return fmt.Sprintf("Applying %s conflicts with fields another field manager set:\n%s\n"+
+		"Change those fields with the matching operation, leave them out of the manifest, or ask the user to resolve "+
+		"the conflict. Conflicts are not forced: k8s_apply has no force option, by design.", id, strings.Join(lines, "\n")), true
 }
 
 // redactApply is k8s.apply's arguments for the audit log: Secret values
@@ -539,7 +581,7 @@ func (p *Provider) scale() *action.Action {
 				from = 1
 			}
 			patch := fmt.Sprintf(`{"spec":{"replicas":%d}}`, *in.Replicas)
-			if _, err := r.resource().Patch(ctx, in.Name, types.MergePatchType, []byte(patch), metav1.PatchOptions{FieldManager: kube.FieldManager}); err != nil {
+			if _, err := r.resource().Patch(ctx, in.Name, types.MergePatchType, []byte(patch), metav1.PatchOptions{FieldManager: kube.OpsFieldManager}); err != nil {
 				return nil, kube.Explain(err)
 			}
 			return ScaleOutput{Context: in.Context, Kind: r.res.Kind, Namespace: r.ns, Name: in.Name, From: from, To: *in.Replicas}, nil
@@ -700,7 +742,7 @@ func checkRollout(kind string, in rolloutInput) error {
 }
 
 func (p *Provider) patch(ctx context.Context, r resolved, name string, pt types.PatchType, data []byte) error {
-	_, err := r.resource().Patch(ctx, name, pt, data, metav1.PatchOptions{FieldManager: kube.FieldManager})
+	_, err := r.resource().Patch(ctx, name, pt, data, metav1.PatchOptions{FieldManager: kube.OpsFieldManager})
 	return kube.Explain(err)
 }
 

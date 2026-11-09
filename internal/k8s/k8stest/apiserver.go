@@ -4,9 +4,11 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -30,6 +32,142 @@ type APIServer struct {
 	mu       sync.Mutex
 	requests []Request
 	handlers map[string]http.HandlerFunc // "METHOD /path"
+	objects  map[string]*stored          // by path: objects with server-side apply semantics
+}
+
+// stored is an object and who manages each of its fields, as
+// "manager/operation" (Update or Apply), like managedFields.
+type stored struct {
+	obj    map[string]any
+	owners map[string]string // ".spec.replicas" → "cox-ops/Update"
+}
+
+// Seed stores an object at path (e.g. /apis/apps/v1/namespaces/ns/deployments/x).
+// GET returns it; merge patches update it; server-side apply (PATCH
+// application/apply-patch+yaml) updates it with field ownership: a field
+// another manager (or the same name with another operation) set to a
+// different value is a conflict, as on a real API server.
+func (s *APIServer) Seed(path string, obj map[string]any) {
+	b, _ := json.Marshal(obj)
+	var norm map[string]any
+	json.Unmarshal(b, &norm)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.objects == nil {
+		s.objects = map[string]*stored{}
+	}
+	s.objects[path] = &stored{obj: norm, owners: map[string]string{}}
+}
+
+// leaves flattens m into field paths (lists are leaves).
+func leaves(m map[string]any, prefix string, out map[string]any) {
+	for k, v := range m {
+		if sub, ok := v.(map[string]any); ok {
+			leaves(sub, prefix+"."+k, out)
+			continue
+		}
+		out[prefix+"."+k] = v
+	}
+}
+
+func mergeInto(dst, src map[string]any) {
+	for k, v := range src {
+		if sm, ok := v.(map[string]any); ok {
+			if dm, ok := dst[k].(map[string]any); ok {
+				mergeInto(dm, sm)
+				continue
+			}
+		}
+		dst[k] = v
+	}
+}
+
+func lookup(m map[string]any, path string) any {
+	var cur any = m
+	for _, k := range strings.Split(strings.TrimPrefix(path, "."), ".") {
+		mm, ok := cur.(map[string]any)
+		if !ok {
+			return nil
+		}
+		cur = mm[k]
+	}
+	return cur
+}
+
+// serveStored handles GET and PATCH of a seeded object; false if path is
+// not one.
+func (s *APIServer) serveStored(w http.ResponseWriter, r *http.Request, body []byte) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	st := s.objects[r.URL.Path]
+	if st == nil {
+		return false
+	}
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, st.obj)
+		return true
+	case http.MethodPatch:
+	default:
+		return false
+	}
+	var patch map[string]any
+	if err := json.Unmarshal(body, &patch); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return true
+	}
+	q := r.URL.Query()
+	manager, dry := q.Get("fieldManager"), q.Get("dryRun") == "All"
+	op := "Update"
+	if strings.HasPrefix(r.Header.Get("Content-Type"), "application/apply-patch") {
+		op = "Apply"
+		delete(patch, "apiVersion")
+		delete(patch, "kind")
+		if md, ok := patch["metadata"].(map[string]any); ok {
+			delete(md, "name")
+			delete(md, "namespace")
+		}
+	}
+	fields := map[string]any{}
+	leaves(patch, "", fields)
+	key := manager + "/" + op
+	if op == "Apply" {
+		var causes []map[string]any
+		var msgs []string
+		for f, v := range fields {
+			owner, ok := st.owners[f]
+			if !ok || owner == key {
+				continue
+			}
+			if cur := lookup(st.obj, f); reflect.DeepEqual(cur, v) {
+				continue
+			}
+			name := strings.SplitN(owner, "/", 2)[0]
+			msg := fmt.Sprintf("conflict with %q using apps/v1", name)
+			causes = append(causes, map[string]any{"reason": "FieldManagerConflict", "message": msg, "field": f})
+			msgs = append(msgs, msg+": "+f)
+		}
+		if len(causes) > 0 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusConflict)
+			json.NewEncoder(w).Encode(map[string]any{"kind": "Status", "apiVersion": "v1", "status": "Failure", "code": 409,
+				"reason": "Conflict", "message": fmt.Sprintf("Apply failed with %d conflict(s): %s", len(causes), strings.Join(msgs, "; ")),
+				"details": map[string]any{"causes": causes}})
+			return true
+		}
+	}
+	b, _ := json.Marshal(st.obj)
+	var next map[string]any
+	json.Unmarshal(b, &next)
+	mergeInto(next, patch)
+	if !dry {
+		st.obj = next
+		for f := range fields {
+			st.owners[f] = key
+		}
+	}
+	writeJSON(w, next)
+	return true
 }
 
 // NewAPIServer starts a fake API server that stops with the test.
@@ -71,6 +209,9 @@ func (s *APIServer) serve(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 	if h != nil {
 		h(w, r)
+		return
+	}
+	if s.serveStored(w, r, body) {
 		return
 	}
 	switch {

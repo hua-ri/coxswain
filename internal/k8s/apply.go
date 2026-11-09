@@ -11,6 +11,13 @@ import (
 // FieldManager is who Coxswain's server-side applies are recorded as.
 const FieldManager = "cox"
 
+// OpsFieldManager is who Coxswain's imperative changes (scale, rollout
+// restart, pause, resume, undo) are recorded as. It differs from
+// FieldManager: the API server keeps an update and an apply by the same
+// name apart, so sharing it would make apply conflict with cox's own
+// scale.
+const OpsFieldManager = "cox-ops"
+
 // Applier applies objects. Tests use a fake.
 type Applier interface {
 	// Apply server-side applies obj (of resource res, in namespace ns, ""
