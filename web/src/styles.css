@@ -330,8 +330,10 @@ label.field { display: inline-flex; align-items: center; gap: 6px; color: var(--
 .item-name { font-weight: 500; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .item-meta { color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; font-size: var(--t-small); }
 .item-tags { display: flex; flex-wrap: wrap; gap: var(--s1); margin-top: var(--s1); }
-.item-actions { display: flex; gap: 2px; flex-shrink: 0; opacity: 0.55; transition: opacity 80ms; }
-.side-item:hover .item-actions, .side-item:focus-within .item-actions { opacity: 1; }
+.item-actions { display: flex; gap: 4px; flex-shrink: 0; }
+.item-actions button.ghost { border-color: var(--rule); color: var(--ink-2); }
+.item-actions button.ghost:hover { border-color: var(--rule-strong); color: var(--ink-1); background: var(--hover); }
+.item-actions button.ghost:focus-visible { border-color: var(--helm); }
 .agent-item { display: flex; align-items: center; gap: var(--s2); min-height: 30px; padding: 0 var(--s2) 0 var(--s3); box-shadow: inset 2px 0 var(--crew); }
 .agent-item:hover { background: var(--hover); }
 .agent-item .item-name { color: var(--crew-ink); }
@@ -491,6 +493,7 @@ table.events col.c-detail { width: 18%; }
 table.events td { vertical-align: top; padding-top: 5px; }
 table.events td.time { color: var(--ink-3); }
 table.events td.result { overflow-wrap: anywhere; color: var(--ink-3); }
+table.events td.result .clamp { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
 table.events td.result.failed { color: var(--hazard-ink); }
 table.events td.result.running { color: var(--helm-ink); }
 table.events td.result .state { display: inline-flex; align-items: center; gap: 6px; }

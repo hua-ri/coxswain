@@ -148,7 +148,7 @@ export function ActivityView({ rows, onOpenTerminal, loadOutput }: Props) {
                       running…
                     </span>
                   ) : (
-                    result(r)
+                    <span className="clamp" title={result(r)}>{result(r)}</span>
                   )}
                 </td>
               </tr>
