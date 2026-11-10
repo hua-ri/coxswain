@@ -1,6 +1,7 @@
 // The activity table's model: audit events folded into rows.
 import type { AuditEvent } from "./cox";
 import { finishBatch, hostDone, startBatch, type BatchEnd, type BatchHostDone, type BatchInfo, type BatchStart } from "./batch";
+import { isProdTags } from "./env";
 import { describeTransfer, type Transfer } from "./transfers";
 import { tunnelRoute, type Tunnel } from "./tunnels";
 
@@ -12,6 +13,7 @@ export interface Row {
   agent: boolean;
   action: string; // action id, or the event type for client.* / terminal.*
   hosts: string[];
+  prod?: boolean; // a target is tagged env=prod
   risk?: string;
   status: "running" | "ok" | "failed" | "refused" | "info";
   durationMs?: number;
@@ -45,6 +47,7 @@ export function addEvent(rows: Row[], ev: AuditEvent, key: number): Row[] {
     status: "info",
     session: actor?.session,
   };
+  if ((ev.targets ?? []).some((t) => isProdTags(t.tags))) base.prod = true;
   switch (ev.type) {
     case "action.requested": {
       const args = ev.args ?? {};

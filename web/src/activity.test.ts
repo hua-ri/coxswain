@@ -207,3 +207,20 @@ describe("clientLabel", () => {
     ]);
   });
 });
+
+describe("production targets", () => {
+  it("marks rows whose targets are tagged env=prod", () => {
+    const t = "2026-01-01T00:00:00Z";
+    const codex = { kind: "agent" as const, name: "codex", session: "s" };
+    let rows: Row[] = [];
+    rows = addEvent(rows, { time: t, type: "action.requested", actor: codex, action: "ssh.exec", risk: "destructive",
+      targets: [{ kind: "host", id: "db", tags: { env: "prod" } }] } as AuditEvent, 1);
+    rows = addEvent(rows, { time: t, type: "action.finished", actor: codex, action: "ssh.exec", duration_ms: 3 } as AuditEvent, 2);
+    rows = addEvent(rows, { time: t, type: "action.requested", actor: codex, action: "ssh.exec",
+      targets: [{ kind: "host", id: "dev", tags: { env: "dev" } }] } as AuditEvent, 3);
+    expect(rows.map((r) => [r.hosts[0], r.status, r.prod ?? false])).toEqual([
+      ["dev", "running", false],
+      ["db", "ok", true],
+    ]);
+  });
+});
