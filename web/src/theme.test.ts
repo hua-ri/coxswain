@@ -5,8 +5,8 @@ describe("terminalTheme", () => {
   it("has a light and a dark variant with a full palette", () => {
     const light = terminalTheme(false);
     const dark = terminalTheme(true);
-    expect(light.background).toBe("#ffffff");
-    expect(dark.background).toBe("#1e1e1e");
+    expect(light.background).toBe("#fbfbfc"); // --hull
+    expect(dark.background).toBe("#101114"); // --well
     for (const t of [light, dark]) {
       for (const k of ["foreground", "cursor", "cursorAccent", "selectionBackground", "black", "red", "green",
         "yellow", "blue", "magenta", "cyan", "white", "brightBlack", "brightWhite"] as const) {

@@ -1,10 +1,13 @@
-import { useCallback, useEffect, useReducer, useState } from "react";
+import { useCallback, useEffect, useReducer, useState, type KeyboardEvent, type ReactNode } from "react";
 import { ActivityView } from "./ActivityView";
 import { addEvent, type Row } from "./activity";
 import { fetchHostOutput, type BatchInfo } from "./batch";
 import { cox } from "./bridge";
 import type { Cox, Status } from "./cox";
 import { Confirm } from "./Confirm";
+import { isProdTags, prodWhere } from "./env";
+import { stepIndex } from "./keys";
+import { HazardBand } from "./ui";
 import { FileBrowser } from "./FileBrowser";
 import { actionError, contextFromTab, isProdContext, k8sTab, terminalRequest, type ContextInfo, type ContextsOutput } from "./k8s";
 import { K8sView, type PodRef } from "./K8sView";
@@ -250,15 +253,36 @@ function Desktop({ cox }: { cox: Cox }) {
       .catch(report);
   };
 
+  const moveTab = (e: KeyboardEvent<HTMLElement>) => {
+    const list = [...e.currentTarget.querySelectorAll<HTMLElement>('[role="tab"]')];
+    const i = list.indexOf(document.activeElement as HTMLElement);
+    const j = i < 0 ? -1 : stepIndex(e.key, i, list.length);
+    if (j < 0) return;
+    e.preventDefault();
+    list[j].focus();
+    list[j].click();
+  };
   const agents = clients.filter((c) => !c.revoked).length;
+  const hostProd = (h: string) => isProdTags(hosts.find((x) => x.name === h)?.tags);
+  const ctxProd = (c: string) => {
+    const info = contexts.find((x) => x.name === c);
+    return info ? isProdContext(info) : false;
+  };
+  const running = runningCount(transfers);
   return (
     <div className="app">
       {!status.connected && (
-        <div className="banner">The Coxswain server stopped. Start it with cox server; reconnecting…</div>
+        <div className="banner down" role="alert">
+          <span className="pulse running" aria-hidden="true" />
+          <span className="banner-text">The Coxswain server stopped. Start it with cox server; reconnecting…</span>
+        </div>
       )}
       {error && (
-        <div className="banner error" onClick={() => setError("")} title="Dismiss">
-          {error}
+        <div className="banner error" role="alert">
+          <span className="banner-text">{error}</span>
+          <button className="ghost small" onClick={() => setError("")}>
+            Dismiss
+          </button>
         </div>
       )}
       <div className="main">
@@ -274,82 +298,53 @@ function Desktop({ cox }: { cox: Cox }) {
           onRevoke={decide("DELETE")}
         />
         <section className="content">
-          <nav className="tabs">
-            <button className={active === "" ? "tab active" : "tab"} onClick={() => setActive("")}>
+          <nav className="tabs" role="tablist" aria-label="Open panels" onKeyDown={moveTab}>
+            <TabButton id="" active={active} onSelect={setActive}>
               Activity
-            </button>
-            <button className={active === TRANSFERS ? "tab active" : "tab"} onClick={() => setActive(TRANSFERS)}>
+            </TabButton>
+            <TabButton id={TRANSFERS} active={active} onSelect={setActive}>
               Transfers
-              {runningCount(transfers) > 0 && <span className="count">{runningCount(transfers)}</span>}
-            </button>
-            <button className={active === TUNNELS ? "tab active" : "tab"} onClick={() => setActive(TUNNELS)}>
+              {running > 0 && <span className="count live">{running}</span>}
+            </TabButton>
+            <TabButton id={TUNNELS} active={active} onSelect={setActive}>
               Tunnels
               {tunnels.length > 0 && <span className="count">{tunnels.length}</span>}
-            </button>
+            </TabButton>
             {browsers.map((h) => (
-              <div key={h} className={active === FILES + h ? "tab active" : "tab"} onClick={() => setActive(FILES + h)}>
-                <span>{h} · files</span>
-                <span
-                  className="close"
-                  title="Close"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    closeFiles(h);
-                  }}
-                >
-                  ×
-                </span>
-              </div>
+              <TabButton key={h} id={FILES + h} active={active} onSelect={setActive} prod={hostProd(h)}
+                onClose={() => closeFiles(h)} closeLabel={`Close files of ${h}`} title={`${h} · files`}>
+                <span className="label-text"><span className="where">{h}</span> <span className="by">files</span></span>
+              </TabButton>
             ))}
-            {clusters.map((c) => {
-              const info = contexts.find((x) => x.name === c);
-              return (
-                <div key={c} className={active === k8sTab(c) ? "tab active" : "tab"} onClick={() => setActive(k8sTab(c))}>
-                  {info && isProdContext(info) && <span className="badge danger">env={info.tags?.env}</span>}
-                  <span>{c} · k8s</span>
-                  <span
-                    className="close"
-                    title="Close"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      closeCluster(c);
-                    }}
-                  >
-                    ×
-                  </span>
-                </div>
-              );
-            })}
+            {clusters.map((c) => (
+              <TabButton key={c} id={k8sTab(c)} active={active} onSelect={setActive} prod={ctxProd(c)}
+                onClose={() => closeCluster(c)} closeLabel={`Close ${c}`} title={`${c} · kubernetes`}>
+                {ctxProd(c) && <span className="chip prod">prod</span>}
+                <span className="label-text"><span className="where">{c}</span> <span className="by">k8s</span></span>
+              </TabButton>
+            ))}
             {tabs.map((t) => (
-              <div key={t.id} className={active === t.id ? "tab active" : "tab"} onClick={() => setActive(t.id)}>
-                {t.owner.kind === "agent" && <span className="badge agent">agent</span>}
-                <span className={t.closed ? "muted" : ""}>{tabTitle(t)}</span>
-                {(t.typingUntil ?? 0) > now && <span className="typing" title={`${t.owner.name} is typing`} />}
-                <span
-                  className="close"
-                  title="Close terminal"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    closeTab(t);
-                  }}
-                >
-                  ×
-                </span>
-              </div>
+              <TabButton key={t.id} id={t.id} active={active} onSelect={setActive}
+                agent={t.owner.kind === "agent"} prod={prodWhere(t.host, hosts, contexts)} closed={t.closed}
+                onClose={() => closeTab(t)} closeLabel="Close terminal" title={tabTitle(t)}>
+                {(t.typingUntil ?? 0) > now && <span className="pulse" title={`${t.owner.name} is typing`} />}
+                <span className="label-text"><span className="where">{t.host}</span></span>
+                {t.owner.kind === "agent" ? <span className="chip agent">{t.owner.name}</span> : <span className="by">you</span>}
+              </TabButton>
             ))}
           </nav>
           <div className="tab-body">
-            <div className="pane" style={{ display: active === "" ? "block" : "none" }}>
+            <div className="pane" role="tabpanel" style={{ display: active === "" ? "block" : "none" }}>
               <ActivityView rows={rows} onOpenTerminal={showTerminal} loadOutput={loadOutput} />
             </div>
-            <div className="pane scroll" style={{ display: active === TRANSFERS ? "block" : "none" }}>
+            <div className="pane scroll" role="tabpanel" style={{ display: active === TRANSFERS ? "block" : "none" }}>
               <TransfersView transfers={transfers} onCancel={askCancel} />
             </div>
-            <div className="pane scroll" style={{ display: active === TUNNELS ? "block" : "none" }}>
+            <div className="pane scroll" role="tabpanel" style={{ display: active === TUNNELS ? "block" : "none" }}>
               <TunnelsView tunnels={tunnels} hosts={hosts} onClose={askCloseTunnel} onCreate={createTunnel} />
             </div>
             {browsers.map((h) => (
-              <FileBrowser key={h} cox={cox} host={h} active={active === FILES + h} />
+              <FileBrowser key={h} cox={cox} host={h} prod={hostProd(h)} note={hosts.find((x) => x.name === h)?.note} active={active === FILES + h} />
             ))}
             {clusters.map((c) => {
               const info = contexts.find((x) => x.name === c) ?? { name: c, cluster: "", namespace: "default" };
@@ -362,9 +357,10 @@ function Desktop({ cox }: { cox: Cox }) {
               <TerminalView
                 key={t.id}
                 cox={cox}
-                id={t.id}
+                tab={t}
+                prod={prodWhere(t.host, hosts, contexts)}
+                typing={(t.typingUntil ?? 0) > now}
                 active={active === t.id}
-                closed={t.closed}
                 onExit={(code) => dispatch({ type: "closed", id: t.id, code: code ?? undefined })}
               />
             ))}
@@ -375,6 +371,7 @@ function Desktop({ cox }: { cox: Cox }) {
         <Confirm
           message={`${closing.owner.name} opened this terminal on ${closing.host}. Close it? Its shell ends.`}
           confirm="Close terminal"
+          band={band(prodWhere(closing.host, hosts, contexts), closing.host)}
           onYes={() => endTerminal(closing)}
           onNo={() => setClosing(null)}
         />
@@ -383,6 +380,7 @@ function Desktop({ cox }: { cox: Cox }) {
         <Confirm
           message={`${cancelling.owner.name} started this ${cancelling.direction} (${cancelling.host}:${cancelling.remote_path}). Cancel it?`}
           confirm="Cancel transfer"
+          band={band(hostProd(cancelling.host), cancelling.host)}
           onYes={() => cancelTransfer(cancelling)}
           onNo={() => setCancelling(null)}
         />
@@ -391,16 +389,64 @@ function Desktop({ cox }: { cox: Cox }) {
         <Confirm
           message={`${closingTunnel.owner.name} opened this tunnel (${tunnelPlace(closingTunnel)}, ${closingTunnel.listen}). Close it? Its connections end.`}
           confirm="Close tunnel"
+          band={band(closingTunnel.type === "k8s" ? ctxProd(closingTunnel.context ?? "") : hostProd(closingTunnel.host), tunnelPlace(closingTunnel))}
           onYes={() => closeTunnel(closingTunnel)}
           onNo={() => setClosingTunnel(null)}
         />
       )}
       <footer className="statusbar">
-        <span>{status.connected ? `Coxswain ${status.version ?? ""} · ${status.addr ?? ""}` : "disconnected"}</span>
+        <span className="conn">
+          <span className={status.connected ? "dot" : "dot off"} aria-hidden="true" />
+          {status.connected ? (
+            <>
+              Coxswain {status.version ?? ""} <span className="mono">{status.addr ?? ""}</span>
+            </>
+          ) : (
+            "disconnected"
+          )}
+        </span>
         <span>
           {agents} agent{agents === 1 ? "" : "s"} allowed
         </span>
       </footer>
+    </div>
+  );
+}
+
+/** band is the production band of a confirmation, or nothing. */
+function band(prod: boolean, where: string) {
+  return prod ? <HazardBand env="env=prod" where={where} /> : undefined;
+}
+
+/** TabButton is one tab: a selectable label, and a close button for closable ones. */
+function TabButton(props: {
+  id: string;
+  active: string;
+  onSelect(id: string): void;
+  children: ReactNode;
+  title?: string;
+  agent?: boolean;
+  prod?: boolean;
+  closed?: boolean;
+  onClose?(): void;
+  closeLabel?: string;
+}) {
+  const selected = props.active === props.id;
+  const cls = ["tab", selected ? "active" : "", props.agent ? "agent" : "", props.prod ? "prod" : "", props.closed ? "closed" : "", props.onClose ? "" : "fixed"]
+    .filter(Boolean)
+    .join(" ");
+  return (
+    <div className={cls} role="presentation">
+      <button className="tab-label" role="tab" aria-selected={selected} tabIndex={selected ? 0 : -1} title={props.title}
+        onClick={() => props.onSelect(props.id)}>
+        {props.children}
+      </button>
+      {props.onClose && (
+        <button className="ghost icon tab-close" aria-label={props.closeLabel} title={props.closeLabel}
+          onClick={props.onClose}>
+          ×
+        </button>
+      )}
     </div>
   );
 }

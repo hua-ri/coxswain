@@ -3,20 +3,24 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { fromBase64, type Cox } from "./cox";
+import type { Tab } from "./terminals";
 import { terminalTheme } from "./theme";
+import { Owner } from "./ui";
 
 const darkQuery = window.matchMedia("(prefers-color-scheme: dark)");
 
 interface Props {
   cox: Cox;
-  id: string;
+  tab: Tab;
+  prod: boolean; // where it runs is tagged env=prod
+  typing: boolean; // an agent is typing into it
   active: boolean;
-  closed: boolean;
   onExit(code: number | null): void;
 }
 
 /** TerminalView shows one shared terminal: output from the server, keystrokes to it. */
-export function TerminalView({ cox, id, active, closed, onExit }: Props) {
+export function TerminalView({ cox, tab, prod, typing, active, onExit }: Props) {
+  const { id, closed } = tab;
   const box = useRef<HTMLDivElement>(null);
   const term = useRef<Terminal | null>(null);
   const fit = useRef<FitAddon | null>(null);
@@ -27,8 +31,9 @@ export function TerminalView({ cox, id, active, closed, onExit }: Props) {
 
   useEffect(() => {
     const t = new Terminal({
-      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+      fontFamily: 'ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace',
       fontSize: 12,
+      lineHeight: 1.2,
       cursorBlink: true,
       scrollback: 5000,
       theme: terminalTheme(darkQuery.matches),
@@ -98,5 +103,26 @@ export function TerminalView({ cox, id, active, closed, onExit }: Props) {
     });
   }, [active]);
 
-  return <div className="terminal" ref={box} style={{ display: active ? "block" : "none" }} />;
+  const agent = tab.owner.kind === "agent";
+  const cls = ["term-head", agent ? "agent" : "", prod ? "prod" : ""].filter(Boolean).join(" ");
+  return (
+    <div className="term-pane" style={{ display: active ? "flex" : "none" }}>
+      <div className={cls}>
+        {prod && <span className="chip prod">env=prod</span>}
+        <span className="where mono">{tab.host}</span>
+        <span>opened by</span>
+        <Owner owner={tab.owner} />
+        <span className="spacer" />
+        {typing && (
+          <span className="typing">
+            <span className="pulse" aria-hidden="true" />
+            {tab.owner.name} is typing
+          </span>
+        )}
+        {closed && <span className="muted">ended{tab.exitCode !== undefined ? ` · exit ${tab.exitCode}` : ""}</span>}
+        {!closed && agent && !typing && <span className="muted">shared — you can type here too</span>}
+      </div>
+      <div className="terminal" ref={box} />
+    </div>
+  );
 }

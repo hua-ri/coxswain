@@ -1,5 +1,7 @@
 import { Fragment, useMemo, useState } from "react";
 import { clientLabel, filterOptions, filterRows, type Filter, type Row } from "./activity";
+import { activate } from "./keys";
+import { Empty, Risk } from "./ui";
 import { batchProgress, type BatchInfo, type HostOutput } from "./batch";
 
 interface Props {
@@ -60,10 +62,12 @@ export function ActivityView({ rows, onOpenTerminal, loadOutput }: Props) {
   };
   const options = useMemo(() => filterOptions(rows), [rows]);
   const shown = useMemo(() => filterRows(rows, filter), [rows, filter]);
+  const rowClass = (r: Row) =>
+    [r.terminal || r.batch ? "clickable" : "", r.agent ? "agent" : "", r.risk === "destructive" ? "destructive" : ""].filter(Boolean).join(" ") || undefined;
   return (
     <div className="activity">
-      <div className="filters">
-        <select value={filter.client} onChange={(e) => setFilter({ ...filter, client: e.target.value })}>
+      <div className="toolbar">
+        <select aria-label="Client" value={filter.client} onChange={(e) => setFilter({ ...filter, client: e.target.value })}>
           <option value="">All clients</option>
           {options.clients.map((c) => (
             <option key={c} value={c}>
@@ -71,13 +75,15 @@ export function ActivityView({ rows, onOpenTerminal, loadOutput }: Props) {
             </option>
           ))}
         </select>
-        <select value={filter.host} onChange={(e) => setFilter({ ...filter, host: e.target.value })}>
+        <select aria-label="Host" value={filter.host} onChange={(e) => setFilter({ ...filter, host: e.target.value })}>
           <option value="">All hosts</option>
           {options.hosts.map((h) => (
             <option key={h}>{h}</option>
           ))}
         </select>
-        <span className="muted">{shown.length} events since this window opened</span>
+        <span className="meta">
+          {shown.length} event{shown.length === 1 ? "" : "s"} since this window opened
+        </span>
       </div>
       <div className="table-wrap">
         <table className="events">
@@ -93,39 +99,58 @@ export function ActivityView({ rows, onOpenTerminal, loadOutput }: Props) {
           <thead>
             <tr>
               <th>Time</th>
-              <th>Client</th>
+              <th>Who</th>
               <th>Action</th>
-              <th>Host</th>
+              <th>Where</th>
               <th>Risk</th>
               <th>Details</th>
               <th>Result</th>
             </tr>
           </thead>
           <tbody>
-            {shown.map((r) => (
+            {shown.map((r) => {
+              const open = r.terminal ? () => onOpenTerminal(r.terminal!) : r.batch ? () => toggle(r.key) : undefined;
+              const failed = r.status === "failed" || r.status === "refused";
+              return (
               <Fragment key={r.key}>
               <tr
-                className={r.terminal || r.batch ? "clickable" : undefined}
-                onClick={r.terminal ? () => onOpenTerminal(r.terminal!) : r.batch ? () => toggle(r.key) : undefined}
+                className={rowClass(r)}
+                onClick={open}
+                onKeyDown={open && activate(open)}
+                tabIndex={open ? 0 : undefined}
+                aria-expanded={r.batch ? expanded.has(r.key) : undefined}
                 title={r.terminal ? "Show this terminal" : r.batch ? "Show each host" : undefined}
               >
-                <td className="mono">{time(r.time)}</td>
-                <td className="cut" title={r.client}>
-                  {r.who}
-                  {r.agent && <span className="badge agent">agent</span>}
+                <td className="mono time">{time(r.time)}</td>
+                <td className="cut" title={r.agent ? `agent ${r.client}` : r.client}>
+                  <span className={r.agent ? "who agent" : "who"}>{r.who}</span>
                 </td>
                 <td className="mono cut" title={r.action}>
-                  {r.batch && <span className="disclosure">{expanded.has(r.key) ? "▾" : "▸"}</span>}
+                  {r.batch && <span className="disclosure" aria-hidden="true">{expanded.has(r.key) ? "▾" : "▸"}</span>}
                   {r.action}
                 </td>
-                <td className="cut" title={r.hosts.join(", ")}>
-                  {r.hosts.join(", ")}
+                <td className="cut" title={r.hosts.join(", ") + (r.prod ? " (env=prod)" : "")}>
+                  <span className="target">
+                    {r.prod && <span className="chip prod">prod</span>}
+                    <span className="text">{r.hosts.join(", ")}</span>
+                  </span>
                 </td>
-                <td>{r.risk && <span className={`badge risk-${r.risk}`}>{r.risk}</span>}</td>
+                <td>
+                  <Risk risk={r.risk} />
+                </td>
                 <td className="mono cut" title={r.status === "info" ? undefined : r.detail}>
                   {r.status === "info" ? "" : (r.detail ?? "")}
                 </td>
-                <td className={`result ${r.status === "failed" || r.status === "refused" ? "error" : "muted"}`}>{result(r)}</td>
+                <td className={`result ${failed ? "failed" : r.status === "running" ? "running" : ""}`}>
+                  {r.status === "running" && !r.batch ? (
+                    <span className="state">
+                      <span className="pulse running" aria-hidden="true" />
+                      running…
+                    </span>
+                  ) : (
+                    result(r)
+                  )}
+                </td>
               </tr>
               {r.batch && expanded.has(r.key) && (
                 <tr className="expand">
@@ -135,9 +160,17 @@ export function ActivityView({ rows, onOpenTerminal, loadOutput }: Props) {
                 </tr>
               )}
               </Fragment>
-            ))}
+              );
+            })}
           </tbody>
         </table>
+        {shown.length === 0 && (
+          <Empty title={rows.length === 0 ? "Nothing has happened yet" : "No events match these filters"}>
+            {rows.length === 0
+              ? "Every action — yours and your agents' — appears here as it happens, newest first: who did it, where, and how risky it was."
+              : "Choose All clients and All hosts to see everything."}
+          </Empty>
+        )}
       </div>
     </div>
   );
@@ -170,7 +203,7 @@ function BatchHosts({
 }) {
   return (
     <div className="batch">
-      <div className="mono muted">$ {batch.command}</div>
+      <div className="mono command">$ {batch.command}</div>
       {batch.stopped && <div className="error">stopped: {batch.stopped}</div>}
       <table>
         <tbody>
@@ -180,14 +213,14 @@ function BatchHosts({
             return (
               <Fragment key={h.host}>
                 <tr>
-                  <td>{h.host}</td>
+                  <td className="host">{h.host}</td>
                   <td>
-                    <span className={`badge host-${h.status}`}>{h.status}</span>
+                    <span className={`chip host-${h.status}`}>{h.status}</span>
                   </td>
-                  <td className={h.status === "failed" ? "error" : "muted"}>{hostResult(h)}</td>
+                  <td className={h.status === "failed" ? "error mono" : "muted mono"}>{hostResult(h)}</td>
                   <td className="row-actions">
                     {canRead && (
-                      <button className="small" onClick={() => onOutput(batch, h.host)}>
+                      <button className="small" aria-expanded={!!o && !("error" in o)} onClick={() => onOutput(batch, h.host)}>
                         {o && !("error" in o) ? "Hide output" : "Output"}
                       </button>
                     )}

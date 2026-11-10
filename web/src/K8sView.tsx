@@ -29,6 +29,8 @@ import {
   type RolloutOutput,
   type RowAction,
 } from "./k8s";
+import { activate } from "./keys";
+import { Empty, HazardBand, Message, Modal, Tag, Tags } from "./ui";
 
 /** How often the list refreshes (while the tab shows and auto is on), and logs follow. */
 const LIST_POLL_MS = 10000;
@@ -56,10 +58,11 @@ interface Selected {
 
 type DetailTab = "overview" | "yaml" | "events" | "logs" | "diagnose";
 
-/** Dialog is an in-page modal with a context's env badge. */
+/** Dialog is an in-page modal; a production context's dialogs open with its hazard band. */
 function Dialog(props: {
   title: string;
   badge: string;
+  ctx?: string;
   children?: ReactNode;
   ok: string;
   danger?: boolean;
@@ -68,36 +71,29 @@ function Dialog(props: {
   onCancel(): void;
 }) {
   return (
-    <div className="overlay" onClick={props.onCancel}>
-      <div className="dialog" onClick={(e) => e.stopPropagation()}>
-        <p>
-          {props.badge && <span className="badge danger">{props.badge}</span>} {props.title}
-        </p>
-        {props.children}
-        <div className="buttons">
-          <button onClick={props.onCancel} autoFocus>
-            Cancel
-          </button>
-          <button className={props.danger ? "danger" : ""} disabled={props.disabled} onClick={props.onOk}>
-            {props.ok}
-          </button>
-        </div>
-      </div>
-    </div>
+    <Modal title={props.title} band={props.badge ? <HazardBand env={props.badge} where={props.ctx ?? ""} /> : undefined}
+      ok={props.ok} danger={props.danger} disabled={props.disabled} onOk={props.onOk} onCancel={props.onCancel}>
+      {props.children}
+    </Modal>
   );
 }
 
 function Events({ events }: { events: EventRow[] }) {
   if (events.length === 0) return <p className="muted">No events.</p>;
   return (
-    <table>
+    <table className="compact">
       <tbody>
         {events.map((e, i) => (
           <tr key={i}>
-            <td className="muted">{e.age}</td>
-            <td className={e.type === "Warning" ? "warn-text" : ""}>{e.reason}</td>
-            <td>{e.object}</td>
-            <td>{e.message}</td>
+            <td className="meta mono">{e.age}</td>
+            <td className={e.type === "Warning" ? "event-reason warn" : "event-reason"}>
+              {e.reason}
+              {e.count && e.count > 1 ? <span className="muted"> ×{e.count}</span> : null}
+            </td>
+            <td>
+              {e.message}
+              <div className="muted mono">{e.object}</div>
+            </td>
           </tr>
         ))}
       </tbody>
@@ -185,7 +181,7 @@ export function K8sView({ cox, context, active, onOpenTerminal, onForward }: Pro
         setTab("logs");
         return;
       case "terminal":
-        setDialog(<TerminalDialog badge={badge} pod={obj} invoke={invoke}
+        setDialog(<TerminalDialog badge={badge} ctx={ctx} pod={obj} invoke={invoke}
           onOpen={(container, shell) => {
             setDialog(null);
             onOpenTerminal({ context: ctx, namespace: obj.namespace, pod: obj.name, container, shell }).catch(fail);
@@ -193,7 +189,7 @@ export function K8sView({ cox, context, active, onOpenTerminal, onForward }: Pro
           onCancel={() => setDialog(null)} />);
         return;
       case "forward":
-        setDialog(<ForwardDialog badge={badge} where={where}
+        setDialog(<ForwardDialog badge={badge} ctx={ctx} where={where}
           onOk={(remote, local) =>
             onForward(forwardRequest(ctx, obj.namespace, obj.name, remote, local))
               .then((listen) => done(`Forwarding ${listen} → ${obj.name}:${remote} (see Tunnels)`))
@@ -202,24 +198,24 @@ export function K8sView({ cox, context, active, onOpenTerminal, onForward }: Pro
           onCancel={() => setDialog(null)} />);
         return;
       case "delete":
-        setDialog(<Dialog badge={badge} title={`Delete ${where}?`} ok="Delete" danger
+        setDialog(<Dialog badge={badge} ctx={ctx} title={`Delete ${where}?`} ok="Delete" danger
           onOk={() => invoke("k8s.delete", ref).then(() => done(`Deleted ${objKind} ${obj.name}`)).catch(fail)}
           onCancel={() => setDialog(null)} />);
         return;
       case "restart":
-        setDialog(<Dialog badge={badge} title={`Restart ${where}? Its pods are replaced one by one.`} ok="Restart" danger
+        setDialog(<Dialog badge={badge} ctx={ctx} title={`Restart ${where}? Its pods are replaced one by one.`} ok="Restart" danger
           onOk={() => invoke("k8s.rollout", { ...ref, action: "restart" }).then(() => done(`Restarting ${obj.name}`)).catch(fail)}
           onCancel={() => setDialog(null)} />);
         return;
       case "scale":
-        setDialog(<ScaleDialog badge={badge} where={where}
+        setDialog(<ScaleDialog badge={badge} ctx={ctx} where={where}
           onOk={(n) => invoke("k8s.scale", { ...ref, replicas: n }).then(() => done(`Scaled ${obj.name} to ${n}`)).catch(fail)}
           onCancel={() => setDialog(null)} />);
         return;
       case "rollback":
         invoke<RolloutOutput>("k8s.rollout", { ...ref, action: "status" })
           .then((st) =>
-            setDialog(<RollbackDialog badge={badge} where={where} status={st}
+            setDialog(<RollbackDialog badge={badge} ctx={ctx} where={where} status={st}
               onOk={(rev) =>
                 invoke("k8s.rollout", { ...ref, action: "undo", to_revision: rev }).then(() => done(`Rolled ${obj.name} back to revision ${rev}`)).catch(fail)
               }
@@ -232,64 +228,91 @@ export function K8sView({ cox, context, active, onOpenTerminal, onForward }: Pro
 
   const columns = list?.columns ?? [];
   const actions = rowActions(list?.kind ?? "");
+  const select = (obj: Selected) => {
+    setSelected(obj);
+    if (tab === "logs" && list?.kind !== "Pod") setTab("overview");
+  };
+  const cell = (column: string, value: string, i: number) => {
+    if (column === "name") return <td key={i} className="name" title={value}>{value}</td>;
+    if (column === "ready") {
+      const cls = statusClass(column, value);
+      return <td key={i} className={`mono ready-${cls || "ok"}`}>{value}</td>;
+    }
+    const cls = statusClass(column, value);
+    if (cls) return <td key={i}><span className={"chip " + cls}>{value}</span></td>;
+    if (column === "age") return <td key={i} className="mono age">{value}</td>;
+    if (column === "restarts") return <td key={i} className={/^0\b/.test(value) ? "mono dim" : "mono"}>{value}</td>;
+    return <td key={i} title={value} className={column === "node" || column === "namespace" ? "dim" : undefined}>{value}</td>;
+  };
   return (
     <div className="pane k8s" style={{ display: active ? "flex" : "none" }}>
-      <div className="k8s-kinds">
+      {badge && <HazardBand env={badge} where={ctx} note={context.note} />}
+      <div className="k8s-body">
+      <nav className="k8s-kinds" aria-label="Resource kinds">
         <div className="k8s-context">
-          <strong>{ctx}</strong>
-          <div className="tags">
-            {contextBadges(context).map((b) => (
-              <span key={b.text} className={b.danger ? "badge danger" : "badge"} title={b.inherited ? `from ${context.inherited_from?.join(", ")}` : undefined}>
-                {b.text}
-                {b.inherited && " ↑"}
-              </span>
-            ))}
-          </div>
-          {context.note && <div className="muted note-text">{context.note}</div>}
+          <div className="ctx-name">{ctx}</div>
+          <span className="item-meta" title={context.server}>{context.cluster}</span>
+          {contextBadges(context).length > 0 && (
+            <div className="item-tags">
+              {contextBadges(context).map((b) => {
+                const [k, ...v] = b.text.split("=");
+                return <Tag key={b.text} k={k} v={v.join("=")} inherited={b.inherited} from={context.inherited_from?.join(", ")} />;
+              })}
+            </div>
+          )}
+          {context.note && !badge && <div className="note-text">{context.note}</div>}
         </div>
-        {KINDS.map((k) => (
-          <button key={k.kind} className={kind === k.kind && !applying ? "kind active" : "kind"} onClick={() => { setApplying(false); choose(k.kind); }}>
-            {k.label}
-          </button>
-        ))}
+        <div className="kind-list">
+          {KINDS.map((k) => (
+            <button key={k.kind} className={kind === k.kind && !applying ? "kind active" : "kind"}
+              aria-current={kind === k.kind && !applying ? "page" : undefined}
+              onClick={() => { setApplying(false); choose(k.kind); }}>
+              {k.label}
+            </button>
+          ))}
+        </div>
         <form onSubmit={(e) => { e.preventDefault(); if (typedKind.trim()) { setApplying(false); choose(typedKind.trim()); } }}>
-          <input placeholder="other kind…" value={typedKind} onChange={(e) => setTypedKind(e.target.value)} />
+          <input placeholder="Other kind…" aria-label="Other kind" value={typedKind} onChange={(e) => setTypedKind(e.target.value)} />
         </form>
-        <button className={applying ? "kind active" : "kind"} onClick={() => setApplying(true)}>Apply YAML…</button>
-      </div>
+        <div className="kind-list apply-kind">
+          <button className={applying ? "kind active" : "kind"} onClick={() => setApplying(true)}>Apply YAML…</button>
+        </div>
+      </nav>
       <div className="k8s-main">
         {applying ? (
           <ApplyPanel invoke={invoke} badge={badge} ctx={ctx} />
         ) : (
           <>
-            <div className="filters">
-              <label>
-                Namespace{" "}
+            <div className="toolbar">
+              <label className="field">
+                Namespace
                 <select value={namespace} onChange={(e) => { setNamespace(e.target.value); setSelected(null); }}>
-                  <option value={ALL}>all</option>
+                  <option value={ALL}>all namespaces</option>
                   {[...new Set([namespace, ...namespaces])].filter((n) => n !== ALL).map((n) => (
                     <option key={n} value={n}>{n}</option>
                   ))}
                 </select>
               </label>
-              <label>
-                <input type="checkbox" checked={auto} onChange={(e) => setAuto(e.target.checked)} /> auto-refresh
+              {list && <span className="meta">{list.rows?.length ?? 0} {list.kind}{(list.rows?.length ?? 0) === 1 ? "" : "s"}</span>}
+              <span className="spacer" />
+              <label className="check">
+                <input type="checkbox" checked={auto} onChange={(e) => setAuto(e.target.checked)} /> Auto-refresh
               </label>
               <button className="small" onClick={() => void load()}>Refresh</button>
-              {notice && <span className="muted" onClick={() => setNotice("")}>{notice}</span>}
             </div>
-            {error && <div className="error-box">{error}</div>}
+            {notice && <Message kind="notice" onDismiss={() => setNotice("")}>{notice}</Message>}
+            {error && <Message kind="error" onDismiss={() => setError("")}>{error}</Message>}
             {(list?.more || list?.truncated) && (
-              <div className="muted notice-line">
+              <Message kind="note">
                 Showing {list.rows?.length ?? 0} of {list.more ? "more than " : ""}{list.total} — narrow it with a namespace.
-              </div>
+              </Message>
             )}
             <div className="table-wrap">
               <table className="k8s-table">
                 <thead>
                   <tr>
                     {columns.map((c) => <th key={c}>{c}</th>)}
-                    {actions.length > 0 && <th />}
+                    {actions.length > 0 && <th><span className="visually-hidden">Actions</span></th>}
                   </tr>
                 </thead>
                 <tbody>
@@ -297,15 +320,13 @@ export function K8sView({ cox, context, active, onOpenTerminal, onForward }: Pro
                     const obj = rowObject(columns, row, list?.namespace || namespace);
                     const sel = selected?.name === obj.name && selected.namespace === obj.namespace;
                     return (
-                      <tr key={obj.namespace + "/" + obj.name} className={sel ? "selected" : ""} onClick={() => { setSelected(obj); if (tab === "logs" && list?.kind !== "Pod") setTab("overview"); }}>
-                        {row.map((cell, i) => {
-                          const cls = statusClass(columns[i], cell);
-                          return <td key={i}>{cls ? <span className={"status " + cls}>{cell}</span> : cell}</td>;
-                        })}
+                      <tr key={obj.namespace + "/" + obj.name} className={sel ? "clickable selected" : "clickable"} tabIndex={0}
+                        aria-selected={sel} onClick={() => select(obj)} onKeyDown={activate(() => select(obj))}>
+                        {row.map((v, i) => cell(columns[i], v, i))}
                         {actions.length > 0 && (
                           <td className="row-actions" onClick={(e) => e.stopPropagation()}>
                             {actions.map((a) => (
-                              <button key={a} className="small" onClick={() => act(a, obj)}>{ACTION_LABEL[a]}</button>
+                              <button key={a} className={a === "delete" ? "ghost small danger-text" : "ghost small"} onClick={() => act(a, obj)}>{ACTION_LABEL[a]}</button>
                             ))}
                           </td>
                         )}
@@ -314,7 +335,10 @@ export function K8sView({ cox, context, active, onOpenTerminal, onForward }: Pro
                   })}
                 </tbody>
               </table>
-              {list && (list.rows ?? []).length === 0 && <p className="muted">No {list.kind} here.</p>}
+              {list && (list.rows ?? []).length === 0 && (
+                <Empty title={`No ${list.kind} here`}>{namespace === ALL ? "None in any namespace." : `Nothing in namespace ${namespace}. Try all namespaces.`}</Empty>
+              )}
+              {!list && !error && <div className="loading">Loading {kind}…</div>}
             </div>
           </>
         )}
@@ -323,6 +347,7 @@ export function K8sView({ cox, context, active, onOpenTerminal, onForward }: Pro
         <Detail key={`${list.kind}/${selected.namespace}/${selected.name}`} invoke={invoke} kind={list.kind} obj={selected}
           tab={tab} setTab={setTab} active={active} onClose={() => setSelected(null)} />
       )}
+      </div>
       {dialog}
     </div>
   );
@@ -360,69 +385,83 @@ function Detail(props: { invoke: Invoke; kind: string; obj: Selected; tab: Detai
   };
 
   const tabs: DetailTab[] = ["overview", "yaml", "events", ...(kind === "Pod" ? (["logs"] as DetailTab[]) : [])];
+  const label = (t: DetailTab) => t[0].toUpperCase() + t.slice(1);
   return (
-    <div className="k8s-detail">
+    <aside className="k8s-detail" aria-label={`${kind} ${obj.name}`}>
       <div className="detail-head">
-        <strong>{kind} {obj.name}</strong>
-        <span className="close" onClick={props.onClose} title="Close">×</span>
+        <div className="titles">
+          <div className="detail-kind">{kind} · {obj.namespace}</div>
+          <div className="detail-name">{obj.name}</div>
+        </div>
+        <button className="ghost icon" onClick={props.onClose} aria-label="Close details" title="Close details">×</button>
       </div>
-      <div className="detail-tabs">
+      <div className="segmented" role="tablist" aria-label="Details">
         {tabs.map((t) => (
-          <button key={t} className={tab === t ? "small active" : "small"} onClick={() => setTab(t)}>{t}</button>
+          <button key={t} role="tab" aria-selected={tab === t} onClick={() => setTab(t)}>{label(t)}</button>
         ))}
-        {DIAGNOSABLE[kind] && <button className={tab === "diagnose" ? "small active" : "small"} onClick={diagnose}>Diagnose</button>}
+        {DIAGNOSABLE[kind] && <button role="tab" aria-selected={tab === "diagnose"} onClick={diagnose}>Diagnose</button>}
       </div>
-      {error && <div className="error-box">{error}</div>}
-      <div className="detail-body">
-        {tab === "overview" && describe && <Overview d={describe} />}
-        {tab === "yaml" && <pre className="mono yaml">{yaml || "…"}</pre>}
-        {tab === "events" && describe && <Events events={describe.events} />}
+      {error && <Message kind="error" onDismiss={() => setError("")}>{error}</Message>}
+      <div className="detail-body" role="tabpanel">
+        {tab === "overview" && (describe ? <Overview d={describe} /> : !error && <div className="loading">Loading…</div>)}
+        {tab === "yaml" && (yaml ? <pre className="yaml">{yaml}</pre> : !error && <div className="loading">Loading YAML…</div>)}
+        {tab === "events" && describe && <div className="diagnosis"><Events events={describe.events} /></div>}
         {tab === "logs" && kind === "Pod" && <Logs invoke={invoke} obj={obj} containers={podContainers(describe)} active={active} />}
-        {tab === "diagnose" && (diagnosis ? <Diagnosis d={diagnosis} /> : <p className="muted">Diagnosing…</p>)}
+        {tab === "diagnose" && (diagnosis ? <Diagnosis d={diagnosis} /> : !error && <div className="loading">Diagnosing — reading status, events, nodes and previous logs…</div>)}
       </div>
-    </div>
+    </aside>
   );
 }
 
 function Overview({ d }: { d: DescribeOutput }) {
   return (
     <div>
-      <table>
+      <h4 className="section-head">Summary</h4>
+      <table className="kv">
         <tbody>
           {Object.entries(d.summary).map(([k, v]) => {
             const cls = statusClass(k, v);
-            return <tr key={k}><th>{k}</th><td>{cls ? <span className={"status " + cls}>{v}</span> : v}</td></tr>;
+            return <tr key={k}><th>{k}</th><td>{cls ? <span className={"chip " + cls}>{v}</span> : v}</td></tr>;
           })}
-          {d.owners && <tr><th>owners</th><td>{d.owners.join(", ")}</td></tr>}
+          {d.owners && <tr><th>owners</th><td className="mono">{d.owners.join(", ")}</td></tr>}
           {d.keys && <tr><th>keys</th><td className="mono">{d.keys.join(" ")}</td></tr>}
         </tbody>
       </table>
       {d.conditions && (
         <>
-          <h4>Conditions</h4>
-          <table><tbody>
+          <h4 className="section-head">Conditions</h4>
+          <table className="compact"><tbody>
             {d.conditions.map((c) => (
-              <tr key={c.type}><td>{c.type}</td><td className={c.status === "True" ? "" : "warn-text"}>{c.status}</td><td>{c.reason}</td><td>{c.message}</td></tr>
+              <tr key={c.type}>
+                <td>{c.type}</td>
+                <td>{c.status === "True" ? <span className="chip ok">True</span> : <span className="chip warn">{c.status}</span>}</td>
+                <td>{c.reason}{c.message && <div className="muted">{c.message}</div>}</td>
+              </tr>
             ))}
           </tbody></table>
         </>
       )}
       {d.containers && (
         <>
-          <h4>Containers</h4>
-          <table><tbody>
+          <h4 className="section-head">Containers</h4>
+          <table className="compact"><tbody>
             {d.containers.map((c) => (
               <tr key={c.name}>
-                <td>{c.name}{c.init && <span className="badge">init</span>}</td>
-                <td className="mono">{c.image}</td>
-                <td>{c.ready ? "ready" : <span className="warn-text">not ready</span>}, {c.restarts} restarts</td>
+                <td>
+                  <div className="cell-line"><strong>{c.name}</strong>{c.init && <span className="chip">init</span>}</div>
+                  <div className="mono muted">{c.image}</div>
+                </td>
+                <td>
+                  {c.ready ? <span className="chip ok">ready</span> : <span className="chip warn">not ready</span>}
+                  <div className={c.restarts > 0 ? "warn-text" : "muted"}>{c.restarts} restart{c.restarts === 1 ? "" : "s"}</div>
+                </td>
                 <td>{c.state}{c.last_state && <div className="muted">last: {c.last_state}</div>}</td>
               </tr>
             ))}
           </tbody></table>
         </>
       )}
-      <h4>Events</h4>
+      <h4 className="section-head">Events</h4>
       <Events events={d.events} />
     </div>
   );
@@ -460,19 +499,19 @@ function Logs({ invoke, obj, containers, active }: { invoke: Invoke; obj: Select
 
   return (
     <div className="logs">
-      <div className="filters">
+      <div className="log-controls">
         {containers.length > 1 && (
-          <select value={chosen} onChange={(e) => setContainer(e.target.value)}>
+          <select aria-label="Container" value={chosen} onChange={(e) => setContainer(e.target.value)}>
             {containers.map((c) => <option key={c}>{c}</option>)}
           </select>
         )}
-        <label><input type="checkbox" checked={previous} onChange={(e) => setPrevious(e.target.checked)} /> previous</label>
-        <label>tail <input type="number" min={1} max={10000} value={tail} onChange={(e) => setTail(Number(e.target.value) || 200)} style={{ width: 70 }} /></label>
+        <label className="field">Tail <input type="number" min={1} max={10000} value={tail} onChange={(e) => setTail(Number(e.target.value) || 200)} /></label>
+        <label className="check"><input type="checkbox" checked={previous} onChange={(e) => setPrevious(e.target.checked)} /> Previous</label>
+        <label className="check"><input type="checkbox" checked={follow} onChange={(e) => setFollow(e.target.checked)} /> Follow</label>
         <button className="small" onClick={load}>Refresh</button>
-        <label><input type="checkbox" checked={follow} onChange={(e) => setFollow(e.target.checked)} /> follow</label>
       </div>
-      {error && <div className="error-box">{error}</div>}
-      <pre ref={pre} className="mono log-text">{text}</pre>
+      {error && <Message kind="error">{error}</Message>}
+      <pre ref={pre} className="log-text">{text || (containers.length === 0 ? "Loading…" : "No log lines.")}</pre>
     </div>
   );
 }
@@ -480,30 +519,37 @@ function Logs({ invoke, obj, containers, active }: { invoke: Invoke; obj: Select
 function Diagnosis({ d }: { d: DiagnoseOutput }) {
   return (
     <div className="diagnosis">
+      {d.findings.length === 0 && <p className="muted">No problems found.</p>}
       {d.findings.map((f, i) => (
         <div key={i} className={"finding " + severityClass(f.severity)}>
-          <span className={"status " + (severityClass(f.severity) || "info")}>{f.severity}</span> <strong>{f.title}</strong>
-          {f.detail && <div>{f.detail}</div>}
+          <div className="finding-head">
+            <span className={"chip " + (severityClass(f.severity) || "info")}>{f.severity}</span>
+            <span className="finding-title">{f.title}</span>
+          </div>
+          {f.detail && <div className="finding-detail">{f.detail}</div>}
         </div>
       ))}
       {d.next_steps.length > 0 && (
         <>
-          <h4>Next steps</h4>
-          <ul>{d.next_steps.map((s, i) => <li key={i}>{s}</li>)}</ul>
+          <h4 className="section-head">Next steps</h4>
+          <ol className="next-steps">{d.next_steps.map((s, i) => <li key={i}>{s}</li>)}</ol>
         </>
       )}
       {(d.evidence.nodes ?? []).map((n) => (
         <div key={n.name}>
-          <h4>Node {n.name}: {n.status}{n.problems?.length ? ` (${n.problems.join(", ")})` : ""}</h4>
+          <h4 className="section-head">Node</h4>
+          <div className="cell-line">
+            <span className="mono">{n.name}</span>
+            <span className={n.status === "Ready" ? "chip ok" : "chip bad"}>{n.status}</span>
+            {n.problems?.map((p) => <span key={p} className="chip warn">{p}</span>)}
+          </div>
           {n.ssh_host && <div>SSH host: <strong>{n.ssh_host}</strong></div>}
           {(n.ssh_candidates ?? []).length > 0 && (
-            <ul>
+            <ul className="candidates">
               {n.ssh_candidates!.map((c) => (
                 <li key={c.name}>
-                  {c.name} <span className="muted">({c.matched_by}{c.address ? ` ${c.address}` : ""})</span>
-                  {Object.entries(c.tags ?? {}).map(([k, v]) => (
-                    <span key={k} className={k === "env" && v === "prod" ? "badge danger" : "badge"}>{k}={v}</span>
-                  ))}
+                  <strong>{c.name}</strong> <span className="muted">({c.matched_by}{c.address ? ` ${c.address}` : ""})</span>
+                  <Tags tags={c.tags} />
                 </li>
               ))}
             </ul>
@@ -513,14 +559,14 @@ function Diagnosis({ d }: { d: DiagnoseOutput }) {
       {(d.evidence.pods ?? []).map((p) =>
         Object.entries(p.previous_logs ?? {}).map(([c, l]) => (
           <div key={p.name + c}>
-            <h4>Previous logs of {p.name}/{c}</h4>
-            <pre className="mono log-text">{l.text}</pre>
+            <h4 className="section-head">Previous logs · {c}</h4>
+            <pre className="log-text">{l.text}</pre>
           </div>
         )),
       )}
       {(d.evidence.events ?? []).length > 0 && (
         <>
-          <h4>Warning events</h4>
+          <h4 className="section-head">Warning events</h4>
           <Events events={d.evidence.events ?? []} />
         </>
       )}
@@ -528,7 +574,7 @@ function Diagnosis({ d }: { d: DiagnoseOutput }) {
   );
 }
 
-function TerminalDialog(props: { badge: string; pod: Selected; invoke: Invoke; onOpen(container: string | undefined, shell: string): void; onCancel(): void }) {
+function TerminalDialog(props: { badge: string; ctx: string; pod: Selected; invoke: Invoke; onOpen(container: string | undefined, shell: string): void; onCancel(): void }) {
   const [containers, setContainers] = useState<string[]>([]);
   const [container, setContainer] = useState("");
   const [shell, setShell] = useState("sh");
@@ -539,57 +585,63 @@ function TerminalDialog(props: { badge: string; pod: Selected; invoke: Invoke; o
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   return (
-    <Dialog badge={props.badge} title={`Open a terminal in pod ${props.pod.name}`} ok="Open"
+    <Dialog badge={props.badge} ctx={props.ctx} title={`Open a terminal in pod ${props.pod.name}`} ok="Open"
       onOk={() => props.onOpen(container || containers[0], shell)} onCancel={props.onCancel}>
-      {containers.length > 1 && (
-        <label>Container{" "}
-          <select value={container || containers[0]} onChange={(e) => setContainer(e.target.value)}>
-            {containers.map((c) => <option key={c}>{c}</option>)}
-          </select>
-        </label>
-      )}
-      <label> Shell <input value={shell} onChange={(e) => setShell(e.target.value)} style={{ width: 80 }} /></label>
+      <div className="fields">
+        {containers.length > 1 && (
+          <label className="field">Container
+            <select value={container || containers[0]} onChange={(e) => setContainer(e.target.value)}>
+              {containers.map((c) => <option key={c}>{c}</option>)}
+            </select>
+          </label>
+        )}
+        <label className="field">Shell <input value={shell} onChange={(e) => setShell(e.target.value)} /></label>
+      </div>
     </Dialog>
   );
 }
 
-function ForwardDialog(props: { badge: string; where: string; onOk(remote: number, local: number): void; onCancel(): void }) {
+function ForwardDialog(props: { badge: string; ctx: string; where: string; onOk(remote: number, local: number): void; onCancel(): void }) {
   const [remote, setRemote] = useState("");
   const [local, setLocal] = useState("");
   const port = (s: string) => (/^\d+$/.test(s) && Number(s) >= 1 && Number(s) <= 65535 ? Number(s) : 0);
   return (
-    <Dialog badge={props.badge} title={`Forward a local port to ${props.where}`} ok="Forward" disabled={!port(remote) || (local !== "" && !port(local))}
+    <Dialog badge={props.badge} ctx={props.ctx} title={`Forward a local port to ${props.where}`} ok="Forward" disabled={!port(remote) || (local !== "" && !port(local))}
       onOk={() => props.onOk(port(remote), port(local))} onCancel={props.onCancel}>
-      <label>Pod port <input value={remote} onChange={(e) => setRemote(e.target.value)} placeholder="8080" style={{ width: 80 }} autoFocus /></label>{" "}
-      <label>Local port <input value={local} onChange={(e) => setLocal(e.target.value)} placeholder="free" style={{ width: 80 }} /></label>
+      <div className="fields">
+        <label className="field">Pod port <input value={remote} onChange={(e) => setRemote(e.target.value)} placeholder="8080" inputMode="numeric" autoFocus /></label>
+        <label className="field">Local port <input value={local} onChange={(e) => setLocal(e.target.value)} placeholder="free" inputMode="numeric" /></label>
+      </div>
     </Dialog>
   );
 }
 
-function ScaleDialog(props: { badge: string; where: string; onOk(n: number): void; onCancel(): void }) {
+function ScaleDialog(props: { badge: string; ctx: string; where: string; onOk(n: number): void; onCancel(): void }) {
   const [n, setN] = useState("");
   const valid = /^\d+$/.test(n);
   const warning = valid ? scaleWarning(Number(n)) : "";
   return (
-    <Dialog badge={props.badge} title={`Scale ${props.where}`} ok="Scale" danger disabled={!valid}
+    <Dialog badge={props.badge} ctx={props.ctx} title={`Scale ${props.where}`} ok="Scale" danger disabled={!valid}
       onOk={() => props.onOk(Number(n))} onCancel={props.onCancel}>
-      <label>Replicas <input value={n} onChange={(e) => setN(e.target.value)} style={{ width: 70 }} autoFocus /></label>
+      <div className="fields">
+        <label className="field">Replicas <input value={n} onChange={(e) => setN(e.target.value)} inputMode="numeric" autoFocus /></label>
+      </div>
       {warning && <p className="warn-text">{warning}</p>}
     </Dialog>
   );
 }
 
-function RollbackDialog(props: { badge: string; where: string; status: RolloutOutput; onOk(rev: number): void; onCancel(): void }) {
+function RollbackDialog(props: { badge: string; ctx: string; where: string; status: RolloutOutput; onOk(rev: number): void; onCancel(): void }) {
   const older = (props.status.revisions ?? []).filter((r) => !r.current);
   const [rev, setRev] = useState(older[0]?.revision ?? 0);
   return (
-    <Dialog badge={props.badge} title={`Roll back ${props.where}`} ok="Roll back" danger disabled={!rev}
+    <Dialog badge={props.badge} ctx={props.ctx} title={`Roll back ${props.where}`} ok="Roll back" danger disabled={!rev}
       onOk={() => props.onOk(rev)} onCancel={props.onCancel}>
       <p className="muted">{props.status.message}</p>
       {older.length === 0 ? (
         <p>No earlier revision.</p>
       ) : (
-        <select value={rev} onChange={(e) => setRev(Number(e.target.value))}>
+        <select aria-label="Revision" value={rev} onChange={(e) => setRev(Number(e.target.value))}>
           {older.map((r) => (
             <option key={r.revision} value={r.revision}>
               {r.revision}: {r.images.join(", ")} ({r.age} ago)
@@ -637,18 +689,19 @@ function ApplyPanel({ invoke, badge, ctx }: { invoke: Invoke; badge: string; ctx
   const shown = result ?? preview;
   return (
     <div className="apply">
-      <textarea className="mono" value={yaml} placeholder="Paste YAML (several documents allowed)…"
+      <textarea value={yaml} placeholder="Paste YAML (several documents allowed)…" aria-label="YAML to apply" spellCheck={false}
         onChange={(e) => { setYaml(e.target.value); setPreview(null); setResult(null); setConflicts([]); setForce(null); }} />
-      <div className="filters">
+      <div className="toolbar">
         <button disabled={!yaml.trim() || busy} onClick={() => void run(true, null)}>Preview diff</button>
-        <button className="danger" disabled={!preview || busy} onClick={() => setConfirming(true)}>Apply</button>
-        {busy && <span className="muted">Working…</span>}
+        <button className="danger" disabled={!preview || busy} onClick={() => setConfirming(true)} title={preview ? undefined : "Preview the diff first"}>Apply</button>
+        {busy && <span className="meta">Working…</span>}
+        {!preview && !busy && !result && <span className="meta">Preview first: Apply is enabled once you have seen the diff.</span>}
         {force && preview && <span className="warn-text">Taking over fields of other managers</span>}
       </div>
       {conflicts.length > 0 ? (
-        <div className="conflicts">
-          <p>These fields were set by other field managers; applying would change them:</p>
-          <table>
+        <div className="conflicts" role="alert">
+          <strong>These fields were set by other field managers; applying would change them:</strong>
+          <table className="compact">
             <tbody>
               {conflicts.map((c, i) => (
                 <tr key={i}>
@@ -661,21 +714,23 @@ function ApplyPanel({ invoke, badge, ctx }: { invoke: Invoke; badge: string; ctx
             </tbody>
           </table>
           <p className="muted">Leave these fields out of the YAML, change them with the matching action, or take them over.</p>
-          <button className="danger" disabled={busy} onClick={() => void run(true, conflicts)}>Take over these fields</button>
+          <button className="danger small" disabled={busy} onClick={() => void run(true, conflicts)}>Take over these fields</button>
         </div>
       ) : (
-        error && <div className="error-box">{error}</div>
+        error && <Message kind="error">{error}</Message>
       )}
       {shown && (
         <div className="apply-result">
-          {result && <p>Applied to {ctx}.</p>}
+          {result && <Message kind="notice">Applied to {ctx}.</Message>}
           {shown.objects.map((o) => (
             <div key={`${o.kind}/${o.namespace}/${o.name}`}>
-              <h4>
-                {o.kind} {o.namespace ? `${o.namespace}/` : ""}{o.name} <span className="badge">{o.operation}{o.applied ? "d" : ""}</span>
+              <h4 className="apply-object-head">
+                <span>{o.kind}</span>
+                <span className="mono">{o.namespace ? `${o.namespace}/` : ""}{o.name}</span>
+                <span className={o.operation === "unchanged" ? "chip" : o.operation === "create" ? "chip ok" : "chip warn"}>{o.operation}{o.applied ? "d" : ""}</span>
               </h4>
               {o.diff && (
-                <pre className="mono diff">
+                <pre className="diff">
                   {diffLines(o.diff.text).map((l, i) => <div key={i} className={l.cls}>{l.text || " "}</div>)}
                 </pre>
               )}
@@ -684,7 +739,7 @@ function ApplyPanel({ invoke, badge, ctx }: { invoke: Invoke; badge: string; ctx
         </div>
       )}
       {confirming && preview && (
-        <Dialog badge={badge} title={`Apply ${preview.objects.length} object(s) to ${ctx}${badge ? " — a production cluster" : ""}?`}
+        <Dialog badge={badge} ctx={ctx} title={`Apply ${preview.objects.length} object(s) to ${ctx}${badge ? " — a production cluster" : ""}?`}
           ok={force ? "Take over and apply" : "Apply"} danger onOk={() => void run(false, force)} onCancel={() => setConfirming(false)}>
           {force && <p className="warn-text">{takeoverText(force)}</p>}
         </Dialog>

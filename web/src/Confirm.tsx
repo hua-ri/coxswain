@@ -1,25 +1,15 @@
+import type { ReactNode } from "react";
+import { Modal } from "./ui";
+
 interface Props {
   message: string;
   confirm: string;
+  band?: ReactNode; // a HazardBand when the thing is in production
   onYes(): void;
   onNo(): void;
 }
 
-/** Confirm is an in-page dialog (the webview has no native confirm()). */
-export function Confirm({ message, confirm, onYes, onNo }: Props) {
-  return (
-    <div className="overlay" onClick={onNo}>
-      <div className="dialog" onClick={(e) => e.stopPropagation()}>
-        <p>{message}</p>
-        <div className="buttons">
-          <button onClick={onNo} autoFocus>
-            Cancel
-          </button>
-          <button className="danger" onClick={onYes}>
-            {confirm}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
+/** Confirm asks before a destructive step (the webview has no native confirm()). */
+export function Confirm({ message, confirm, band, onYes, onNo }: Props) {
+  return <Modal title={message} band={band} ok={confirm} danger onOk={onYes} onCancel={onNo} />;
 }

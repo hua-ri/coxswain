@@ -1,52 +1,56 @@
-// Terminal colors for the system light and dark appearance.
+// Terminal colors for the system light and dark appearance. They mirror
+// the tokens in styles.css (xterm.js cannot read CSS variables): the
+// light terminal sits on --hull, the dark one on --well, text is --ink-1,
+// and the ANSI colors are the signal hues (hazard, clear, caution, helm,
+// crew) tuned to stay readable on that background.
 import type { ITheme } from "@xterm/xterm";
 
 const light: ITheme = {
-  background: "#ffffff",
-  foreground: "#1d1d1f",
-  cursor: "#1d1d1f",
-  cursorAccent: "#ffffff",
-  selectionBackground: "#b4d5fe",
-  black: "#1d1d1f",
-  red: "#c4302b",
-  green: "#2a7d2e",
-  yellow: "#946b00",
-  blue: "#1f5fbf",
-  magenta: "#a03ca0",
-  cyan: "#1a7f8e",
-  white: "#bfbfc4",
-  brightBlack: "#6e6e73",
-  brightRed: "#e0443e",
-  brightGreen: "#3a9a3f",
-  brightYellow: "#b38600",
-  brightBlue: "#3a7be0",
-  brightMagenta: "#bf55bf",
-  brightCyan: "#2a9aab",
-  brightWhite: "#e8e8ed",
+  background: "#fbfbfc", // --hull
+  foreground: "#16181d", // --ink-1
+  cursor: "#16181d",
+  cursorAccent: "#fbfbfc",
+  selectionBackground: "#c9daf6", // --helm at ~22% on --hull
+  black: "#16181d",
+  red: "#b42a23", // --hazard-ink
+  green: "#1a7340", // --clear-ink
+  yellow: "#8a5a00", // --caution-ink
+  blue: "#1f56b3",
+  magenta: "#5a3fc0", // --crew-ink
+  cyan: "#0f6f7c",
+  white: "#a4aab4", // --ink-4
+  brightBlack: "#737a87", // --ink-3
+  brightRed: "#d1342c",
+  brightGreen: "#1f8a4c",
+  brightYellow: "#a8700c",
+  brightBlue: "#2563c9",
+  brightMagenta: "#6d4fd1",
+  brightCyan: "#168494",
+  brightWhite: "#4a505c", // --ink-2: "bright white" must stay visible on a light ground
 };
 
 const dark: ITheme = {
-  background: "#1e1e1e",
-  foreground: "#e8e8ed",
-  cursor: "#e8e8ed",
-  cursorAccent: "#1e1e1e",
-  selectionBackground: "#3a5a8c",
-  black: "#2a2a2c",
-  red: "#ff6b63",
-  green: "#5fd068",
-  yellow: "#e8c24a",
-  blue: "#5c9dff",
-  magenta: "#d77fe0",
-  cyan: "#4fc6d6",
-  white: "#d0d0d5",
-  brightBlack: "#7c7c82",
-  brightRed: "#ff8a83",
-  brightGreen: "#7fe087",
-  brightYellow: "#f5d670",
-  brightBlue: "#80b4ff",
-  brightMagenta: "#e6a0ec",
-  brightCyan: "#76d8e5",
-  brightWhite: "#ffffff",
+  background: "#101114", // --well
+  foreground: "#e7e9ee", // --ink-1
+  cursor: "#e7e9ee",
+  cursorAccent: "#101114",
+  selectionBackground: "#2a3c5e", // --helm at ~30% on --well
+  black: "#24262b",
+  red: "#f0716a",
+  green: "#4cc782", // --clear
+  yellow: "#e0a542", // --caution
+  blue: "#5b93f0", // --helm
+  magenta: "#a48dff", // --crew
+  cyan: "#4fbfcc",
+  white: "#b2b7c1", // --ink-2
+  brightBlack: "#6b717c",
+  brightRed: "#ff8f88",
+  brightGreen: "#74dba0",
+  brightYellow: "#f0c26a",
+  brightBlue: "#86b0f6",
+  brightMagenta: "#c2b3ff",
+  brightCyan: "#7dd6e0",
+  brightWhite: "#f5f6f8",
 };
 
 export function terminalTheme(isDark: boolean): ITheme {
