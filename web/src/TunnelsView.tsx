@@ -2,7 +2,8 @@ import { Fragment, useState } from "react";
 import { formatBytes, formatTime } from "./format";
 import { failureText, tunnelRequest, tunnelRoute, type Tunnel, type TunnelForm } from "./tunnels";
 import type { Host } from "./types";
-import { Empty, Owner } from "./ui";
+import { Icon } from "./icons";
+import { Empty, Owner, PaneHeader } from "./ui";
 
 interface Props {
   tunnels: Tunnel[];
@@ -41,10 +42,7 @@ export function TunnelsView({ tunnels, hosts, onClose, onCreate }: Props) {
 
   return (
     <div className="panel">
-      <div className="panel-head">
-        <span className="meta">
-          {tunnels.length} tunnel{tunnels.length === 1 ? "" : "s"} open
-        </span>
+      <PaneHeader icon={<Icon name="@tunnels" />} title="Tunnels" meta={`${tunnels.length} open`}>
         {!form && (
           <button
             className="small primary"
@@ -53,7 +51,7 @@ export function TunnelsView({ tunnels, hosts, onClose, onCreate }: Props) {
             New tunnel
           </button>
         )}
-      </div>
+      </PaneHeader>
       {form && (
         <form
           className="tunnel-form"

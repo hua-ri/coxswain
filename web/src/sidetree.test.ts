@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { contextMatches, envOfHost, extraTags, groupHosts, hostMatches, hostTitle, loadFolded, toggleFolded } from "./sidetree";
+import { contextMatches, envOfContext, envOfHost, hostMatches, hostTitle, loadFolded, sortedContexts, sortedHosts, toggleFolded } from "./sidetree";
 import type { ContextInfo } from "./k8s";
 import type { Host } from "./types";
 
@@ -11,27 +11,30 @@ const hosts: Host[] = [
   { name: "cox-test2", hostname: "127.0.0.1", port: 2223, tags: { group: "demo" } },
 ];
 
-describe("groupHosts", () => {
+describe("sortedHosts", () => {
+  const names = (hs: Host[]) => hs.map((h) => h.name);
   it("puts production first, then environments by name, then hosts without env", () => {
-    const g = groupHosts(hosts);
-    expect(g.map((x) => [x.label, x.hosts.map((h) => h.name)])).toEqual([
-      ["Production", ["cox-test", "db-1"]],
-      ["Staging", ["stg-api"]],
-      ["No environment", ["king", "cox-test2"]],
-    ]);
-    expect(g[0].prod).toBe(true);
-    expect(g[1].prod).toBe(false);
+    expect(names(sortedHosts(hosts))).toEqual(["cox-test", "db-1", "stg-api", "king", "cox-test2"]);
   });
 
   it("filters by name, address, user, tags and note; every word must match", () => {
-    expect(groupHosts(hosts, "demo").flatMap((g) => g.hosts.map((h) => h.name))).toEqual(["cox-test", "cox-test2"]);
-    expect(groupHosts(hosts, "group=demo prod").flatMap((g) => g.hosts.map((h) => h.name))).toEqual(["cox-test"]);
-    expect(groupHosts(hosts, "ROOT").flatMap((g) => g.hosts.map((h) => h.name))).toEqual(["king"]);
-    expect(groupHosts(hosts, "nothing-like-this")).toEqual([]);
+    expect(names(sortedHosts(hosts, "demo"))).toEqual(["cox-test", "cox-test2"]);
+    expect(names(sortedHosts(hosts, "group=demo prod"))).toEqual(["cox-test"]);
+    expect(names(sortedHosts(hosts, "ROOT"))).toEqual(["king"]);
+    expect(sortedHosts(hosts, "nothing-like-this")).toEqual([]);
   });
+});
 
-  it("drops empty groups", () => {
-    expect(groupHosts(hosts, "stg").map((g) => g.key)).toEqual(["staging"]);
+describe("sortedContexts", () => {
+  const cs: ContextInfo[] = [
+    { name: "kind", cluster: "kind", namespace: "default" },
+    { name: "stg", cluster: "gke", namespace: "default", tags: { env: "Staging" } },
+    { name: "prod-hk", cluster: "eks", namespace: "api", tags: { env: "production" } },
+  ];
+  it("orders like hosts and normalises env", () => {
+    expect(sortedContexts(cs).map((c) => c.name)).toEqual(["prod-hk", "stg", "kind"]);
+    expect(cs.map(envOfContext)).toEqual(["", "staging", "prod"]);
+    expect(sortedContexts(cs, "gke").map((c) => c.name)).toEqual(["stg"]);
   });
 });
 
@@ -42,10 +45,6 @@ describe("host helpers", () => {
     expect(envOfHost(hosts[0])).toBe("");
   });
 
-  it("lists tags other than env", () => {
-    expect(extraTags({ env: "prod", team: "pay", group: "demo" })).toEqual(["group=demo", "team=pay"]);
-  });
-
   it("builds a hover text with tags, jump host and note", () => {
     const t = hostTitle({ ...hosts[1], proxy_jump: "bastion" }, "ops@127.0.0.1:2222");
     expect(t.split("\n")).toEqual([
@@ -54,7 +53,7 @@ describe("host helpers", () => {
       "env=prod  group=demo",
       "via bastion",
       "Note: treat as production",
-      "Double-click or Enter: terminal",
+      "Double-click: terminal",
     ]);
   });
 

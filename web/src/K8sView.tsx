@@ -13,7 +13,6 @@ import {
   listArgs,
   ALL_NAMESPACES as ALL,
   isProdContext,
-  KINDS,
   podContainers,
   rowActions,
   rowObject,
@@ -30,6 +29,8 @@ import {
   type RowAction,
 } from "./k8s";
 import { activate } from "./keys";
+import { APPLY } from "./nav";
+import { Icon } from "./icons";
 import { Empty, HazardBand, Message, Modal, Tag, Tags } from "./ui";
 
 /** How often the list refreshes (while the tab shows and auto is on), and logs follow. */
@@ -49,6 +50,7 @@ interface Props {
   active: boolean;
   onOpenTerminal(p: PodRef & { shell?: string }): Promise<void>;
   onForward(body: Record<string, unknown>): Promise<string>; // resolves to where it listens
+  kind: string; // the kind listed, or APPLY for the apply panel; chosen in the sidebar
 }
 
 interface Selected {
@@ -102,19 +104,18 @@ function Events({ events }: { events: EventRow[] }) {
 }
 
 /** K8sView browses one context: lists, details, logs, diagnosis, changes. */
-export function K8sView({ cox, context, active, onOpenTerminal, onForward }: Props) {
+export function K8sView({ cox, context, active, onOpenTerminal, onForward, kind: chosen }: Props) {
   const ctx = context.name;
   const [namespace, setNamespace] = useState(context.namespace || "default");
   const [namespaces, setNamespaces] = useState<string[]>([]);
-  const [kind, setKind] = useState("pods");
-  const [typedKind, setTypedKind] = useState("");
+  const applying = chosen === APPLY;
+  const kind = applying ? "pods" : chosen;
   const [list, setList] = useState<GetOutput | null>(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [auto, setAuto] = useState(true);
   const [selected, setSelected] = useState<Selected | null>(null);
   const [tab, setTab] = useState<DetailTab>("overview");
-  const [applying, setApplying] = useState(false);
   const [dialog, setDialog] = useState<ReactNode>(null);
   const [opened, setOpened] = useState(false);
   const badge = isProdContext(context) ? envOf(context) : "";
@@ -155,11 +156,11 @@ export function K8sView({ cox, context, active, onOpenTerminal, onForward }: Pro
     return () => clearInterval(timer);
   }, [active, auto, load]);
 
-  const choose = (k: string) => {
-    setKind(k);
+  // A new kind from the sidebar starts with a fresh list and no selection.
+  useEffect(() => {
     setSelected(null);
     setList(null);
-  };
+  }, [kind]);
 
   const done = (msg: string) => {
     setDialog(null);
@@ -247,37 +248,17 @@ export function K8sView({ cox, context, active, onOpenTerminal, onForward }: Pro
   return (
     <div className="pane k8s" style={{ display: active ? "flex" : "none" }}>
       {badge && <HazardBand env={badge} where={ctx} note={context.note} />}
+      <header className="pane-head">
+        <Icon name="cluster" />
+        <h1 className="pane-title">{ctx}</h1>
+        <span className="pane-meta mono" title={context.server}>{context.cluster}</span>
+        {contextBadges(context).filter((b) => !b.text.startsWith("env=") || !badge).map((b) => {
+          const [k, ...v] = b.text.split("=");
+          return <Tag key={b.text} k={k} v={v.join("=")} inherited={b.inherited} from={context.inherited_from?.join(", ")} />;
+        })}
+        {context.note && !badge && <span className="pane-note" title={context.note}>{context.note}</span>}
+      </header>
       <div className="k8s-body">
-      <nav className="k8s-kinds" aria-label="Resource kinds">
-        <div className="k8s-context">
-          <div className="ctx-name">{ctx}</div>
-          <span className="item-meta" title={context.server}>{context.cluster}</span>
-          {contextBadges(context).length > 0 && (
-            <div className="item-tags">
-              {contextBadges(context).map((b) => {
-                const [k, ...v] = b.text.split("=");
-                return <Tag key={b.text} k={k} v={v.join("=")} inherited={b.inherited} from={context.inherited_from?.join(", ")} />;
-              })}
-            </div>
-          )}
-          {context.note && !badge && <div className="note-text">{context.note}</div>}
-        </div>
-        <div className="kind-list">
-          {KINDS.map((k) => (
-            <button key={k.kind} className={kind === k.kind && !applying ? "kind active" : "kind"}
-              aria-current={kind === k.kind && !applying ? "page" : undefined}
-              onClick={() => { setApplying(false); choose(k.kind); }}>
-              {k.label}
-            </button>
-          ))}
-        </div>
-        <form onSubmit={(e) => { e.preventDefault(); if (typedKind.trim()) { setApplying(false); choose(typedKind.trim()); } }}>
-          <input placeholder="Other kind…" aria-label="Other kind" value={typedKind} onChange={(e) => setTypedKind(e.target.value)} />
-        </form>
-        <div className="kind-list apply-kind">
-          <button className={applying ? "kind active" : "kind"} onClick={() => setApplying(true)}>Apply YAML…</button>
-        </div>
-      </nav>
       <div className="k8s-main">
         {applying ? (
           <ApplyPanel invoke={invoke} badge={badge} ctx={ctx} />

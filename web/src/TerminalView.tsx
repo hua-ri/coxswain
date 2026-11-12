@@ -16,10 +16,11 @@ interface Props {
   typing: boolean; // an agent is typing into it
   active: boolean;
   onExit(code: number | null): void;
+  onClose(): void;
 }
 
 /** TerminalView shows one shared terminal: output from the server, keystrokes to it. */
-export function TerminalView({ cox, tab, prod, typing, active, onExit }: Props) {
+export function TerminalView({ cox, tab, prod, typing, active, onExit, onClose }: Props) {
   const { id, closed } = tab;
   const box = useRef<HTMLDivElement>(null);
   const term = useRef<Terminal | null>(null);
@@ -121,6 +122,9 @@ export function TerminalView({ cox, tab, prod, typing, active, onExit }: Props) 
         )}
         {closed && <span className="muted">ended{tab.exitCode !== undefined ? ` · exit ${tab.exitCode}` : ""}</span>}
         {!closed && agent && !typing && <span className="muted">shared — you can type here too</span>}
+        <button className="small ghost" onClick={onClose} title={closed ? "Remove it from the list" : "Close this terminal; its shell ends"}>
+          {closed ? "Remove" : "Close"}
+        </button>
       </div>
       <div className="terminal" ref={box} />
     </div>

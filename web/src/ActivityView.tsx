@@ -1,7 +1,8 @@
 import { Fragment, useMemo, useState } from "react";
 import { clientLabel, filterOptions, filterRows, type Filter, type Row } from "./activity";
 import { activate } from "./keys";
-import { Empty, Risk } from "./ui";
+import { Icon } from "./icons";
+import { Empty, PaneHeader, Risk } from "./ui";
 import { batchProgress, type BatchInfo, type HostOutput } from "./batch";
 
 interface Props {
@@ -66,7 +67,8 @@ export function ActivityView({ rows, onOpenTerminal, loadOutput }: Props) {
     [r.terminal || r.batch ? "clickable" : "", r.agent ? "agent" : "", r.risk === "destructive" ? "destructive" : ""].filter(Boolean).join(" ") || undefined;
   return (
     <div className="activity">
-      <div className="toolbar">
+      <PaneHeader icon={<Icon name="@activity" />} title="Activity"
+        meta={`${shown.length} event${shown.length === 1 ? "" : "s"} since this window opened`}>
         <select aria-label="Client" value={filter.client} onChange={(e) => setFilter({ ...filter, client: e.target.value })}>
           <option value="">All clients</option>
           {options.clients.map((c) => (
@@ -81,10 +83,7 @@ export function ActivityView({ rows, onOpenTerminal, loadOutput }: Props) {
             <option key={h}>{h}</option>
           ))}
         </select>
-        <span className="meta">
-          {shown.length} event{shown.length === 1 ? "" : "s"} since this window opened
-        </span>
-      </div>
+      </PaneHeader>
       <div className="table-wrap">
         <table className="events">
           <colgroup>

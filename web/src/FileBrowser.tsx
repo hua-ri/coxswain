@@ -4,7 +4,8 @@ import { Confirm } from "./Confirm";
 import { basename, crumbs, joinPath, normalizePath, parentPath, sortEntries, type FileEntry, type Listing } from "./files";
 import { formatBytes, formatTime } from "./format";
 import { activate } from "./keys";
-import { Empty, HazardBand, Message } from "./ui";
+import { Icon } from "./icons";
+import { Empty, HazardBand, Message, PaneHeader } from "./ui";
 import type { Transfer } from "./transfers";
 
 interface Props {
@@ -13,6 +14,7 @@ interface Props {
   prod: boolean; // the host is tagged env=prod
   note?: string; // the host's note
   active: boolean;
+  onClose(): void;
 }
 
 /** typeMark marks an entry's kind like ls -F. */
@@ -21,7 +23,7 @@ function typeMark(e: FileEntry): string {
 }
 
 /** FileBrowser lists a host's files over SFTP (as the user, "desktop"). */
-export function FileBrowser({ cox, host, prod, note, active }: Props) {
+export function FileBrowser({ cox, host, prod, note, active, onClose }: Props) {
   const [path, setPath] = useState("~");
   const [typed, setTyped] = useState("~");
   const [listing, setListing] = useState<Listing | null>(null);
@@ -126,6 +128,9 @@ export function FileBrowser({ cox, host, prod, note, active }: Props) {
   return (
     <div className="pane files" style={{ display: active ? "flex" : "none" }}>
       {prod && <HazardBand env="env=prod" where={host} note={note} />}
+      <PaneHeader icon={<Icon name="files" />} title={host} meta="files">
+        <button className="small ghost" onClick={onClose}>Close</button>
+      </PaneHeader>
       <div className="toolbar">
         <nav className="crumbs" aria-label="Path">
           {where.map((c, i) => (

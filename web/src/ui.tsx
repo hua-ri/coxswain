@@ -148,3 +148,16 @@ export function Modal(props: {
     </div>
   );
 }
+
+/** PaneHeader names what a pane shows: an icon, a title, quiet metadata, and actions on the right. */
+export function PaneHeader({ title, icon, meta, children }: { title: ReactNode; icon?: ReactNode; meta?: ReactNode; children?: ReactNode }) {
+  return (
+    <header className="pane-head">
+      {icon}
+      <h1 className="pane-title">{title}</h1>
+      {meta && <span className="pane-meta">{meta}</span>}
+      <span className="spacer" />
+      {children}
+    </header>
+  );
+}

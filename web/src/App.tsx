@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useReducer, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { ActivityView } from "./ActivityView";
 import { addEvent, type Row } from "./activity";
 import { fetchHostOutput, type BatchInfo } from "./batch";
@@ -6,24 +6,25 @@ import { cox } from "./bridge";
 import type { Cox, Status } from "./cox";
 import { Confirm } from "./Confirm";
 import { isProdTags, prodWhere } from "./env";
-import { stepIndex } from "./keys";
-import { HazardBand } from "./ui";
+import { AgentsView } from "./AgentsView";
+import { HostView } from "./HostView";
+import {
+  ACTIVITY, AGENTS, TRANSFERS, TUNNELS, afterClose, clusterOf, destinationFor, filesHostOf, filesId, footprint, hostOf,
+  placeOfWhere, revokeMessage, rowsAt, visit,
+} from "./nav";
+import { HazardBand, PaneHeader } from "./ui";
 import { FileBrowser } from "./FileBrowser";
-import { actionError, contextFromTab, isProdContext, k8sTab, terminalRequest, type ContextInfo, type ContextsOutput } from "./k8s";
+import { actionError, isProdContext, k8sTab, terminalRequest, type ContextInfo, type ContextsOutput } from "./k8s";
 import { K8sView, type PodRef } from "./K8sView";
-import { Sidebar } from "./Sidebar";
+import { Icon } from "./icons";
+import { Sidebar, type SideSession } from "./Sidebar";
 import { TerminalView } from "./TerminalView";
-import { needsConfirm, sessionWhere, tabTitle, tabsReducer, type Tab } from "./terminals";
+import { needsConfirm, sessionWhere, tabsReducer, type Tab } from "./terminals";
 import { runningCount, transfersReducer, type Transfer, type TransferItem } from "./transfers";
 import { TransfersView } from "./TransfersView";
 import { tunnelPlace, tunnelsReducer, type Tunnel } from "./tunnels";
 import { TunnelsView } from "./TunnelsView";
 import type { ClientInfo, Host, TermSession } from "./types";
-
-/** Tab ids of the fixed panels and the prefix of Files tabs. */
-const TRANSFERS = "@transfers";
-const FILES = "@files:";
-const TUNNELS = "@tunnels";
 
 /** How often the open Tunnels tab refreshes its traffic counters. */
 const TUNNEL_POLL_MS = 3000;
@@ -45,7 +46,7 @@ function Desktop({ cox }: { cox: Cox }) {
   const [rows, setRows] = useState<Row[]>([]);
   const [error, setError] = useState("");
   const [tabs, dispatch] = useReducer(tabsReducer, []);
-  const [active, setActive] = useState(""); // "" activity, TRANSFERS, files:<host>, or a terminal id
+  const [active, setActive] = useState(ACTIVITY); // what the main area shows; see nav.ts
   const [closing, setClosing] = useState<Tab | null>(null);
   const [transfers, dispatchTransfer] = useReducer(transfersReducer, []);
   const [cancelling, setCancelling] = useState<TransferItem | null>(null);
@@ -55,7 +56,11 @@ function Desktop({ cox }: { cox: Cox }) {
   const [now, setNow] = useState(Date.now());
   const [contexts, setContexts] = useState<ContextInfo[]>([]);
   const [contextsError, setContextsError] = useState("");
-  const [clusters, setClusters] = useState<string[]>([]); // contexts with a K8s tab
+  const [clusters, setClusters] = useState<string[]>([]); // contexts opened in this window (their browsers stay mounted)
+  const [kinds, setKinds] = useState<Record<string, string>>({}); // each cluster's listed kind
+  const [revoking, setRevoking] = useState("");
+  const history = useRef<string[]>([]);
+  const seen = useRef(new Map<string, number>()); // when each session first showed, for the Open list's order
 
   const report = useCallback((e: unknown) => setError(e instanceof Error ? e.message : String(e)), []);
 
@@ -164,6 +169,33 @@ function Desktop({ cox }: { cox: Cox }) {
     return () => clearInterval(timer);
   }, [typing, tabs]);
 
+  // Selection history: closing what is shown goes back to the previous selection.
+  useEffect(() => {
+    history.current = visit(history.current, active);
+  }, [active]);
+  const exists = useRef<(id: string) => boolean>(() => true);
+  exists.current = (id: string) => {
+    if ([ACTIVITY, TRANSFERS, TUNNELS, AGENTS].includes(id)) return true;
+    if (hostOf(id)) return hosts.some((h) => h.name === hostOf(id));
+    if (filesHostOf(id)) return browsers.includes(filesHostOf(id));
+    if (clusterOf(id)) return clusters.includes(clusterOf(id));
+    return tabs.some((t) => t.id === id);
+  };
+  const leave = (id: string) => setActive((a) => (a === id ? afterClose(history.current, id, exists.current) : a));
+
+  // ⌘1–⌘4 select the destinations, wherever the focus is (the terminal included).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const id = destinationFor(e);
+      if (!id) return;
+      e.preventDefault();
+      e.stopPropagation();
+      setActive(id);
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, []);
+
   const openTerminal = useCallback(
     (host: string) => {
       cox
@@ -190,16 +222,17 @@ function Desktop({ cox }: { cox: Cox }) {
     setClusters((c) => (c.includes(ctx) ? c : [...c, ctx]));
     setActive(k8sTab(ctx));
   };
-  const closeCluster = (ctx: string) => {
-    setClusters((c) => c.filter((x) => x !== ctx));
-    setActive((a) => (a === k8sTab(ctx) ? "" : a));
+  const chooseKind = (ctx: string, kind: string) => {
+    setKinds((k) => ({ ...k, [ctx]: kind }));
+    openCluster(ctx);
   };
+  const select = (id: string) => (clusterOf(id) ? openCluster(clusterOf(id)) : setActive(id));
   const showTerminal = (id: string) => {
     if (tabs.some((t) => t.id === id)) setActive(id);
   };
   const removeTab = (id: string) => {
+    leave(id);
     dispatch({ type: "remove", id });
-    setActive((a) => (a === id ? "" : a));
   };
   const closeTab = (t: Tab) => {
     if (t.closed) return removeTab(t.id);
@@ -217,11 +250,11 @@ function Desktop({ cox }: { cox: Cox }) {
   };
   const openFiles = (host: string) => {
     setBrowsers((b) => (b.includes(host) ? b : [...b, host]));
-    setActive(FILES + host);
+    setActive(filesId(host));
   };
   const closeFiles = (host: string) => {
+    leave(filesId(host));
     setBrowsers((b) => b.filter((h) => h !== host));
-    setActive((a) => (a === FILES + host ? "" : a));
   };
   const askCancel = (t: TransferItem) => (t.owner.kind === "agent" ? setCancelling(t) : cancelTransfer(t));
   const cancelTransfer = (t: TransferItem) => {
@@ -253,15 +286,6 @@ function Desktop({ cox }: { cox: Cox }) {
       .catch(report);
   };
 
-  const moveTab = (e: KeyboardEvent<HTMLElement>) => {
-    const list = [...e.currentTarget.querySelectorAll<HTMLElement>('[role="tab"]')];
-    const i = list.indexOf(document.activeElement as HTMLElement);
-    const j = i < 0 ? -1 : stepIndex(e.key, i, list.length);
-    if (j < 0) return;
-    e.preventDefault();
-    list[j].focus();
-    list[j].click();
-  };
   const agents = clients.filter((c) => !c.revoked).length;
   const hostProd = (h: string) => isProdTags(hosts.find((x) => x.name === h)?.tags);
   const ctxProd = (c: string) => {
@@ -269,6 +293,32 @@ function Desktop({ cox }: { cox: Cox }) {
     return info ? isProdContext(info) : false;
   };
   const running = runningCount(transfers);
+  const typingTab = tabs.find((t) => (t.typingUntil ?? 0) > now && t.owner.kind === "agent");
+
+  // The Open list: terminals and file browsers, in the order they first showed.
+  const order = (id: string) => {
+    if (!seen.current.has(id)) seen.current.set(id, seen.current.size);
+    return seen.current.get(id)!;
+  };
+  const sessions: SideSession[] = [
+    ...tabs.map((t): SideSession => ({
+      id: t.id, kind: "terminal", where: t.host, owner: t.owner, closed: t.closed,
+      prod: prodWhere(t.host, hosts, contexts), typing: (t.typingUntil ?? 0) > now,
+      title: `Terminal on ${t.host}, opened by ${t.owner.kind === "agent" ? t.owner.name : "you"}${t.closed ? " (ended)" : ""}`,
+    })),
+    ...browsers.map((h): SideSession => ({
+      id: filesId(h), kind: "files", where: h, owner: { kind: "human", name: "you" },
+      prod: hostProd(h), typing: false, title: `Files on ${h}`,
+    })),
+  ].sort((a, b) => order(a.id) - order(b.id));
+  const closeSession = (id: string) => {
+    const t = tabs.find((x) => x.id === id);
+    if (t) return closeTab(t);
+    if (filesHostOf(id)) closeFiles(filesHostOf(id));
+  };
+  const selectedHost = hosts.find((h) => h.name === hostOf(active));
+  const footprintOf = (name: string) => footprint(name, tabs, tunnels, transfers);
+
   return (
     <div className="app">
       {!status.connected && (
@@ -287,84 +337,69 @@ function Desktop({ cox }: { cox: Cox }) {
       )}
       <div className="main">
         <Sidebar
+          active={active}
+          onSelect={select}
           hosts={hosts}
-          clients={clients}
           contexts={contexts}
           contextsError={contextsError}
-          onOpenCluster={openCluster}
+          sessions={sessions}
+          running={running}
+          tunnels={tunnels.length}
+          agents={{ allowed: agents, typing: !!typingTab }}
+          kindOf={(c) => kinds[c] ?? "pods"}
+          onKind={chooseKind}
           onOpenTerminal={openTerminal}
-          onOpenFiles={openFiles}
-          onAllow={decide("PUT")}
-          onRevoke={decide("DELETE")}
+          onCloseSession={closeSession}
         />
         <section className="content">
-          <nav className="tabs" role="tablist" aria-label="Open panels" onKeyDown={moveTab}>
-            <TabButton id="" active={active} onSelect={setActive}>
-              Activity
-            </TabButton>
-            <TabButton id={TRANSFERS} active={active} onSelect={setActive}>
-              Transfers
-              {running > 0 && <span className="count live">{running}</span>}
-            </TabButton>
-            <TabButton id={TUNNELS} active={active} onSelect={setActive}>
-              Tunnels
-              {tunnels.length > 0 && <span className="count">{tunnels.length}</span>}
-            </TabButton>
-            {browsers.map((h) => (
-              <TabButton key={h} id={FILES + h} active={active} onSelect={setActive} prod={hostProd(h)}
-                onClose={() => closeFiles(h)} closeLabel={`Close files of ${h}`} title={`${h} · files`}>
-                <span className="label-text"><span className="where">{h}</span> <span className="by">files</span></span>
-              </TabButton>
-            ))}
-            {clusters.map((c) => (
-              <TabButton key={c} id={k8sTab(c)} active={active} onSelect={setActive} prod={ctxProd(c)}
-                onClose={() => closeCluster(c)} closeLabel={`Close ${c}`} title={`${c} · kubernetes`}>
-                {ctxProd(c) && <span className="chip prod">prod</span>}
-                <span className="label-text"><span className="where">{c}</span> <span className="by">k8s</span></span>
-              </TabButton>
-            ))}
-            {tabs.map((t) => (
-              <TabButton key={t.id} id={t.id} active={active} onSelect={setActive}
-                agent={t.owner.kind === "agent"} prod={prodWhere(t.host, hosts, contexts)} closed={t.closed}
-                onClose={() => closeTab(t)} closeLabel="Close terminal" title={tabTitle(t)}>
-                {(t.typingUntil ?? 0) > now && <span className="pulse" title={`${t.owner.name} is typing`} />}
-                <span className="label-text"><span className="where">{t.host}</span></span>
-                {t.owner.kind === "agent" ? <span className="chip agent">{t.owner.name}</span> : <span className="by">you</span>}
-              </TabButton>
-            ))}
-          </nav>
-          <div className="tab-body">
-            <div className="pane" role="tabpanel" style={{ display: active === "" ? "block" : "none" }}>
-              <ActivityView rows={rows} onOpenTerminal={showTerminal} loadOutput={loadOutput} />
-            </div>
-            <div className="pane scroll" role="tabpanel" style={{ display: active === TRANSFERS ? "block" : "none" }}>
+          <div className="pane" style={{ display: active === ACTIVITY ? "flex" : "none" }}>
+            <ActivityView rows={rows} onOpenTerminal={showTerminal} loadOutput={loadOutput} />
+          </div>
+          <div className="pane" style={{ display: active === TRANSFERS ? "flex" : "none" }}>
+            <PaneHeader icon={<Icon name="@transfers" />} title="Transfers" meta={running > 0 ? `${running} running` : undefined} />
+            <div className="pane-scroll">
               <TransfersView transfers={transfers} onCancel={askCancel} />
             </div>
-            <div className="pane scroll" role="tabpanel" style={{ display: active === TUNNELS ? "block" : "none" }}>
+          </div>
+          <div className="pane" style={{ display: active === TUNNELS ? "flex" : "none" }}>
+            <div className="pane-scroll">
               <TunnelsView tunnels={tunnels} hosts={hosts} onClose={askCloseTunnel} onCreate={createTunnel} />
             </div>
-            {browsers.map((h) => (
-              <FileBrowser key={h} cox={cox} host={h} prod={hostProd(h)} note={hosts.find((x) => x.name === h)?.note} active={active === FILES + h} />
-            ))}
-            {clusters.map((c) => {
-              const info = contexts.find((x) => x.name === c) ?? { name: c, cluster: "", namespace: "default" };
-              return (
-                <K8sView key={c} cox={cox} context={info} active={contextFromTab(active) === c}
-                  onOpenTerminal={openPodTerminal} onForward={forward} />
-              );
-            })}
-            {tabs.map((t) => (
-              <TerminalView
-                key={t.id}
-                cox={cox}
-                tab={t}
-                prod={prodWhere(t.host, hosts, contexts)}
-                typing={(t.typingUntil ?? 0) > now}
-                active={active === t.id}
-                onExit={(code) => dispatch({ type: "closed", id: t.id, code: code ?? undefined })}
-              />
-            ))}
           </div>
+          <AgentsView active={active === AGENTS} clients={clients} rows={rows} footprintOf={footprintOf}
+            typing={(n) => tabs.some((t) => t.owner.name === n && (t.typingUntil ?? 0) > now)}
+            onAllow={decide("PUT")} onRevoke={setRevoking} onSelect={select} />
+          {selectedHost && (
+            <HostView key={selectedHost.name} host={selectedHost} prod={hostProd(selectedHost.name)} active
+              sessions={sessions.filter((x) => placeOfWhere(x.where).kind === "host" && x.where === selectedHost.name)}
+              tunnels={tunnels.filter((t) => t.type !== "k8s" && t.host === selectedHost.name)}
+              rows={rowsAt(rows, selectedHost.name, 12)}
+              onTerminal={() => openTerminal(selectedHost.name)} onFiles={() => openFiles(selectedHost.name)}
+              onSelect={select} onTunnels={() => setActive(TUNNELS)} />
+          )}
+          {browsers.map((h) => (
+            <FileBrowser key={h} cox={cox} host={h} prod={hostProd(h)} note={hosts.find((x) => x.name === h)?.note} active={active === filesId(h)}
+              onClose={() => closeFiles(h)} />
+          ))}
+          {clusters.map((c) => {
+            const info = contexts.find((x) => x.name === c) ?? { name: c, cluster: "", namespace: "default" };
+            return (
+              <K8sView key={c} cox={cox} context={info} active={active === k8sTab(c)} kind={kinds[c] ?? "pods"}
+                onOpenTerminal={openPodTerminal} onForward={forward} />
+            );
+          })}
+          {tabs.map((t) => (
+            <TerminalView
+              key={t.id}
+              cox={cox}
+              tab={t}
+              prod={prodWhere(t.host, hosts, contexts)}
+              typing={(t.typingUntil ?? 0) > now}
+              active={active === t.id}
+              onExit={(code) => dispatch({ type: "closed", id: t.id, code: code ?? undefined })}
+              onClose={() => closeTab(t)}
+            />
+          ))}
         </section>
       </div>
       {closing && (
@@ -383,6 +418,17 @@ function Desktop({ cox }: { cox: Cox }) {
           band={band(hostProd(cancelling.host), cancelling.host)}
           onYes={() => cancelTransfer(cancelling)}
           onNo={() => setCancelling(null)}
+        />
+      )}
+      {revoking && (
+        <Confirm
+          message={revokeMessage(revoking, footprintOf(revoking))}
+          confirm="Revoke"
+          onYes={() => {
+            decide("DELETE")(revoking);
+            setRevoking("");
+          }}
+          onNo={() => setRevoking("")}
         />
       )}
       {closingTunnel && (
@@ -406,7 +452,15 @@ function Desktop({ cox }: { cox: Cox }) {
           )}
         </span>
         <span>
-          {agents} agent{agents === 1 ? "" : "s"} allowed
+          {typingTab ? (
+            <>
+              <span className="crew-text">{typingTab.owner.name}</span> is typing in <span className="mono">{typingTab.host}</span>
+            </>
+          ) : (
+            <>
+              {agents} agent{agents === 1 ? "" : "s"} allowed
+            </>
+          )}
         </span>
       </footer>
     </div>
@@ -416,37 +470,4 @@ function Desktop({ cox }: { cox: Cox }) {
 /** band is the production band of a confirmation, or nothing. */
 function band(prod: boolean, where: string) {
   return prod ? <HazardBand env="env=prod" where={where} /> : undefined;
-}
-
-/** TabButton is one tab: a selectable label, and a close button for closable ones. */
-function TabButton(props: {
-  id: string;
-  active: string;
-  onSelect(id: string): void;
-  children: ReactNode;
-  title?: string;
-  agent?: boolean;
-  prod?: boolean;
-  closed?: boolean;
-  onClose?(): void;
-  closeLabel?: string;
-}) {
-  const selected = props.active === props.id;
-  const cls = ["tab", selected ? "active" : "", props.agent ? "agent" : "", props.prod ? "prod" : "", props.closed ? "closed" : "", props.onClose ? "" : "fixed"]
-    .filter(Boolean)
-    .join(" ");
-  return (
-    <div className={cls} role="presentation">
-      <button className="tab-label" role="tab" aria-selected={selected} tabIndex={selected ? 0 : -1} title={props.title}
-        onClick={() => props.onSelect(props.id)}>
-        {props.children}
-      </button>
-      {props.onClose && (
-        <button className="ghost icon tab-close" aria-label={props.closeLabel} title={props.closeLabel}
-          onClick={props.onClose}>
-          ×
-        </button>
-      )}
-    </div>
-  );
 }

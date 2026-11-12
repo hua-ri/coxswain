@@ -1,15 +1,9 @@
-// The sidebar's structure: hosts grouped by environment (production first),
-// a filter over hosts and clusters, and which sections are folded.
+// The sidebar's places: hosts and clusters ordered production first, a
+// filter over them, and which sections are folded.
 import { isProdTag, isProdTags } from "./env";
 import type { ContextInfo } from "./k8s";
+import { orderPlaces } from "./nav";
 import type { Host } from "./types";
-
-export interface HostGroup {
-  key: string; // "prod", an env value, or "" for hosts without env
-  label: string;
-  prod: boolean;
-  hosts: Host[];
-}
 
 /** envOfHost is the host's env tag, lower-cased; production spellings become "prod". */
 export function envOfHost(h: Host): string {
@@ -38,36 +32,19 @@ export function contextMatches(c: ContextInfo, filter: string): boolean {
   return matches(filter, [c.name, c.cluster, c.namespace, c.server, c.note, ...tagText(c.tags)]);
 }
 
-/**
- * groupHosts groups the hosts that match the filter by environment:
- * production first, then other environments by name, then hosts with no
- * env tag. Hosts keep their order within a group.
- */
-export function groupHosts(hosts: Host[], filter = ""): HostGroup[] {
-  const groups = new Map<string, Host[]>();
-  for (const h of hosts) {
-    if (!hostMatches(h, filter)) continue;
-    const env = envOfHost(h);
-    groups.set(env, [...(groups.get(env) ?? []), h]);
-  }
-  const keys = [...groups.keys()].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
-  return keys.map((key) => ({
-    key,
-    label: key === "prod" ? "Production" : key === "" ? "No environment" : key.charAt(0).toUpperCase() + key.slice(1),
-    prod: key === "prod",
-    hosts: groups.get(key)!,
-  }));
+/** sortedHosts are the hosts that match the filter, production first (see orderPlaces). */
+export function sortedHosts(hosts: Host[], filter = ""): Host[] {
+  return orderPlaces(hosts.filter((h) => hostMatches(h, filter)), envOfHost);
 }
 
-function rank(env: string): number {
-  return env === "prod" ? 0 : env === "" ? 2 : 1;
+/** envOfContext is the context's env, lower-cased; production spellings become "prod". */
+export function envOfContext(c: ContextInfo): string {
+  return contextIsProd(c) ? "prod" : (c.tags?.env ?? "").toLowerCase();
 }
 
-/** extraTags are a host's tags other than env, as k=v, for its tooltip line. */
-export function extraTags(tags: Record<string, string> | undefined): string[] {
-  return tagText(tags)
-    .filter((t) => !t.startsWith("env="))
-    .sort();
+/** sortedContexts are the contexts that match the filter, production first. */
+export function sortedContexts(contexts: ContextInfo[], filter = ""): ContextInfo[] {
+  return orderPlaces(contexts.filter((c) => contextMatches(c, filter)), envOfContext);
 }
 
 /** hostTitle is the hover text for a host row. */
@@ -77,7 +54,7 @@ export function hostTitle(h: Host, address: string): string {
   if (tags.length) lines.push(tags.join("  "));
   if (h.proxy_jump) lines.push(`via ${h.proxy_jump}`);
   if (h.note) lines.push(`Note: ${h.note}`);
-  lines.push("Double-click or Enter: terminal");
+  lines.push("Double-click: terminal");
   return lines.join("\n");
 }
 
