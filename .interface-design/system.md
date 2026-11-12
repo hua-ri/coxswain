@@ -37,13 +37,14 @@ single cool violet — a hue nothing else on the bridge uses, so a crew
 member's mark can never be mistaken for a status.
 
 **Signature — the crew rail.** Anything an agent did or owns carries a
-2px violet rail on its leading edge: Activity rows, terminal tabs, the
-terminal's header strip, tunnel and transfer rows, the agent list. Your
+2px violet rail on its leading edge: Activity rows, open-session rows in
+the sidebar, the terminal's header strip, tunnel and transfer rows, the agent list. Your
 own work carries nothing. Provenance is readable with peripheral vision,
 without reading a single name. Its twin is the **hazard line**: anything
 in production carries a red mark in the same place a person looks first —
-a solid `env=prod` tag, a red top line on the tab, and a red band across
-the top of a production cluster's pane and terminal.
+a solid `env=prod` tag in tables, an outlined `prod` chip on its sidebar
+row, and a red band across the top of a production pane (host, files,
+cluster, terminal) — once per layer.
 
 **Defaults rejected.**
 - Coloured risk chips for all three levels (green read / orange write /
@@ -55,8 +56,9 @@ the top of a production cluster's pane and terminal.
   provenance. Everything else is graphite.
 - Cards, shadows, pill-shaped everything → *borders-only*, 4–6px radii,
   hairline rules; one shadow in the whole app, on dialogs.
-- Rounded browser tabs → a flat tab strip with an ink underline; tabs
-  carry provenance (crew rail) and hazard (red top line) instead of chrome.
+- Browser tabs for everything → a Mac source list with one selection;
+  open sessions are sidebar rows that carry provenance (crew rail) and
+  hazard (outlined `prod`) instead of chrome.
 
 ## Tokens
 
@@ -149,10 +151,10 @@ All numbers use `tabular-nums`.
 Base unit 4px. Scale: 2, 4, 6, 8, 12, 16, 24, 32.
 
 - Table rows: 28px (6px × 10px cells); detail tables 24px.
-- Sidebar: 232px wide (216px under 1180px); item 2 lines, 6px × 12px.
-- Tab bar: 34px. Toolbars/filter rows: 40px. Status bar: 24px.
-- K8s: kinds rail 168px (140px narrow) · list flexible · detail 40%,
-  min 320px.
+- Sidebar: 224px wide (204px under 1180px); rows one line, 26px (kind
+  children 24px), 6px inset, 5px radius.
+- Pane header 40px. Toolbars/filter rows: 40px. Status bar: 24px.
+- K8s: list flexible · detail 40%, min 280px (kinds live in the sidebar).
 - Controls: 26px (default) / 22px (small) — macOS control sizes. A desktop
   pointer tool, used at this density, cannot give every control 44px; hit
   areas are kept ≥ 22px with ≥ 4px gaps, and every control is reachable by
@@ -182,6 +184,85 @@ Minimal and purposeful; everything is repeated hundreds of times a day.
   (1.2s, opacity). Progress bars move by `transform: scaleX` (300ms).
 - `prefers-reduced-motion: reduce` drops the pulses and the dialog scale.
 
+## Shell and navigation
+
+Decided 2026-11-12 after an Impeccable critique of the old shell and three
+structural comps (screenshots in the private `ui-review/directions/`).
+
+**The old shell scored 20/40.** The sidebar mixed three jobs: places (hosts,
+clusters), crew permissions (Allow/Revoke) and row commands. Hosts opened
+on double-click with hover icons, clusters on a single click without them.
+No sidebar row showed what the main area was displaying. The tab strip
+mixed fixed views (Activity, Transfers, Tunnels) with sessions and hid
+whatever overflowed. The K8s pane added a second nav column of kinds.
+Production was marked four or five times on one screen. Agents were the
+last, smallest rows, with nowhere to go.
+
+**Chosen: one source list, one selection (direction A, 28/40 as a comp).**
+The sidebar is a Mac source list, and the one selected row is what the main
+area shows. There is no tab strip.
+
+- **Destinations** (no header): Activity ⌘1 · Transfers ⌘2 · Tunnels ⌘3 ·
+  Agents ⌘4. A live count shows on the right: running transfers as a helm
+  badge, open tunnels as a plain number, allowed agents with a crew dot
+  while one is typing.
+- **Open**: every open session (terminals, file browsers) in the order it
+  was opened. A row carries a crew rail and the agent's name when an agent
+  owns it, and a hazard mark when it runs in production. Close is a hover
+  or focus ×; an agent's live terminal asks first.
+- **Hosts** and **Clusters**: one row shape for both. Icon, name, then on
+  the right a session count (with a crew dot if an agent holds one) and the
+  environment: `prod` as an outlined hazard chip, other environments as
+  ink-4 text. Production comes first, then environments by name, then
+  untagged places. Clicking a host opens its *host page*: address, tags,
+  note, what is open there, recent activity there, and the Terminal and
+  Files actions. Double-clicking a host still opens a terminal. Clicking a
+  cluster opens its browser, and its resource kinds disclose beneath it as
+  child rows. That replaces the K8s pane's own kinds column. Eight common
+  kinds show by default; "More kinds" reveals the rest, a free-form kind
+  field and Apply YAML.
+- **Agents page**: one row per agent with access, last action, and what it
+  holds open (terminals, tunnels, running transfers). Revoke… asks for
+  confirmation and says what the agent still holds. Allow needs no
+  confirmation.
+- **Pane header**: every pane starts with one 40px header naming what it
+  shows (title, mono meta, actions on the right; Close for sessions). The
+  production band always sits above it.
+- **Selection** follows macOS: a helm fill with white text while the
+  sidebar has focus, a neutral fill (`--side-sel`) with ink-1 text while
+  focus is in the main area. A session's place row gets no highlight of
+  its own; its count tells you it is open.
+- **Keyboard**: the sidebar is one Tab stop. ↑/↓/Home/End move, Return or
+  Space opens, ←/→ fold a cluster's kinds, ⌘F focuses the filter, Escape
+  clears it. ⌘1–⌘4 are global. ⌘W is not used, because the native Window
+  menu owns it (it closes the window). Closing a session returns you to
+  the previous selection, not to Activity.
+- **Sidebar surface**: `--side` sits one step off the hull (`#f2f3f6` /
+  `#1b1c20`). This is the Operate rule of a second neutral layer for
+  navigation, and how macOS separates a source list from content. Section
+  headers are 11px/600 ink-3 in sentence case ("Hosts"), as macOS source
+  lists set them, rather than the uppercase caption used for table
+  headers.
+
+**Prod, once per layer.** Sidebar row: an outlined hazard chip. Pane: the
+hazard band. Activity and other tables: a solid chip in the row. The old
+group header, sidebar rail, tab top line and K8s context card are gone.
+
+**Rejected.**
+- *B — a destinations toolbar, a sidebar of places only, global session
+  tabs (26/40).* Three controls each changed the main area, so it was
+  never clear which one owned it. It also brought back the old tab-strip
+  overflow, and a web-style segmented toolbar is not what Mac users expect
+  for top-level navigation. Kept from it: visible ⌘1–⌘4 hints.
+- *C — places own their workspaces, with local tabs per host or cluster
+  (27/40).* The calmest comp, but sessions end up scattered across places,
+  so watching the crew means remembering which host codex is on. Kept from
+  it: session counts on place rows, and the host page listing what is open
+  there.
+- *Keeping env sub-groups in the sidebar.* Five grey group bands for six
+  hosts, and they repeated the prod signal. Sorting plus the
+  per-row env mark carries the same information.
+
 ## Component patterns
 
 **Buttons** — `button` (secondary): 26px, 0 10px, 5px radius, deck fill,
@@ -195,11 +276,14 @@ text. Disabled: 45% opacity. Focus: 2px helm ring, 1px offset
 mono for paths/ports/YAML. Selects use a drawn chevron. Checkboxes use
 `accent-color: var(--helm)`.
 
-**Tabs** — flat strip on deck; each tab 34px, 0 12px; active = hull
-background + 2px ink-1 underline; agent-owned = crew rail on the left
-edge and a crew chip; production = 2px hazard line on top and an
-`env=prod` tag. Close is a real button (×), revealed on hover/focus/active
-tab. Arrow keys move between tabs (`role="tablist"`).
+**Source list rows** — 26px, 0 8px, 6px side inset, 5px radius; 14px
+stroke icon in ink-3, name 13px ink-1 (sessions: mono 12px), a right-aligned
+tail (counts in ink-3, env in ink-4, `prod` outlined hazard chip, agent
+name in crew-ink). Hover = `--hover`. Selected = helm fill with white text
+while the sidebar is focused, `--side-sel` otherwise. Agent-owned sessions
+carry the 2px crew rail at the row's leading edge. Kind children are 24px
+and indented 30px. A row's only button (close ×) shows on hover or focus.
+(This replaces the tab strip, which is gone; see Shell and navigation.)
 
 **Chips** — 18px high, 0 6px, 3px radius, 11px/500. Variants: neutral
 outline (tags, read), `.prod`/`.destructive` hazard solid, `.write`
@@ -240,4 +324,6 @@ error: dismissable).
 | Read risk is neutral | Most events are reads; colour reserved for write/destructive keeps it meaningful | 2026-11-10 |
 | Violet only for agents | Provenance must never be confused with status or selection | 2026-11-10 |
 | Solid red only for prod and destructive | The two things that must stop the eye | 2026-11-10 |
+| One source list, one selection; no tab strip | The sidebar and the main area can never disagree; sessions, places and the crew sit in one scannable list (critique 20/40 → comp 28/40) | 2026-11-12 |
+| Prod marked once per layer | Repetition taught the eye to skip red | 2026-11-12 |
 | 26/22px controls | macOS control sizes; density over 44px touch targets on a pointer tool | 2026-11-10 |
