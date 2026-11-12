@@ -704,6 +704,7 @@ td input { font-family: var(--mono); font-size: var(--t-small); }
 table.k8s-table td { white-space: nowrap; max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
 table.k8s-table td.name { font-family: var(--mono); font-size: var(--t-small); font-weight: 500; color: var(--ink-1); max-width: 300px; }
 table.k8s-table td.age { color: var(--ink-3); }
+table.k8s-table td.row-actions { max-width: none; overflow: visible; }
 table.k8s-table td.dim { color: var(--ink-3); }
 .ready-ok { color: var(--ink-2); }
 .ready-warn { color: var(--caution-ink); font-weight: 500; }

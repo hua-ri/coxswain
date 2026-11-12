@@ -205,7 +205,7 @@ export function Sidebar(p: Props) {
         </ul>
 
         {p.sessions.length > 0 && (
-          <Section id="open" title="Open" count={p.sessions.length} folded={folded} onToggle={toggle}>
+          <Section id="open" title="Open" count={filtering ? sessions.length : p.sessions.length} folded={folded} onToggle={toggle}>
             {sessions.length === 0 && <p className="src-empty">No open session matches “{filter.trim()}”.</p>}
             <ul className="src-list">
               {sessions.map((s) => (
