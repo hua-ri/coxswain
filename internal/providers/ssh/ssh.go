@@ -99,45 +99,59 @@ func (p *Provider) hostsList() *action.Action {
 	}
 }
 
+// ImportOutput is the result of ssh.hosts.import: what it adds and
+// refreshes, what was already up to date, and the hosts edited in
+// Coxswain that it leaves alone (unless listed in overwrite).
+type ImportOutput struct {
+	Path   string `json:"path"`
+	DryRun bool   `json:"dry_run,omitempty"`
+	inventory.ImportPlan
+}
+
+type importInput struct {
+	Path      string   `json:"path"`
+	DryRun    bool     `json:"dry_run"`
+	Overwrite []string `json:"overwrite"`
+}
+
 func (p *Provider) hostsImport() *action.Action {
 	defaultPath := filepath.Join(p.UserHome, ".ssh", "config")
-	path := func(raw json.RawMessage) (string, error) {
-		var in struct{ Path string }
+	read := func(raw json.RawMessage) (importInput, string, []inventory.Host, error) {
+		var in importInput
 		if err := action.Decode(raw, &in); err != nil {
-			return "", err
+			return in, "", nil, err
 		}
-		if in.Path == "" {
-			return defaultPath, nil
-		}
-		return in.Path, nil
-	}
-	read := func(raw json.RawMessage) (string, []inventory.Host, error) {
-		f, err := path(raw)
-		if err != nil {
-			return "", nil, err
+		f := in.Path
+		if f == "" {
+			f = defaultPath
 		}
 		r, err := os.Open(f)
 		if err != nil {
-			return "", nil, err
+			return in, "", nil, err
 		}
 		defer r.Close()
 		hosts, err := inventory.ImportSSHConfig(r, p.UserHome)
-		return f, hosts, err
+		return in, f, hosts, err
 	}
 	return &action.Action{
-		ID:          "ssh.hosts.import",
-		Summary:     "Import hosts from an OpenSSH config file",
-		Description: "Import Host entries from an OpenSSH client config (default ~/.ssh/config). Existing tags and notes are kept.",
+		ID:      "ssh.hosts.import",
+		Summary: "Sync hosts from an OpenSSH config file (adds hosts, refreshes addresses)",
+		Description: "Add the Host entries of an OpenSSH client config (default ~/.ssh/config) and refresh the addresses, " +
+			"ports, users, keys and jump hosts of hosts already imported from it. The config file is only read. Coxswain's " +
+			"tags and notes are kept. Hosts whose connection fields were edited in Coxswain (or added by hand) are left " +
+			"as they are unless listed in overwrite. dry_run shows what would change without changing anything.",
 		Input: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"path": map[string]any{"type": "string", "description": "config file, default ~/.ssh/config"},
+				"path":      map[string]any{"type": "string", "description": "config file, default ~/.ssh/config"},
+				"dry_run":   map[string]any{"type": "boolean", "description": "only show what would change"},
+				"overwrite": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "hosts edited in Coxswain to overwrite with the config's fields"},
 			},
 		},
 		Positional:  []string{"path"},
 		Annotations: action.Annotations{Idempotent: true},
 		Label: func(_ context.Context, raw json.RawMessage) (action.Assessment, error) {
-			f, imported, err := read(raw)
+			in, f, imported, err := read(raw)
 			if err != nil {
 				return action.Assessment{}, err
 			}
@@ -145,20 +159,31 @@ func (p *Provider) hostsImport() *action.Action {
 			if err != nil {
 				return action.Assessment{}, err
 			}
+			if in.DryRun {
+				return action.Assessment{Risk: action.Read, Preview: "preview syncing SSH hosts from " + f}, nil
+			}
 			as := assessImport(existing, imported)
-			as.Preview = "import SSH hosts from " + f + ": " + as.Preview
+			as.Preview = "sync SSH hosts from " + f + ": " + as.Preview
+			if len(in.Overwrite) > 0 {
+				as.Preview += fmt.Sprintf(" (overwrite edited: %s)", strings.Join(in.Overwrite, ", "))
+			}
 			if filepath.Clean(f) != defaultPath {
 				as.Risk = action.Destructive // a file the agent may have written
 			}
 			return as, nil
 		},
 		Run: func(_ context.Context, raw json.RawMessage) (any, error) {
-			f, hosts, err := read(raw)
+			in, f, hosts, err := read(raw)
 			if err != nil {
 				return nil, err
 			}
-			added, updated, err := p.Hosts.Merge(hosts)
-			return map[string]any{"path": f, "added": added, "updated": updated}, err
+			var plan inventory.ImportPlan
+			if in.DryRun {
+				plan, err = p.Hosts.PlanImport(hosts)
+			} else {
+				plan, err = p.Hosts.Import(hosts, in.Overwrite)
+			}
+			return ImportOutput{Path: f, DryRun: in.DryRun, ImportPlan: plan}, err
 		},
 	}
 }

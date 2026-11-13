@@ -27,6 +27,9 @@ type Host struct {
 	Tags          map[string]string `json:"tags,omitempty"`
 	Note          string            `json:"note,omitempty"`
 	Source        string            `json:"source,omitempty"` // "ssh_config" or "manual"
+	// ImportedFP fingerprints the connection fields as last imported, to
+	// tell whether they were edited in Coxswain since (see Import).
+	ImportedFP string `json:"imported_fp,omitempty"`
 }
 
 var ErrNotFound = errors.New("host not found")
@@ -103,6 +106,7 @@ func (s *Store) Merge(imported []Host) (added, updated int, err error) {
 				}
 				added++
 			}
+			h.ImportedFP = connFingerprint(h)
 			m[h.Name] = h
 		}
 		return nil

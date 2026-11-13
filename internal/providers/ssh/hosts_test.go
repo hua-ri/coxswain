@@ -272,3 +272,47 @@ func serverFingerprint(t *testing.T, s *sshtest.Server) string {
 	}
 	return ssh.FingerprintSHA256(key)
 }
+
+func TestImportPreviewAndOverwrite(t *testing.T) {
+	f := setupHosts(t)
+	dir := filepath.Dir(filepath.Dir(f.trust))
+	config := filepath.Join(dir, ".ssh", "config")
+	os.WriteFile(config, []byte("Host bastion\n  HostName 10.0.0.2\nHost web\n  HostName 10.0.1.1\n  User deploy\n"), 0o600)
+	before, _ := os.ReadFile(config)
+	// bastion was edited in Coxswain (by hand: Merge set it up as manual-ish via update).
+	f.e.Invoke(context.Background(), human, "ssh.hosts.update", args(map[string]any{"name": "bastion", "user": "ops"}))
+
+	out := f.e.Invoke(context.Background(), agent, "ssh.hosts.import", args(map[string]any{"dry_run": true}))
+	if out.Status != engine.StatusOK {
+		t.Fatalf("%+v", out)
+	}
+	p := out.Result.(ImportOutput)
+	if len(p.Added) != 1 || p.Added[0].Name != "web" || p.Added[0].Address != "deploy@10.0.1.1:22" || len(p.Conflicts) != 2 || p.Conflicts[0].Name != "bastion" || !p.DryRun {
+		t.Fatalf("preview: %+v", p)
+	}
+	if ev := f.last(t, eventlog.ActionRequested, "ssh.hosts.import"); ev.Risk != "read" {
+		t.Fatalf("dry run risk %s", ev.Risk)
+	}
+	if _, err := f.hosts.Get("web"); err == nil {
+		t.Fatal("dry run added a host")
+	}
+
+	// Without overwrite the edited host stays; with it, it is refreshed.
+	out = f.e.Invoke(context.Background(), human, "ssh.hosts.import", nil)
+	if p := out.Result.(ImportOutput); out.Status != engine.StatusOK || len(p.Conflicts) != 2 || len(p.Added) != 1 {
+		t.Fatalf("%+v", out)
+	}
+	if h, _ := f.hosts.Get("bastion"); h.HostName != "10.0.0.1" || h.User != "ops" {
+		t.Fatalf("edited host overwritten: %+v", h)
+	}
+	out = f.e.Invoke(context.Background(), human, "ssh.hosts.import", args(map[string]any{"overwrite": []string{"bastion"}}))
+	if p := out.Result.(ImportOutput); len(p.Updated) != 1 || len(p.Conflicts) != 0 {
+		t.Fatalf("%+v", out)
+	}
+	if h, _ := f.hosts.Get("bastion"); h.HostName != "10.0.0.2" || h.User != "" {
+		t.Fatalf("not overwritten: %+v", h)
+	}
+	if after, _ := os.ReadFile(config); string(after) != string(before) {
+		t.Fatal("~/.ssh/config changed")
+	}
+}

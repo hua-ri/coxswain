@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/hua-ri/coxswain/internal/client"
@@ -139,7 +141,10 @@ func initCommand(coxHome, userHome string) *cobra.Command {
 					if err != nil {
 						return fmt.Errorf("import ~/.ssh/config: %w", err)
 					}
-					fmt.Fprintf(out, "hosts: imported %s (added %d, updated %d)\n", res.Path, res.Added, res.Updated)
+					fmt.Fprintf(out, "hosts: synced from %s (added %d, updated %d, %d unchanged)\n", res.Path, len(res.Added), len(res.Updated), len(res.Unchanged))
+					if kept := conflictNames(res); len(kept) > 0 {
+						fmt.Fprintf(out, "hosts: left as edited in Coxswain: %s (overwrite with `cox ssh hosts import --overwrite NAME`)\n", strings.Join(kept, ", "))
+					}
 				}
 			}
 			if skipAgents {
@@ -185,9 +190,24 @@ func initCommand(coxHome, userHome string) *cobra.Command {
 }
 
 type importResult struct {
-	Path    string `json:"path"`
-	Added   int    `json:"added"`
-	Updated int    `json:"updated"`
+	Path      string            `json:"path"`
+	Added     []json.RawMessage `json:"added"`
+	Updated   []json.RawMessage `json:"updated"`
+	Unchanged []string          `json:"unchanged"`
+	Conflicts []struct {
+		Name string `json:"name"`
+	} `json:"conflicts"`
+}
+
+// conflictNames are the hosts an import left alone, once each.
+func conflictNames(r importResult) []string {
+	var out []string
+	for _, c := range r.Conflicts {
+		if !slices.Contains(out, c.Name) {
+			out = append(out, c.Name)
+		}
+	}
+	return out
 }
 
 // importHosts imports ~/.ssh/config through the running server, or with a

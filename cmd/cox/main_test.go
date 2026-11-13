@@ -255,7 +255,7 @@ func TestEndToEnd(t *testing.T) {
 	if st, err := os.Stat(instance.Path(s.coxHome)); err != nil || st.Mode().Perm() != 0o600 {
 		t.Fatalf("server.json: %v %v", st, err)
 	}
-	if out, code := s.cox(t, "init", "--skip-agents"); code != 0 || !strings.Contains(out, "updated 2") {
+	if out, code := s.cox(t, "init", "--skip-agents"); code != 0 || !strings.Contains(out, "updated 0, 2 unchanged") {
 		t.Fatalf("init via server: %d %s", code, out)
 	}
 
