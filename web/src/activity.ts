@@ -1,4 +1,5 @@
 // The activity table's model: audit events folded into rows.
+import { argoDetail } from "./argo";
 import type { AuditEvent } from "./cox";
 import { finishBatch, hostDone, startBatch, type BatchEnd, type BatchHostDone, type BatchInfo, type BatchStart } from "./batch";
 import { isProdTags } from "./env";
@@ -52,7 +53,7 @@ export function addEvent(rows: Row[], ev: AuditEvent, key: number): Row[] {
     case "action.requested": {
       const args = ev.args ?? {};
       const terminal = ev.action?.startsWith("terminal.") && typeof args.id === "string" ? args.id : undefined;
-      const detail = requestDetail(args);
+      const detail = (ev.action?.startsWith("argo") ? argoDetail(ev.action, args) : undefined) ?? requestDetail(args);
       return prepend(rows, { ...base, risk: ev.risk, status: "running", detail, terminal });
     }
     case "action.finished":

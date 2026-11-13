@@ -12,6 +12,10 @@ import { HostEditor } from "./HostEditor";
 import { SyncView } from "./SyncView";
 import { syncSummary, type ImportOutput } from "./sync";
 import { ClusterEditor } from "./ClusterEditor";
+import { ADD_ARGO, argoId, argoLoginId, argoLoginOf, argoOf, instanceIsProd, reloadsArgo, type ArgoInstance, type ArgoKind } from "./argo";
+import { ArgoEditor, ArgoLogin } from "./ArgoEditor";
+import { ArgoCDView } from "./ArgoCDView";
+import { ArgoWFView } from "./ArgoWFView";
 import {
   ACTIVITY, ADD_CLUSTER, ADD_HOST, AGENTS, TRANSFERS, TUNNELS, afterClose, clusterOf, destinationFor, editHostId, editHostOf,
   filesHostOf, filesId, footprint, hostId, hostOf, placeOfWhere, SYNC_HOSTS, removeHostMessage, revokeMessage, rowsAt, visit,
@@ -68,6 +72,10 @@ function Desktop({ cox }: { cox: Cox }) {
   const [clusters, setClusters] = useState<string[]>([]); // contexts opened in this window (their browsers stay mounted)
   const [kinds, setKinds] = useState<Record<string, string>>({}); // each cluster's listed kind
   const [revoking, setRevoking] = useState("");
+  const [instances, setInstances] = useState<ArgoInstance[]>([]);
+  const [argoOpened, setArgoOpened] = useState<string[]>([]); // instance ids opened in this window
+  const [addArgoKind, setAddArgoKind] = useState<ArgoKind>("argocd");
+  const [removingArgo, setRemovingArgo] = useState<ArgoInstance | null>(null);
   const history = useRef<string[]>([]);
   const seen = useRef(new Map<string, number>()); // when each session first showed, for the Open list's order
 
@@ -103,14 +111,21 @@ function Desktop({ cox }: { cox: Cox }) {
     setContexts(out.result?.contexts ?? []);
     setKubeconfigFiles(out.result?.kubeconfig ?? []);
   }, [cox]);
+  const loadArgo = useCallback(async () => {
+    const [cd, wf] = await Promise.all([cox.invoke<ArgoInstance[]>("argocd.instances"), cox.invoke<ArgoInstance[]>("argowf.instances")]);
+    if (cd.status !== "ok") throw new Error(cd.error);
+    if (wf.status !== "ok") throw new Error(wf.error);
+    setInstances([...(cd.result ?? []), ...(wf.result ?? [])]);
+  }, [cox]);
   const loadAll = useCallback(() => {
+    loadArgo().catch(report);
     loadContexts().catch(report);
     loadHosts().catch(report);
     loadClients().catch(report);
     loadTerminals().catch(report);
     loadTransfers().catch(report);
     loadTunnels().catch(report);
-  }, [loadContexts, loadHosts, loadClients, loadTerminals, loadTransfers, loadTunnels, report]);
+  }, [loadArgo, loadContexts, loadHosts, loadClients, loadTerminals, loadTransfers, loadTunnels, report]);
 
   useEffect(() => {
     void cox.status().then(setStatus);
@@ -154,13 +169,17 @@ function Desktop({ cox }: { cox: Cox }) {
         }
         if (ev.type === "action.finished" && reloadsHosts(ev.action)) loadHosts().catch(report);
         if (ev.type === "action.finished" && reloadsContexts(ev.action)) loadContexts().catch(report);
+        // A login also changes state when it starts (a browser login waits for the user) or fails.
+        if (ev.type.startsWith("action.") && reloadsArgo(ev.action)) loadArgo().catch(report);
+        // Requests that came back 401 mark an instance as needing login.
+        if (ev.type === "action.failed" && /needs login/.test(ev.error ?? "")) loadArgo().catch(report);
       })
       .then((s) => (cancelled ? s() : (stop = s)), report);
     return () => {
       cancelled = true;
       stop?.();
     };
-  }, [cox, loadClients, loadHosts, loadContexts, report]);
+  }, [cox, loadClients, loadHosts, loadContexts, loadArgo, report]);
 
   // Traffic counters change without events: refresh while the tab shows.
   useEffect(() => {
@@ -184,7 +203,9 @@ function Desktop({ cox }: { cox: Cox }) {
   const exists = useRef<(id: string) => boolean>(() => true);
   exists.current = (id: string) => {
     if ([ACTIVITY, TRANSFERS, TUNNELS, AGENTS].includes(id)) return true;
-    if (id === ADD_HOST || id === ADD_CLUSTER || id === SYNC_HOSTS || editHostOf(id)) return false; // forms are not returned to
+    if (id === ADD_HOST || id === ADD_CLUSTER || id === SYNC_HOSTS || id === ADD_ARGO || editHostOf(id) || argoLoginOf(id)) return false; // forms are not returned to
+    const a = argoOf(id);
+    if (a) return instances.some((i) => i.kind === a.kind && i.name === a.name);
     if (hostOf(id)) return hosts.some((h) => h.name === hostOf(id));
     if (filesHostOf(id)) return browsers.includes(filesHostOf(id));
     if (clusterOf(id)) return clusters.includes(clusterOf(id));
@@ -235,7 +256,11 @@ function Desktop({ cox }: { cox: Cox }) {
     setKinds((k) => ({ ...k, [ctx]: kind }));
     openCluster(ctx);
   };
-  const select = (id: string) => (clusterOf(id) ? openCluster(clusterOf(id)) : setActive(id));
+  const openArgo = (id: string) => {
+    setArgoOpened((o) => (o.includes(id) ? o : [...o, id]));
+    setActive(id);
+  };
+  const select = (id: string) => (clusterOf(id) ? openCluster(clusterOf(id)) : argoOf(id) ? openArgo(id) : setActive(id));
   const showTerminal = (id: string) => {
     if (tabs.some((t) => t.id === id)) setActive(id);
   };
@@ -324,6 +349,28 @@ function Desktop({ cox }: { cox: Cox }) {
     setClusters((list) => list.filter((x) => x !== c.name));
     await loadContexts().catch(report);
   };
+  const argoSaved = async (kind: ArgoKind, name: string) => {
+    await loadArgo().catch(report);
+    setArgoOpened((o) => (o.includes(argoId(kind, name)) ? o : [...o, argoId(kind, name)]));
+    setActive(argoLoginId(kind, name));
+  };
+  const loggedIn = async (kind: ArgoKind, name: string) => {
+    await loadArgo().catch(report);
+    openArgo(argoId(kind, name));
+  };
+  const removeArgo = async (i: ArgoInstance) => {
+    setRemovingArgo(null);
+    const out = await cox.invoke("argo.remove", { kind: i.kind, name: i.name }).catch((e) => ({ status: "error" as const, error: String(e) }));
+    if (out.status !== "ok") return report(new Error(out.error));
+    leave(argoId(i.kind, i.name));
+    setArgoOpened((o) => o.filter((x) => x !== argoId(i.kind, i.name)));
+    await loadArgo().catch(report);
+  };
+  const argoMenu = (i: ArgoInstance): MenuItem[] => [
+    { label: "Open", onSelect: () => openArgo(argoId(i.kind, i.name)) },
+    { label: i.login.logged_in ? "Login…" : "Log in…", onSelect: () => setActive(argoLoginId(i.kind, i.name)) },
+    { label: "Remove…", onSelect: () => setRemovingArgo(i), danger: true, separatorBefore: true },
+  ];
   const hostMenu = (h: Host): MenuItem[] => [
     { label: "Open terminal", onSelect: () => openTerminal(h.name) },
     { label: "Files", onSelect: () => openFiles(h.name) },
@@ -412,6 +459,9 @@ function Desktop({ cox }: { cox: Cox }) {
           onAddCluster={() => setActive(ADD_CLUSTER)}
           hostMenu={hostMenu}
           clusterMenu={clusterMenu}
+          instances={instances}
+          onAddArgo={(k) => { setAddArgoKind(k); setActive(ADD_ARGO); }}
+          argoMenu={argoMenu}
         />
         <section className="content">
           <div className="pane" style={{ display: active === ACTIVITY ? "flex" : "none" }}>
@@ -452,6 +502,24 @@ function Desktop({ cox }: { cox: Cox }) {
             <ClusterEditor cox={cox} contexts={contexts} kubeconfig={kubeconfigFiles} onSaved={(n) => void clusterSaved(n)}
               onCancel={() => leave(ADD_CLUSTER)} />
           )}
+          {active === ADD_ARGO && (
+            <ArgoEditor key={addArgoKind} cox={cox} instances={instances} kind={addArgoKind} onSaved={(k, n) => void argoSaved(k, n)} onCancel={() => leave(ADD_ARGO)} />
+          )}
+          {(() => {
+            const l = argoLoginOf(active);
+            const inst = l && instances.find((i) => i.kind === l.kind && i.name === l.name);
+            return inst ? (
+              <ArgoLogin key={active} cox={cox} instance={inst} onDone={() => void loggedIn(inst.kind, inst.name)}
+                onCancel={() => openArgo(argoId(inst.kind, inst.name))} />
+            ) : null;
+          })()}
+          {argoOpened.map((id) => {
+            const a = argoOf(id)!;
+            const inst = instances.find((i) => i.kind === a.kind && i.name === a.name);
+            if (!inst) return null;
+            const props = { cox, instance: inst, active: active === id, onLogin: () => setActive(argoLoginId(inst.kind, inst.name)), onRemove: () => setRemovingArgo(inst) };
+            return inst.kind === "argocd" ? <ArgoCDView key={id} {...props} /> : <ArgoWFView key={id} {...props} />;
+          })}
           {browsers.map((h) => (
             <FileBrowser key={h} cox={cox} host={h} prod={hostProd(h)} note={hosts.find((x) => x.name === h)?.note} active={active === filesId(h)}
               onClose={() => closeFiles(h)} />
@@ -523,6 +591,15 @@ function Desktop({ cox }: { cox: Cox }) {
           band={band(isProdContext(removingCluster), removingCluster.name)}
           onYes={() => void removeCluster(removingCluster)}
           onNo={() => setRemovingCluster(null)}
+        />
+      )}
+      {removingArgo && (
+        <Confirm
+          message={`Remove ${removingArgo.name} from Coxswain? Its settings and its login in the keychain are deleted. Nothing changes on the server.`}
+          confirm="Remove"
+          band={band(instanceIsProd(removingArgo), removingArgo.name)}
+          onYes={() => void removeArgo(removingArgo)}
+          onNo={() => setRemovingArgo(null)}
         />
       )}
       {closingTunnel && (

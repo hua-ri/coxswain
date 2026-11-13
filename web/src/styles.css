@@ -887,3 +887,16 @@ pre.diff > div { padding: 0 var(--s3); }
 }
 
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* ---------- Argo ---------- */
+.row-tail .need { font-size: 11px; color: var(--caution-ink); }
+.row-tail .need.waiting { color: var(--helm-ink); }
+.row.sel .row-tail .need { color: inherit; }
+.detail-actions-row { display: flex; flex-wrap: wrap; gap: var(--s2); padding: 0 var(--s3) var(--s2); }
+.segmented.inline { margin: 0; }
+.toolbar .ns-input { width: 120px; }
+table.steps td { vertical-align: top; }
+.bad-text { color: var(--hazard-ink); }
+.secret-input { -webkit-text-security: disc; }
+.k8s-table td.name .chip { margin-left: 6px; }
+input.port { width: 90px; }

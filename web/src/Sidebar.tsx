@@ -3,6 +3,7 @@ import { KINDS, type ContextInfo } from "./k8s";
 import { APPLY, DESTINATIONS, TRANSFERS, TUNNELS, AGENTS, clusterId, hostId, moveIndex, sessionCounts, visibleKinds, type Session } from "./nav";
 import { contextIsProd, envOfContext, envOfHost, hostTitle, loadFolded, sortedContexts, sortedHosts, toggleFolded } from "./sidetree";
 import { Icon } from "./icons";
+import { argoId, envOfInstance, loginNeed, loginText, sortedInstances, type ArgoInstance, type ArgoKind } from "./argo";
 import { address, type Host } from "./types";
 import { Menu, type MenuItem } from "./ui";
 
@@ -32,6 +33,9 @@ interface Props {
   onAddCluster(): void;
   hostMenu(host: Host): MenuItem[]; // a host row's context menu
   clusterMenu(context: ContextInfo): MenuItem[];
+  instances: ArgoInstance[];
+  onAddArgo(kind: ArgoKind): void;
+  argoMenu(i: ArgoInstance): MenuItem[];
 }
 
 type OpenMenu = { at: { x: number; y: number }; items: MenuItem[]; label: string };
@@ -323,6 +327,37 @@ export function Sidebar(p: Props) {
             })}
           </ul>
         </Section>
+
+        {(["argocd", "argowf"] as ArgoKind[]).map((kind) => {
+          const all = p.instances.filter((i) => i.kind === kind);
+          const shown = sortedInstances(p.instances, kind, filter);
+          const title = kind === "argocd" ? "Argo CD" : "Workflows";
+          if (all.length === 0 && filtering) return null;
+          return (
+            <Section key={kind} id={kind} title={title} count={filtering ? shown.length : all.length} folded={folded} onToggle={toggle}
+              add={{ label: kind === "argocd" ? "Add an Argo CD instance" : "Add an Argo Workflows instance", onClick: () => p.onAddArgo(kind) }}>
+              {all.length === 0 && (
+                <div className="src-empty">
+                  <p className="src-empty-actions"><button className="link" onClick={() => p.onAddArgo(kind)}>{kind === "argocd" ? "Add an Argo CD instance…" : "Add an Argo Workflows instance…"}</button></p>
+                </div>
+              )}
+              {all.length > 0 && shown.length === 0 && <p className="src-empty">No instance matches “{filter.trim()}”.</p>}
+              <ul className="src-list">
+                {shown.map((i) => {
+                  const need = loginNeed(i);
+                  return (
+                    <Row key={i.name} id={argoId(kind, i.name)} active={p.active} icon={kind}
+                      title={[i.name, i.url, loginText(i.login), i.note && `Note: ${i.note}`].filter(Boolean).join("\n")}
+                      label={i.name}
+                      tail={<>{need && <span className={need === "waiting" ? "need waiting" : "need"}>{need}</span>}<EnvMark env={envOfInstance(i)} /></>}
+                      onSelect={() => p.onSelect(argoId(kind, i.name))}
+                      onContextMenu={contextMenu(p.argoMenu(i), i.name)} />
+                  );
+                })}
+              </ul>
+            </Section>
+          );
+        })}
       </div>
       {menu && <Menu at={menu.at} items={menu.items} label={menu.label} onClose={() => setMenu(null)} />}
     </aside>

@@ -12,6 +12,9 @@ const paths: Record<string, ReactNode> = {
   files: <path d="M1.8 4.2c0-.6.5-1.1 1.1-1.1h3.2l1.4 1.5h5.6c.6 0 1.1.5 1.1 1.1v6.2c0 .6-.5 1.1-1.1 1.1H2.9c-.6 0-1.1-.5-1.1-1.1z" />,
   search: <><circle cx="7" cy="7" r="4.5" /><path d="m10.5 10.5 3 3" /></>,
   plus: <path d="M8 3.5v9M3.5 8h9" />,
+  // Argo CD: a loop of sync arrows. Argo Workflows: a small DAG.
+  argocd: <><path d="M13 6.2A5.2 5.2 0 0 0 3.6 4.6M3 9.8a5.2 5.2 0 0 0 9.4 1.6" /><path d="M3.3 2.3v2.6h2.6M12.7 13.7v-2.6h-2.6" /></>,
+  argowf: <><circle cx="3.5" cy="8" r="1.6" /><circle cx="12.5" cy="4" r="1.6" /><circle cx="12.5" cy="12" r="1.6" /><path d="M5 7.3 11 4.6M5 8.7l6 2.7" /></>,
 };
 
 /** Icon is a 14px stroke icon from the sidebar's set. */
