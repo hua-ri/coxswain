@@ -45,6 +45,9 @@ func DefaultPaths(kubeconfigEnv, home string) []string {
 // changes. It is read on first use, not when created.
 type Kubeconfig struct {
 	paths []string
+	// Store, if set, holds the clusters added in Coxswain; its files are
+	// merged after paths (which win on a name clash).
+	Store *Store
 	// Interval is how often the files are checked for changes (stat of
 	// size and mtime); default 5s.
 	Interval time.Duration
@@ -63,8 +66,26 @@ func NewKubeconfig(paths []string) *Kubeconfig {
 	return &Kubeconfig{paths: slices.Clone(paths), Interval: 5 * time.Second}
 }
 
-// Paths are the files the kubeconfig is merged from, in precedence order.
+// Paths are the user's kubeconfig files, in precedence order. They are
+// only ever read.
 func (k *Kubeconfig) Paths() []string { return slices.Clone(k.paths) }
+
+// all are the files the kubeconfig is merged from: the user's, then
+// Coxswain's own.
+func (k *Kubeconfig) all() []string {
+	if k.Store == nil {
+		return slices.Clone(k.paths)
+	}
+	return append(slices.Clone(k.paths), k.Store.Files()...)
+}
+
+// Invalidate makes the next Load check the files again at once (after
+// Coxswain added or removed one).
+func (k *Kubeconfig) Invalidate() {
+	k.mu.Lock()
+	k.checked = time.Time{}
+	k.mu.Unlock()
+}
 
 // Load returns the merged config and its generation, which changes every
 // time the files are reloaded. The config must not be modified.
@@ -80,7 +101,8 @@ func (k *Kubeconfig) Load() (*clientcmdapi.Config, int, error) {
 		return k.cfg, k.gen, k.err
 	}
 	k.checked = t
-	stamp, err := k.stat()
+	paths := k.all()
+	stamp, err := k.stat(paths)
 	if err != nil {
 		return nil, k.gen, err
 	}
@@ -88,7 +110,7 @@ func (k *Kubeconfig) Load() (*clientcmdapi.Config, int, error) {
 		return k.cfg, k.gen, k.err
 	}
 	// Only read: no MigrationRules (those may copy files), no ExplicitPath.
-	rules := &clientcmd.ClientConfigLoadingRules{Precedence: k.paths}
+	rules := &clientcmd.ClientConfigLoadingRules{Precedence: paths}
 	k.cfg, k.err = rules.Load()
 	if k.err != nil {
 		k.cfg = nil
@@ -100,9 +122,10 @@ func (k *Kubeconfig) Load() (*clientcmdapi.Config, int, error) {
 }
 
 // stat fingerprints the files (size and mtime, or missing).
-func (k *Kubeconfig) stat() (string, error) {
+func (k *Kubeconfig) stat(paths []string) (string, error) {
 	var b strings.Builder
-	for _, p := range k.paths {
+	for _, p := range paths {
+		b.WriteString(p + "=")
 		if BeforeRead != nil {
 			if err := BeforeRead(p); err != nil {
 				return "", err

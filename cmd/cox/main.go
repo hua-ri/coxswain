@@ -183,8 +183,12 @@ func newEngine(coxHome, userHome string, pool func(*sshx.Dialer) *sshx.Pool) ser
 	}
 	// The kubeconfig is read on first use (never at startup, never
 	// written); tags and notes for its contexts are Coxswain's own.
+	// Clusters added in Coxswain live in its own kubeconfigs, merged after
+	// the user's.
+	kubeconfig := k8s.NewKubeconfig(k8s.DefaultPaths(os.Getenv("KUBECONFIG"), userHome))
+	kubeconfig.Store = k8s.NewStore(filepath.Join(coxHome, "kubeconfigs"))
 	clusters := &k8s.Clusters{
-		Kubeconfig: k8s.NewKubeconfig(k8s.DefaultPaths(os.Getenv("KUBECONFIG"), userHome)),
+		Kubeconfig: kubeconfig,
 		Meta:       k8s.NewMetaStore(filepath.Join(coxHome, "clusters.json")),
 	}
 	terms := &term.Manager{Hosts: hosts, Dialer: dialer, Events: events, Pods: &k8sprov.Terminals{Clusters: clusters}}

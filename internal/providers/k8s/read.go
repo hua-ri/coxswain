@@ -23,7 +23,8 @@ import (
 
 // ContextsOutput is the result of k8s.contexts.
 type ContextsOutput struct {
-	Kubeconfig []string           `json:"kubeconfig"` // the files read (never written)
+	Kubeconfig []string           `json:"kubeconfig"`      // the user's files (read, never written)
+	Added      string             `json:"added,omitempty"` // where clusters added in Coxswain are kept
 	Current    string             `json:"current,omitempty"`
 	Contexts   []kube.ContextInfo `json:"contexts"`
 }
@@ -35,6 +36,7 @@ func (p *Provider) contexts() *action.Action {
 		Description: "List the contexts of the user's kubeconfig with their cluster, default namespace, tags " +
 			"(env=prod marks production) and notes. A context's note may restrict what you may do; always respect it. " +
 			"Contexts on the same cluster server share their tags and notes (inherited_from names where they come from). " +
+			"source is \"kubeconfig\" for the user's kubeconfig and \"coxswain\" for clusters the user added in Coxswain. " +
 			"Pass the context name to every other k8s tool; do not assume the current context.",
 		Input:       map[string]any{"type": "object", "properties": map[string]any{}},
 		Annotations: action.Annotations{ReadOnly: true, Idempotent: true},
@@ -46,7 +48,11 @@ func (p *Provider) contexts() *action.Action {
 			if err != nil {
 				return nil, err
 			}
-			return ContextsOutput{Kubeconfig: p.Clusters.Kubeconfig.Paths(), Current: current, Contexts: list}, nil
+			out := ContextsOutput{Kubeconfig: p.Clusters.Kubeconfig.Paths(), Current: current, Contexts: list}
+			if s := p.Clusters.Kubeconfig.Store; s != nil {
+				out.Added = s.Dir
+			}
+			return out, nil
 		},
 	}
 }

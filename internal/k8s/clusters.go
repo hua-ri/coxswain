@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/hua-ri/coxswain/internal/action"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -93,6 +94,9 @@ type ContextInfo struct {
 	// it has none), so tags not among them are inherited.
 	InheritedFrom []string          `json:"inherited_from,omitempty"`
 	OwnTags       map[string]string `json:"own_tags,omitempty"`
+	// Source is where the context comes from: "kubeconfig" (the user's,
+	// read-only) or "coxswain" (added in Coxswain, see Store).
+	Source string `json:"source"`
 }
 
 // Clusters are the kubeconfig's contexts and a cached client for each.
@@ -123,7 +127,9 @@ func (c *Clusters) Contexts() (string, []ContextInfo, error) {
 	}
 	out := make([]ContextInfo, 0, len(cfg.Contexts))
 	for name := range cfg.Contexts {
-		out = append(out, effective(cfg, meta, name))
+		ci := effective(cfg, meta, name)
+		ci.Source = c.source(cfg, name)
+		out = append(out, ci)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return cfg.CurrentContext, out, nil
@@ -142,7 +148,22 @@ func (c *Clusters) Context(name string) (ContextInfo, error) {
 	if err != nil {
 		return ContextInfo{}, err
 	}
-	return effective(cfg, meta, name), nil
+	ci := effective(cfg, meta, name)
+	ci.Source = c.source(cfg, name)
+	return ci, nil
+}
+
+// Context sources.
+const (
+	SourceKubeconfig = "kubeconfig"
+	SourceCoxswain   = "coxswain"
+)
+
+func (c *Clusters) source(cfg *clientcmdapi.Config, name string) string {
+	if ctx := cfg.Contexts[name]; ctx != nil && c.Kubeconfig.Store != nil && c.Kubeconfig.Store.Owns(ctx.LocationOfOrigin) {
+		return SourceCoxswain
+	}
+	return SourceKubeconfig
 }
 
 // serverKey normalises a cluster server URL for comparison.
@@ -301,7 +322,7 @@ func Explain(err error) error {
 		return err // says so already
 	}
 	msg := err.Error()
-	if strings.Contains(msg, "getting credentials") || strings.Contains(msg, "standard input is") ||
+	if apierrors.IsUnauthorized(err) || strings.Contains(msg, "getting credentials") || strings.Contains(msg, "standard input is") ||
 		strings.Contains(msg, "Unauthorized") {
 		return fmt.Errorf("%w (%s)", err, loginHint)
 	}

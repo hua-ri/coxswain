@@ -69,6 +69,7 @@ func setup(t *testing.T, objs ...runtime.Object) fixture {
 	}
 	coxHome := t.TempDir()
 	kc := kube.NewKubeconfig(kube.DefaultPaths(os.Getenv("KUBECONFIG"), os.Getenv("HOME")))
+	kc.Store = kube.NewStore(filepath.Join(coxHome, "kubeconfigs"))
 	k8stest.Guard(t, kc.Paths()...)
 	meta := kube.NewMetaStore(filepath.Join(coxHome, "clusters.json"))
 	meta.Update(func(m map[string]kube.Meta) error {

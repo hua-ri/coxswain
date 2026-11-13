@@ -35,6 +35,10 @@ type Provider struct {
 func (p *Provider) Register(r *action.Registry) {
 	r.Register(p.contexts())
 	r.Register(p.contextsTag())
+	r.Register(p.clustersInspect())
+	r.Register(p.clustersTest())
+	r.Register(p.clustersAdd())
+	r.Register(p.clustersRemove())
 	r.Register(p.get())
 	r.Register(p.describe())
 	r.Register(p.events())
