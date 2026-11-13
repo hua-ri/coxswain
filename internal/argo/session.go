@@ -249,3 +249,18 @@ func (e *NeedsLogin) Error() string {
 	return fmt.Sprintf("%s instance %q needs login (%s); ask the user to log in in Coxswain, or see %s.login_methods",
 		e.Instance.Kind, e.Instance.Name, e.Reason, e.Instance.Kind)
 }
+
+// Rename moves an instance's credential to its new name.
+func (s *Sessions) Rename(old, n Instance) error {
+	b, err := s.Secrets.Get(old.Account())
+	if errors.Is(err, secrets.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if err := s.Secrets.Set(n.Account(), b); err != nil {
+		return err
+	}
+	return s.Secrets.Delete(old.Account())
+}

@@ -127,6 +127,7 @@ func (e *Engine) Invoke(ctx context.Context, client action.Actor, id string, arg
 	if a.Redact != nil {
 		logged = a.Redact(args)
 	}
+	logged = action.RedactWriteOnly(a.Input, logged)
 	if err := e.Events.Append(eventlog.Event{
 		Type: eventlog.ActionRequested, Actor: &client, Action: id, Args: logged,
 		Risk: as.Risk.String(), Targets: as.Targets,

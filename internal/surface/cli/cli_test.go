@@ -33,6 +33,11 @@ var actions = []server.ActionInfo{
 		Positional: []string{"host"},
 	},
 	{ID: "demo.run", Summary: "run", Input: map[string]any{"type": "object"}},
+	{
+		ID: "demo.login", Summary: "login",
+		Input: map[string]any{"type": "object", "properties": map[string]any{
+			"user": map[string]any{"type": "string"}, "password": map[string]any{"type": "string", "writeOnly": true}}},
+	},
 }
 
 // echoer returns its arguments as the result; demo.run returns a
@@ -72,8 +77,13 @@ type run struct {
 
 func execute(t *testing.T, inv Invoker, args ...string) run {
 	t.Helper()
+	return executeIn(t, inv, "", args...)
+}
+
+func executeIn(t *testing.T, inv Invoker, stdin string, args ...string) run {
+	t.Helper()
 	var out, errb bytes.Buffer
-	app := &App{Actions: actions, Client: inv, Stdout: &out, Stderr: &errb, Stdin: strings.NewReader(""),
+	app := &App{Actions: actions, Client: inv, Stdout: &out, Stderr: &errb, Stdin: strings.NewReader(stdin),
 		Printers: map[string]Decoder{"demo.run": PrintAs[printable]}}
 	root := NewRoot(app, "test")
 	root.SetArgs(args)
@@ -124,5 +134,18 @@ func TestNotRunning(t *testing.T) {
 	r := execute(t, echoer{err: &instance.NotRunningError{Cause: fmt.Errorf("refused")}}, "demo", "run")
 	if r.code != ExitNotRunning || r.stderr != instance.ErrNotRunning.Error()+"\n" {
 		t.Fatalf("%+v", r)
+	}
+}
+
+func TestSecretsComeFromStdin(t *testing.T) {
+	r := executeIn(t, echoer{}, "s3cret\nignored\n", "demo", "login", "--user", "admin", "--password-stdin")
+	if r.code != 0 || !strings.Contains(r.stdout, `"password": "s3cret"`) {
+		t.Fatalf("%+v", r)
+	}
+	if r := execute(t, echoer{}, "demo", "login", "--password", "s3cret"); r.code == 0 {
+		t.Fatalf("a secret as a flag value must be refused: %+v", r)
+	}
+	if r := execute(t, echoer{}, "demo", "login", "--user", "admin"); strings.Contains(r.stdout, "password") {
+		t.Fatalf("unset secret sent: %+v", r)
 	}
 }

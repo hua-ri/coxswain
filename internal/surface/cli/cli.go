@@ -3,12 +3,15 @@
 package cli
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"slices"
 	"sort"
 	"strings"
 
@@ -16,6 +19,7 @@ import (
 	"github.com/hua-ri/coxswain/internal/instance"
 	"github.com/hua-ri/coxswain/internal/server"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 // Exit codes.
@@ -116,6 +120,7 @@ func actionCommand(app *App, a server.ActionInfo, name string) *cobra.Command {
 		get  func() any
 	}
 	var flags []flagVal
+	var secretFlags []string
 	names := make([]string, 0, len(props))
 	for k := range props {
 		names = append(names, k)
@@ -125,6 +130,13 @@ func actionCommand(app *App, a server.ActionInfo, name string) *cobra.Command {
 		schema, _ := props[prop].(map[string]any)
 		desc, _ := schema["description"].(string)
 		flag := strings.ReplaceAll(prop, "_", "-")
+		if schema["writeOnly"] == true {
+			// A secret: never a flag value, which ps and shell history keep.
+			v := cmd.Flags().Bool(flag+"-stdin", false, desc+" (read from stdin; prompted without echo on a terminal)")
+			flags = append(flags, flagVal{prop, func() any { return *v }})
+			secretFlags = append(secretFlags, prop)
+			continue
+		}
 		switch schema["type"] {
 		case "integer":
 			v := cmd.Flags().Int(flag, 0, desc)
@@ -144,6 +156,16 @@ func actionCommand(app *App, a server.ActionInfo, name string) *cobra.Command {
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
 		in := map[string]any{}
 		for _, f := range flags {
+			if slices.Contains(secretFlags, f.prop) {
+				if f.get() == true {
+					v, err := app.readSecret(f.prop)
+					if err != nil {
+						return err
+					}
+					in[f.prop] = v
+				}
+				continue
+			}
 			if cmd.Flags().Changed(strings.ReplaceAll(f.prop, "_", "-")) {
 				in[f.prop] = f.get()
 			}
@@ -162,6 +184,22 @@ func actionCommand(app *App, a server.ActionInfo, name string) *cobra.Command {
 		return app.render(a.ID, out)
 	}
 	return cmd
+}
+
+// readSecret reads one secret from stdin: prompted without echo when it
+// is a terminal, else its first line.
+func (app *App) readSecret(name string) (string, error) {
+	if f, ok := app.Stdin.(*os.File); ok && term.IsTerminal(int(f.Fd())) {
+		fmt.Fprintf(app.Stderr, "%s: ", strings.ReplaceAll(name, "_", " "))
+		b, err := term.ReadPassword(int(f.Fd()))
+		fmt.Fprintln(app.Stderr)
+		return string(b), err
+	}
+	line, err := bufio.NewReader(app.Stdin).ReadString('\n')
+	if err != nil && !(errors.Is(err, io.EOF) && line != "") {
+		return "", fmt.Errorf("reading %s from stdin: %w", name, err)
+	}
+	return strings.TrimRight(line, "\r\n"), nil
 }
 
 // mapPositional assigns args to the Positional properties. With rest,

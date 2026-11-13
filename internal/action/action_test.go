@@ -92,3 +92,17 @@ func TestExactKeys(t *testing.T) {
 		t.Fatalf("no hint: %v", err)
 	}
 }
+
+func TestRedactWriteOnly(t *testing.T) {
+	in := map[string]any{"type": "object", "properties": map[string]any{
+		"user":     map[string]any{"type": "string"},
+		"password": map[string]any{"type": "string", "writeOnly": true},
+	}}
+	got := string(RedactWriteOnly(in, json.RawMessage(`{"user":"admin","Password":"hunter2"}`)))
+	if strings.Contains(got, "hunter2") || !strings.Contains(got, `"admin"`) || !strings.Contains(got, "redacted 7 chars") {
+		t.Fatalf("RedactWriteOnly = %s", got)
+	}
+	if got := string(RedactWriteOnly(in, json.RawMessage(`"hunter2"`))); strings.Contains(got, "hunter2") {
+		t.Fatalf("non-object = %s", got)
+	}
+}

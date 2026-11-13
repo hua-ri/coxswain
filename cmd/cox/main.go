@@ -8,6 +8,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/hua-ri/coxswain/internal/argo"
+	argoprov "github.com/hua-ri/coxswain/internal/providers/argo"
+	"github.com/hua-ri/coxswain/internal/secrets"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -203,6 +206,11 @@ func newEngine(coxHome, userHome string, pool func(*sshx.Dialer) *sshx.Pool) ser
 	tunnels := &tunnel.Manager{Hosts: hosts, Dialer: dialer, Events: events, Pods: &k8sprov.Forwarder{Clusters: clusters}}
 	(&tunnelprov.Provider{Hosts: hosts, Tunnels: tunnels}).Register(reg)
 	(&k8sprov.Provider{Clusters: clusters, Hosts: hosts, Artifacts: artifacts, Tunnels: tunnels}).Register(reg)
+	// Argo instances' settings are in argo.json; their credentials only in
+	// the login keychain.
+	sessions := &argo.Sessions{Store: argo.NewStore(filepath.Join(coxHome, "argo.json")),
+		Secrets: &secrets.Keychain{Service: "coxswain"}}
+	(&argoprov.Provider{Sessions: sessions, Artifacts: artifacts}).Register(reg)
 	return services{Engine: &engine.Engine{Registry: reg, Events: events}, Terminals: terms, Transfers: transfers, Tunnels: tunnels,
 		Clusters: clusters}
 }

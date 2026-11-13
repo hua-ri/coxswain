@@ -224,3 +224,38 @@ func HumanOnly(ctx context.Context, what, ask string) error {
 	}
 	return fmt.Errorf("%w: %s is for the user, not agents; ask the user to %s", ErrHumanOnly, what, ask)
 }
+
+// RedactWriteOnly replaces the values of the input's writeOnly properties
+// (passwords, tokens) in args with a note of their length, matching keys
+// without regard to case as encoding/json does. Arguments that are not
+// a JSON object are recorded as redacted entirely.
+func RedactWriteOnly(input map[string]any, args json.RawMessage) json.RawMessage {
+	props, _ := input["properties"].(map[string]any)
+	var secret []string
+	for k, v := range props {
+		if s, ok := v.(map[string]any); ok && s["writeOnly"] == true {
+			secret = append(secret, k)
+		}
+	}
+	if len(secret) == 0 || len(args) == 0 {
+		return args
+	}
+	var m map[string]json.RawMessage
+	if json.Unmarshal(args, &m) != nil {
+		return json.RawMessage(`{"redacted":true}`)
+	}
+	for k, v := range m {
+		for _, s := range secret {
+			if strings.EqualFold(k, s) {
+				var str string
+				json.Unmarshal(v, &str)
+				m[k], _ = json.Marshal(fmt.Sprintf("<redacted %d chars>", len(str)))
+			}
+		}
+	}
+	out, err := json.Marshal(m)
+	if err != nil {
+		return json.RawMessage(`{"redacted":true}`)
+	}
+	return out
+}
