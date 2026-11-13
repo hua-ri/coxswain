@@ -177,3 +177,119 @@ func limit(s []string, n int) []string {
 	}
 	return append(s[:n:n], fmt.Sprintf("… %d more", len(s)-n))
 }
+
+func (p *Provider) wfDiagnose() *action.Action {
+	return p.wfAction(&action.Action{
+		ID:      "argowf.diagnose",
+		Summary: "Find out why an Argo workflow failed, and whether to retry",
+		Description: "Finds the failed steps, classifies each (OOM, exit code, image pull, deadline, pod deleted…), adds the tail " +
+			"of the first failed step's logs, and says whether a retry is likely to help. Run it before argowf_retry.",
+		Input:       wfSchema(map[string]any{"name": wfNameProp}, "name"),
+		Positional:  []string{"name"},
+		Annotations: action.Annotations{ReadOnly: true, Idempotent: true, OpenWorld: true},
+	}, wfRead("diagnose workflow"), func(ctx context.Context, i argo.Instance, in wfInput) (any, error) {
+		w, err := p.getWF(ctx, i, in)
+		if err != nil {
+			return nil, err
+		}
+		return p.diagnoseWF(ctx, i, w), nil
+	})
+}
+
+// failureClass says what kind of failure a node's message and exit code
+// show, and whether retrying it as it is may help.
+func failureClass(n NodeView) (class string, transient bool) {
+	m := strings.ToLower(n.Message)
+	switch {
+	case strings.Contains(m, "oomkilled") || n.ExitCode == "137" && strings.Contains(m, "oom"):
+		return "out of memory (OOMKilled): raise the step's memory limit; a plain retry will likely fail again", false
+	case strings.Contains(m, "imagepullbackoff") || strings.Contains(m, "errimagepull") || strings.Contains(m, "pull access denied"):
+		return "image cannot be pulled: check the image name/tag and registry credentials", false
+	case strings.Contains(m, "deadline") || strings.Contains(m, "activedeadlineseconds") || strings.Contains(m, "timeout"):
+		return "deadline exceeded: the step or workflow ran past its time limit", true
+	case strings.Contains(m, "pod deleted") || strings.Contains(m, "evicted") || strings.Contains(m, "node") && strings.Contains(m, "shutdown") || strings.Contains(m, "preempt"):
+		return "the pod was removed (deleted, evicted or preempted): infrastructure, not the step itself", true
+	case strings.Contains(m, "createcontainerconfigerror") || strings.Contains(m, "secret") && strings.Contains(m, "not found") || strings.Contains(m, "configmap") && strings.Contains(m, "not found"):
+		return "container cannot be configured (missing Secret/ConfigMap?)", false
+	case n.ExitCode == "137" || n.ExitCode == "143":
+		return "killed by a signal (exit " + n.ExitCode + "): out of memory, a deadline, or the node", true
+	case n.ExitCode != "" && n.ExitCode != "0":
+		return "the step's command failed with exit code " + n.ExitCode + ": read its logs", false
+	}
+	return "", false
+}
+
+func (p *Provider) diagnoseWF(ctx context.Context, i argo.Instance, w argo.Workflow) Diagnosis {
+	s := p.wfSummary(w)
+	d := Diagnosis{Target: i.Name + "/" + w.Metadata.Namespace + "/" + w.Metadata.Name, InstanceNote: i.Note, Evidence: map[string]any{},
+		Summary: fmt.Sprintf("%s, %s, ran %s", s.Phase, s.Progress, s.Duration)}
+	if s.Message != "" {
+		d.add(map[bool]string{true: "error", false: "info"}[failed(s.Phase)], "Workflow message", s.Message)
+	}
+	nodes := p.nodes(w)
+	var bad []NodeView
+	for _, n := range nodes {
+		if failed(n.Phase) && n.Type == "Pod" {
+			bad = append(bad, n)
+		}
+	}
+	if len(bad) == 0 {
+		for _, n := range nodes {
+			if failed(n.Phase) && n.Type != "Pod" && n.Message != "" {
+				d.add("error", fmt.Sprintf("%s %s %s", n.Type, n.Name, n.Phase), n.Message)
+			}
+		}
+		if s.Phase == "Running" || s.Phase == "Pending" {
+			var running []string
+			for _, n := range nodes {
+				if n.Type == "Pod" && (n.Phase == "Running" || n.Phase == "Pending") {
+					running = append(running, n.Name+" ("+n.Phase+")")
+				}
+			}
+			d.add("info", "Still running", strings.Join(limit(running, 10), ", "))
+		}
+		if len(d.Findings) == 0 {
+			d.add("info", "No failed steps", "the workflow is "+s.Phase)
+		}
+		return d
+	}
+	allTransient := true
+	for k, n := range bad {
+		if k == 5 {
+			d.add("info", fmt.Sprintf("%d more failed steps", len(bad)-5), "see argowf_get")
+			break
+		}
+		class, transient := failureClass(n)
+		allTransient = allTransient && transient && class != ""
+		detail := n.Message
+		if n.ExitCode != "" {
+			detail = strings.TrimSpace(fmt.Sprintf("exit code %s; %s", n.ExitCode, n.Message))
+		}
+		if class != "" {
+			detail += " — " + class
+		}
+		d.add("error", fmt.Sprintf("Step %s (%s) %s", n.Name, n.Template, strings.ToLower(n.Phase)), detail)
+	}
+	first := bad[0]
+	ev := map[string]any{"node": first.ID, "pod": first.Pod}
+	if wn, err := p.node(w, first.ID); err == nil {
+		logs, err := p.nodeLogs(ctx, i, w, wn, "main", 50, "")
+		switch {
+		case err != nil:
+			ev["logs_error"] = err.Error()
+		case strings.TrimSpace(logs) == "":
+			ev["logs"] = "(empty: the pod may be gone; logs then live only in the artifact repository, if archived)"
+		default:
+			clipped, _ := shaper.Clip(logs, podLogLimit)
+			ev["logs_tail"] = clipped
+		}
+	}
+	d.Evidence["first_failed_step"] = ev
+	if allTransient {
+		d.NextSteps = append(d.NextSteps, "the failures look transient: argowf_retry is likely to help")
+	} else {
+		d.NextSteps = append(d.NextSteps, "fix the cause first (see findings and logs); a plain argowf_retry would likely fail the same way",
+			"after a fix in the template or image, argowf_resubmit or argowf_submit runs it fresh")
+	}
+	return d
+}
