@@ -37,7 +37,9 @@ tools. `cox server` prints one line for every action, whether you or an agent ra
 
 | Capability | Tools (MCP) / commands | Notes |
 |---|---|---|
-| Hosts | `ssh_hosts_list`, `ssh_hosts_tag` | imported from `~/.ssh/config`; tags and notes are shown to agents |
+| Hosts | `ssh_hosts_list`, `ssh_hosts_add`, `ssh_hosts_update`, `ssh_hosts_remove`, `ssh_hosts_tag`, `ssh_hosts_import` | imported from `~/.ssh/config` or added by hand; tags and notes are shown to agents |
+| Host keys | `ssh_hosts_scan_key`, `ssh_hosts_test`; `trust_key` and `forget_key` for you only | trusted keys go to `~/.coxswain/known_hosts`; `~/.ssh/known_hosts` is only read |
+| Clusters | `k8s_contexts`; `k8s_clusters_add`, `k8s_clusters_remove`, `_inspect`, `_test` for you only | your kubeconfig is only read; clusters you add are kept in `~/.coxswain/kubeconfigs/` |
 | Commands | `ssh_exec` | one command, output and exit code |
 | Batch runs | `ssh_batch` | one command on many hosts (`hosts` plus every host with `tag`), canary first, stops on failure; above 50 hosts needs `confirm_count` |
 | Files | `file_list`, `file_stat`, `file_read`, `file_write`, `file_mkdir`, `file_remove` | over SFTP; `file_write` is atomic; `file_read` is for small text files |
@@ -55,7 +57,33 @@ cox file upload web-01 ~/build/app.tgz /tmp/app.tgz
 cox tunnel open web-01 local --remote-port 5432         # prints the local address (listen)
 cox tunnel list
 cox ssh batch --tag role=web -- uptime
+cox ssh hosts add web-3 10.0.1.13 --user deploy --proxy-jump bastion --tags env=prod
+cox ssh hosts scan_key web-3                             # its key fingerprint: compare it
+cox ssh hosts trust_key web-3 --fingerprint SHA256:…     # then trust it (you only)
+cox k8s clusters add --path ~/Downloads/prod-sg.yaml --context eks-prod-sg
 ```
+
+### Host keys
+
+Coxswain checks host keys like `ssh` does, against `~/.ssh/known_hosts` (read, never written)
+and its own `~/.coxswain/known_hosts`. For a new host, *Test connection* in `cox desktop` (or
+`cox ssh hosts scan_key`) shows the key's fingerprint. Compare it with the one the host's admin
+gave you, then trust it; Coxswain writes it to its own file only if the fingerprint is still the
+one you confirmed. Behind a jump host, the jump host's key comes first. A **changed** key is
+never trusted: Coxswain refuses to connect until you remove the old entry (`forget_key`, which
+only edits Coxswain's file; for an entry in `~/.ssh/known_hosts` it tells you the `ssh-keygen -R`
+command to run). Agents can scan keys but cannot trust or forget them.
+
+### Clusters you add
+
+Coxswain reads your kubeconfig (`$KUBECONFIG` or `~/.kube/config`) and never writes, changes or
+switches it. To add a cluster, paste a kubeconfig or pick a file in `cox desktop` (Clusters → +),
+or use `cox k8s clusters add`. Coxswain keeps only the context you choose, with its cluster and
+credentials, in `~/.coxswain/kubeconfigs/` (0600), and merges those files after yours. A context
+name your kubeconfig already has is refused; give the copy another name. *Test* asks the cluster
+for its version without saving anything. Only clusters added this way can be removed in Coxswain;
+the others show as read-only. Adding and removing clusters is for you only, and the audit log
+records a kubeconfig as its size, SHA-256 and context names, never its contents.
 
 Transfers, tunnels and batch runs live in `cox server`, each with its owner (you or an agent).
 `cox desktop` shows them and can stop any of them; agents can close only their own tunnels.
@@ -74,7 +102,10 @@ cox desktop   # needs a running cox server
 `cox desktop` opens a window on the running server. Closing it leaves the server running; run
 `cox desktop` again to come back. It shows:
 
-- **Hosts**, with their tags (`env=prod` in red) and notes. Click *Terminal* to open a terminal on
+- **Hosts**, with their tags (`env=prod` in red) and notes. Add one with the + on the Hosts header
+  (or import `~/.ssh/config` from the same menu); edit or remove one from its page or by
+  right-clicking it. Removing a host leaves its open terminals and tunnels until you close them.
+  Click *Terminal* to open a terminal on
   one, *Files* to browse its files: open folders, download (to `~/.coxswain/downloads/<host>/`),
   upload a file you pick, create folders, delete (after asking).
 - **Activity**: every action as it happens, yours and your agents', with its risk rating, host
@@ -102,7 +133,7 @@ an ended terminal stays readable for 10 minutes.
 
 Your agent does, not Coxswain. Every cox tool tells the agent what it does: `ssh_hosts_list`,
 `file_list`, `file_read`, `terminal_read` and `artifact_read` only read; `ssh_exec`, `ssh_batch`,
-`file_write`, `file_upload`, `tunnel_open`, `terminal_send` and `ssh_hosts_tag` can change things. Claude Code, Codex
+`file_write`, `file_upload`, `tunnel_open`, `terminal_send` and `ssh_hosts_tag` / `_add` / `_update` / `_remove` can change things. Claude Code, Codex
 and Kimi Code then follow their own permission settings, for example asking you before each
 `ssh_exec`. Configure that in your agent.
 
@@ -111,6 +142,10 @@ Coxswain still helps:
 - Hosts tagged `env=prod` are production. The tools tell agents to check with you before
   changing them, and every `ssh_exec` result includes the host's tags and note.
 - A host note ("no restarts during business hours") is shown to agents, who are told to follow it.
+- Agents may add, change and remove hosts; each change is recorded with the agent's name, and
+  changing `env` (or `ai`) tags or a note is rated destructive. Trusting or forgetting a host
+  key, and adding or removing a cluster, are for you only: agents are refused (and the refusal
+  is recorded) and told to ask you.
 - Every command gets a risk rating (read, write or destructive) in the audit log and in
   `cox server`'s output. The rating is a label; nothing is blocked. Commands are parsed, not
   pattern-matched. Commands that can't be parsed, or whose name is only known at run time, count
@@ -151,12 +186,16 @@ permission; agents can't use `cox clients`.
 | `~/.coxswain/server.json` | address, pid and access token of the running server (0600) |
 | `~/.coxswain/clients.json` | agents you allowed or revoked |
 | `~/.coxswain/hosts.json` | hosts, tags, notes |
+| `~/.coxswain/known_hosts` | host keys you trusted in Coxswain (0600) |
+| `~/.coxswain/kubeconfigs/` | clusters you added in Coxswain, one kubeconfig each (0600, dir 0700) |
+| `~/.coxswain/clusters.json` | tags and notes of Kubernetes contexts |
 | `~/.coxswain/events/` | audit log |
 | `~/.coxswain/artifacts/` | full copies of truncated outputs (and of every batch run's output) |
 | `~/.coxswain/downloads/` | downloaded files, one folder per host |
 
-Credentials stay in `ssh-agent` and your key files. Coxswain never stores or shows them, and
-agents never get them.
+SSH credentials stay in `ssh-agent` and your key files: Coxswain stores only key paths, never
+shows them, and agents never get them. Kubernetes credentials of clusters you add are stored in
+`~/.coxswain/kubeconfigs/`, as a kubeconfig would store them.
 
 ## Security model
 

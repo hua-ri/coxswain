@@ -304,6 +304,30 @@ production k8s panes, production terminals, production dialogs.
 on Cancel and returns to the opener; 440px max; title 15px/600; production
 dialogs open with the hazard band.
 
+**Editors (add/edit host, add cluster)** — a pane in the main area, not a
+dialog: the selection is the form (it is never returned to by history). Pane
+header names it ("Add host", "Edit web-1"); sections with caption heads
+(Connection · What agents are told · Connection check); a form grid with
+104px right-aligned labels and controls up to 560px; hints in ink-3, errors in
+hazard-ink under the control (shown after blur or a save attempt). Footer bar
+on deck: Remove… (hazard-ink ghost) left, Cancel and the primary action right.
+Choosing env=prod raises the hazard band above the header at once.
+Environment is a segmented radio: None · staging · dev · prod, prod in
+hazard-ink and solid hazard when chosen.
+
+**Host key confirmation** — the one thing in an editor to read closely: a
+deck block with the address (mono, ink-3), the key type and the SHA256
+fingerprint in a well chip (13px mono, selectable), then *Trust this key*
+(primary) and *Not now*. A changed key is a hazard-tint block with a hazard
+border and an uppercase "Host key changed" title; it never offers *Trust*,
+only *Remove old key…* (with its own confirmation) when the old entry is
+Coxswain's, or the `ssh-keygen -R` command when it is the user's.
+
+**Menus** — the Hosts "+" and row context menus: bridge surface, the dialog
+shadow, 24px items, helm fill on hover/focus (as macOS menus), destructive
+items in hazard-ink turning to a hazard fill. The section "+" is an 18px
+ink-3 icon button at the right of the header.
+
 **Detail pane** — header (kind label caption + name title + close), a
 segmented control for overview/yaml/events/logs/diagnose, scrolling body
 with caption-style section heads.
@@ -326,4 +350,6 @@ error: dismissable).
 | Solid red only for prod and destructive | The two things that must stop the eye | 2026-11-10 |
 | One source list, one selection; no tab strip | The sidebar and the main area can never disagree; sessions, places and the crew sit in one scannable list (critique 20/40 → comp 28/40) | 2026-11-12 |
 | Prod marked once per layer | Repetition taught the eye to skip red | 2026-11-12 |
+| Add/edit forms are panes, not dialogs | Forms with a connection check need room and should not block watching the crew; dialogs stay for confirming destructive steps | 2026-11-13 |
+| A changed host key is never one click from trusted | Mismatch is the MITM case; removing the old entry is its own confirmed step | 2026-11-13 |
 | 26/22px controls | macOS control sizes; density over 44px touch targets on a pointer tool | 2026-11-10 |

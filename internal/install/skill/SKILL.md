@@ -19,6 +19,8 @@ Prefer the MCP tools when they are available:
 | Tool | Use |
 |---|---|
 | `ssh_hosts_list` | hosts with tags (`env=prod` is production) and notes |
+| `ssh_hosts_add` / `ssh_hosts_update` / `ssh_hosts_remove` | save, change (or rename) and remove hosts, when the user asks |
+| `ssh_hosts_scan_key` / `ssh_hosts_test` | a host's key fingerprint and whether it is trusted / check that it accepts a login |
 | `ssh_exec` | run one non-interactive command on a host |
 | `ssh_batch` | run one command on many hosts (`hosts` and/or `tag`), canary first |
 | `file_list` / `file_stat` | list a remote directory / one path's metadata |
@@ -34,6 +36,20 @@ Prefer the MCP tools when they are available:
 | `terminal_read` | read the last lines of a shared terminal |
 | `terminal_close` | close a terminal you opened |
 | `artifact_read` | read more of a truncated output (`grep`, `start`/`end`) |
+
+### Adding and changing hosts
+
+- Add, change or remove hosts only when the user asks. Every change is recorded with your name;
+  changing `env` (or `ai`) tags or the note is rated destructive, because they tell agents how
+  careful to be. Never drop `env=prod` from a host unless the user says so.
+- A new host cannot be used until the user trusts its key. Only the user can do that
+  (`ssh_hosts_trust_key` and `ssh_hosts_forget_key` refuse agents): run `ssh_hosts_scan_key`, show
+  the user the fingerprint, and ask them to trust it in cox desktop (Edit host → Test connection)
+  or with `cox ssh hosts trust_key <name> --fingerprint SHA256:…`. If a key **changed**, say so
+  plainly and stop; do not look for a way around it.
+- Kubernetes clusters (`k8s_clusters_add` and friends) carry credentials: only the user adds or
+  removes them, in cox desktop (Clusters → +) or with `cox k8s clusters add`. Never edit the
+  user's kubeconfig yourself.
 
 ### `ssh_exec` or a terminal?
 
