@@ -41,6 +41,13 @@ func (p *Provider) Register(r *action.Registry) {
 	r.Register(p.hostsList())
 	r.Register(p.hostsImport())
 	r.Register(p.hostsTag())
+	r.Register(p.hostsAdd())
+	r.Register(p.hostsUpdate())
+	r.Register(p.hostsRemove())
+	r.Register(p.hostsScanKey())
+	r.Register(p.hostsTrustKey())
+	r.Register(p.hostsForgetKey())
+	r.Register(p.hostsTest())
 	r.Register(p.exec())
 	r.Register(p.batch())
 }
@@ -233,7 +240,7 @@ func (p *Provider) hostsTag() *action.Action {
 				keys = append(keys, k)
 			}
 			for _, k := range keys {
-				if k == "env" {
+				if agentFacing(k) {
 					risk = action.Destructive
 				}
 			}

@@ -5,6 +5,7 @@ package action
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"sort"
@@ -208,4 +209,18 @@ func ExactKeys(args json.RawMessage, input map[string]any) error {
 		return fmt.Errorf("invalid arguments: unknown argument %q", k)
 	}
 	return nil
+}
+
+// ErrHumanOnly marks a refusal because only the user may do something
+// (trust a host key, add a cluster's credentials). The engine records it
+// as a refused call.
+var ErrHumanOnly = errors.New("only the user may do this")
+
+// HumanOnly returns an ErrHumanOnly error unless ctx's actor is the
+// user. what says what is refused; ask how the user can do it.
+func HumanOnly(ctx context.Context, what, ask string) error {
+	if a, ok := ActorFrom(ctx); ok && a.Kind == Human {
+		return nil
+	}
+	return fmt.Errorf("%w: %s is for the user, not agents; ask the user to %s", ErrHumanOnly, what, ask)
 }

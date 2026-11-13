@@ -117,6 +117,9 @@ func (e *Engine) Invoke(ctx context.Context, client action.Actor, id string, arg
 	}
 	// Label knows who asks: some arguments are for the user only.
 	as, err := a.Label(action.WithActor(ctx, client), args)
+	if errors.Is(err, action.ErrHumanOnly) {
+		e.Refuse(client, id, err.Error())
+	}
 	if err != nil {
 		return Outcome{Status: StatusError, Error: err.Error()}
 	}

@@ -266,3 +266,29 @@ func TestLabelKnowsTheActorAndErrorsCarryDetails(t *testing.T) {
 		t.Fatalf("%s", b)
 	}
 }
+
+// TestHumanOnlyIsRefused: a Label that refuses an agent with
+// action.HumanOnly is recorded as a refused call, and nothing runs.
+func TestHumanOnlyIsRefused(t *testing.T) {
+	reg := action.NewRegistry()
+	ran := false
+	reg.Register(&action.Action{
+		ID: "test.trust", Input: map[string]any{"type": "object"},
+		Label: func(ctx context.Context, _ json.RawMessage) (action.Assessment, error) {
+			return action.Assessment{Risk: action.Write}, action.HumanOnly(ctx, "trusting keys", "trust it in cox desktop")
+		},
+		Run: func(context.Context, json.RawMessage) (any, error) { ran = true; return nil, nil },
+	})
+	e := &Engine{Registry: reg, Events: eventlog.Open(t.TempDir() + "/events")}
+	out := e.Invoke(context.Background(), agent, "test.trust", nil)
+	if out.Status != StatusError || !strings.Contains(out.Error, "ask the user to trust it in cox desktop") || ran {
+		t.Fatalf("%+v ran=%v", out, ran)
+	}
+	evs, _ := e.Events.Read(time.Now())
+	if len(evs) != 1 || evs[0].Type != eventlog.ActionRefused || !strings.Contains(evs[0].Reason, "for the user") {
+		t.Fatalf("%+v", evs)
+	}
+	if out := e.Invoke(context.Background(), action.Actor{Kind: action.Human, Name: "desktop"}, "test.trust", nil); out.Status != StatusOK || !ran {
+		t.Fatalf("%+v", out)
+	}
+}
