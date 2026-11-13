@@ -39,8 +39,8 @@ function fakeBindings(
       calls.push(["resize", ...args]);
     },
     coxStatus: async () => ({ connected: true, addr: "127.0.0.1:1", version: "v", pid: 1 }),
-    coxPickFile: async () => {
-      calls.push(["pick"]);
+    coxPickFile: async (purpose) => {
+      calls.push(["pick", purpose]);
       const id = "c" + ++call;
       setTimeout(() => target.__cox!.emit("reply", { type: "reply", call: id, ok: true, value: "/Users/me/a.txt" }));
       return id;
@@ -143,6 +143,7 @@ describe("cox", () => {
     const b = fakeBindings();
     const cox = createCox(b, b.target);
     expect(await cox.pickFile()).toBe("/Users/me/a.txt");
-    expect(b.calls).toEqual([["pick"]]);
+    expect(await cox.pickFile("key")).toBe("/Users/me/a.txt");
+    expect(b.calls).toEqual([["pick", "upload"], ["pick", "key"]]);
   });
 });

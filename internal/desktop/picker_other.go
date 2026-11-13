@@ -3,4 +3,4 @@
 package desktop
 
 // pickFile is nil: there is no native file picker outside macOS.
-var pickFile func() string
+var pickFile func(purpose string) string

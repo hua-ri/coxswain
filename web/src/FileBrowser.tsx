@@ -96,7 +96,7 @@ export function FileBrowser({ cox, host, prod, note, active, onClose }: Props) {
   const upload = async () => {
     let local: string;
     try {
-      local = await cox.pickFile();
+      local = await cox.pickFile("upload");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       return;

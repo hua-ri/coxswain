@@ -353,22 +353,31 @@ func TestPickFile(t *testing.T) {
 		t.Fatal("coxPickFile is not bound")
 	}
 	picked := "/Users/me/report.pdf"
-	b.Pick = func() string { return picked }
-	call := b.PickFileAsync()
+	var purposes []string
+	b.Pick = func(purpose string) string { purposes = append(purposes, purpose); return picked }
+	call := b.PickFileAsync("upload")
 	p := w.next(ReplyChannel, func(p map[string]any) bool { return p["call"] == call })
 	if p["ok"] != true || p["value"] != picked {
 		t.Fatalf("reply = %v", p)
 	}
+	// The purpose sets the dialog's wording; unknown ones are uploads.
+	for _, purpose := range []string{"key", "kubeconfig", "rm -rf"} {
+		call = b.PickFileAsync(purpose)
+		w.next(ReplyChannel, func(p map[string]any) bool { return p["call"] == call })
+	}
+	if strings.Join(purposes, ",") != "upload,key,kubeconfig,upload" {
+		t.Fatalf("purposes %v", purposes)
+	}
 
 	picked = "" // cancelled
-	call = b.PickFileAsync()
+	call = b.PickFileAsync("upload")
 	p = w.next(ReplyChannel, func(p map[string]any) bool { return p["call"] == call })
 	if p["ok"] != true || p["value"] != "" {
 		t.Fatalf("cancelled reply = %v", p)
 	}
 
 	b.Pick = nil
-	call = b.PickFileAsync()
+	call = b.PickFileAsync("upload")
 	p = w.next(ReplyChannel, func(p map[string]any) bool { return p["call"] == call })
 	if p["ok"] != false || !strings.Contains(p["error"].(string), "file picker") {
 		t.Fatalf("no-picker reply = %v", p)

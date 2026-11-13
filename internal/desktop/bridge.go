@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -69,10 +70,11 @@ type Status struct {
 type Bridge struct {
 	// Retry is how often the server is checked; default 2s.
 	Retry time.Duration
-	// Pick shows a native "open file" dialog and returns the chosen
-	// file's absolute path, or "" if cancelled. It runs on the UI
-	// thread. nil: this platform has no file picker.
-	Pick func() string
+	// Pick shows a native "open file" dialog for a purpose (see
+	// PickPurposes) and returns the chosen file's absolute path, or "" if
+	// cancelled. It runs on the UI thread. nil: this platform has no file
+	// picker.
+	Pick func(purpose string) string
 
 	home string
 	win  Window
@@ -215,11 +217,19 @@ func (b *Bridge) APIAsync(method, path string, body any) string {
 	return call
 }
 
+// PickPurposes are what the page may ask for a file for: a file to
+// upload, an SSH private key, or a kubeconfig. They only change the
+// dialog's wording and start folder.
+var PickPurposes = []string{"upload", "key", "kubeconfig"}
+
 // PickFileAsync asks the user for a local file and returns a call id at
 // once; the chosen absolute path ("" if cancelled) is pushed on
 // ReplyChannel. The dialog runs from the UI thread's queue, not inside
 // the binding call. It is the page's coxPickFile.
-func (b *Bridge) PickFileAsync() string {
+func (b *Bridge) PickFileAsync(purpose string) string {
+	if !slices.Contains(PickPurposes, purpose) {
+		purpose = "upload"
+	}
 	b.mu.Lock()
 	b.calls++
 	call := "c" + strconv.Itoa(b.calls)
@@ -230,7 +240,7 @@ func (b *Bridge) PickFileAsync() string {
 		if pick == nil {
 			reply["error"] = "this desktop build has no file picker"
 		} else {
-			reply["value"] = pick()
+			reply["value"] = pick(purpose)
 		}
 		b.emit(ReplyChannel, reply)
 	})

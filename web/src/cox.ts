@@ -44,9 +44,12 @@ export interface Bindings {
   coxInput(termID: string, base64: string): Promise<void>;
   coxResize(termID: string, cols: number, rows: number): Promise<void>;
   coxStatus(): Promise<Status>;
-  /** coxPickFile opens a native file dialog; the chosen absolute path ("" if cancelled) comes on REPLY_CHANNEL. */
-  coxPickFile(): Promise<string>;
+  /** coxPickFile opens a native file dialog for a purpose (its wording and start folder); the chosen absolute path ("" if cancelled) comes on REPLY_CHANNEL. */
+  coxPickFile(purpose: PickPurpose): Promise<string>;
 }
+
+/** What a file is picked for: a file to upload, an SSH private key, a kubeconfig. */
+export type PickPurpose = "upload" | "key" | "kubeconfig";
 
 /** Subscription id of connection changes. */
 export const STATUS_CHANNEL = "bridge";
@@ -161,7 +164,7 @@ export function createCox(b: Bindings, target: { __cox?: unknown }) {
     },
 
     /** pickFile asks for a local file: its absolute path, or "" if cancelled. */
-    pickFile: () => reply(b.coxPickFile()) as Promise<string>,
+    pickFile: (purpose: PickPurpose = "upload") => reply(b.coxPickFile(purpose)) as Promise<string>,
     status: () => b.coxStatus(),
     input: (termID: string, text: string) => b.coxInput(termID, toBase64(text)),
     resize: (termID: string, cols: number, rows: number) => b.coxResize(termID, cols, rows),
