@@ -20,10 +20,11 @@
   （`env=prod`）和给 agent 的备注。
 - **只做能力，方式交给用户选**：每个实例先查询支持哪些登录方式，人（桌面 / CLI）和 agent（MCP）看到同一份列表、
   调用同一组 action。Coxswain 不内置任何公司的 SSO，也不替用户决定用哪种方式。
-- **凭据**：存 macOS 钥匙串（服务 `coxswain`，账号 `argocd/<instance>` / `argowf/<instance>`，cgo Security
-  framework）；`~/.coxswain/argo.json` 只存非敏感配置。密码只用于换 token，永不保存；action 参数里的
-  `password` / `token` 在审计中脱敏（Redact），永不出现在任何 action 的输出里。agent 用密码 / token 登录时，
-  这个值会经过 agent 自己的上下文，SKILL.md 中写明：优先让用户在桌面上填，或用浏览器登录。
+- **凭据：能写不能读**。agent 是用户自己选的，Coxswain 不限制它添加实例、登录、填密码 / token；限制只在输出：
+  任何 action 的结果、审计、事件、错误信息里，凭据一律脱敏（只显示「已配置」、类型、身份、到期时间、
+  sha256 前 8 位）。所以 agent 能添加凭据，但读不到任何凭据，包括用户手动添加的。没有可读回凭据的 action。
+  存储：macOS 钥匙串（服务 `coxswain`，账号 `argocd/<instance>` / `argowf/<instance>`，cgo Security
+  framework）；`~/.coxswain/argo.json` 只存非敏感配置；密码只用于换 token，永不保存。
 - **可分享**：`argo.export` 输出实例配置（不含凭据），同事 `argo.import` 后各自登录。
 - 风险标签：读 read；登录 / 添加实例 / sync / refresh / suspend / resume / retry / resubmit / submit write；
   sync prune、rollback、terminate、stop、delete、移除实例 destructive。目标 `argocd:<instance>/<app>`、
