@@ -44,10 +44,12 @@ func TestCapped(t *testing.T) {
 	}
 }
 
+// TestNoKnownHosts: without any known_hosts file every host is unknown
+// (and can be trusted from Coxswain), rather than a dead end.
 func TestNoKnownHosts(t *testing.T) {
 	d := &Dialer{KnownHosts: []string{filepath.Join(t.TempDir(), "missing")}}
-	if _, err := d.clientConfig(inventory.Host{Name: "x", HostName: "x"}, "x:22", nil); err == nil {
-		t.Fatal("expected error without known_hosts")
+	if _, err := d.clientConfig(inventory.Host{Name: "x", HostName: "x"}, "x:22", nil); err != nil {
+		t.Fatal(err)
 	}
 }
 

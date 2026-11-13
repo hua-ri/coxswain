@@ -23,10 +23,15 @@ import (
 )
 
 type Dialer struct {
-	Hosts       *inventory.Store // resolves ProxyJump aliases
-	KnownHosts  []string         // known_hosts files; missing files are skipped
-	DefaultKeys []string         // tried when a host lists no IdentityFile
-	AgentSocket string           // SSH_AUTH_SOCK; empty disables the agent
+	Hosts      *inventory.Store // resolves ProxyJump aliases
+	KnownHosts []string         // known_hosts files; missing files are skipped
+	// TrustFile is Coxswain's own known_hosts (~/.coxswain/known_hosts),
+	// the only file host keys are ever written to (see TrustKey). It is
+	// read like the KnownHosts files. The user's ~/.ssh files are never
+	// written.
+	TrustFile   string
+	DefaultKeys []string // tried when a host lists no IdentityFile
+	AgentSocket string   // SSH_AUTH_SOCK; empty disables the agent
 	Timeout     time.Duration
 }
 
@@ -164,16 +169,38 @@ func (d *Dialer) resolveJump(spec string) (inventory.Host, error) {
 }
 
 func (d *Dialer) dialHop(ctx context.Context, via *ssh.Client, h inventory.Host, ag agent.ExtendedAgent) (*ssh.Client, error) {
-	port := h.Port
-	if port == 0 {
-		port = 22
-	}
-	addr := net.JoinHostPort(h.HostName, strconv.Itoa(port))
+	addr := hopAddr(h)
 	cfg, err := d.clientConfig(h, addr, ag)
 	if err != nil {
 		return nil, err
 	}
+	raw, err := d.rawDial(ctx, via, addr)
+	if err != nil {
+		return nil, err
+	}
+	c, chans, reqs, err := ssh.NewClientConn(raw, addr, cfg)
+	if err != nil {
+		raw.Close()
+		return nil, explainHostKeyError(err, h)
+	}
+	raw.SetDeadline(time.Time{})
+	return ssh.NewClient(c, chans, reqs), nil
+}
+
+// hopAddr is host:port of a hop (port 22 if unset).
+func hopAddr(h inventory.Host) string {
+	port := h.Port
+	if port == 0 {
+		port = 22
+	}
+	return net.JoinHostPort(h.HostName, strconv.Itoa(port))
+}
+
+// rawDial opens the TCP connection to addr, through via if set, with the
+// handshake deadline set.
+func (d *Dialer) rawDial(ctx context.Context, via *ssh.Client, addr string) (net.Conn, error) {
 	var raw net.Conn
+	var err error
 	if via == nil {
 		nd := net.Dialer{Timeout: d.timeout()}
 		raw, err = nd.DialContext(ctx, "tcp", addr)
@@ -184,26 +211,31 @@ func (d *Dialer) dialHop(ctx context.Context, via *ssh.Client, h inventory.Host,
 		return nil, err
 	}
 	raw.SetDeadline(time.Now().Add(d.timeout()))
-	c, chans, reqs, err := ssh.NewClientConn(raw, addr, cfg)
-	if err != nil {
-		raw.Close()
-		return nil, explainHostKeyError(err, h)
-	}
-	raw.SetDeadline(time.Time{})
-	return ssh.NewClient(c, chans, reqs), nil
+	return raw, nil
 }
 
-func (d *Dialer) clientConfig(h inventory.Host, addr string, ag agent.ExtendedAgent) (*ssh.ClientConfig, error) {
+// knownFiles are the known_hosts files that exist: KnownHosts, then the
+// TrustFile (once).
+func (d *Dialer) knownFiles() []string {
 	var files []string
-	for _, f := range d.KnownHosts {
+	for _, f := range append(slices.Clone(d.KnownHosts), d.TrustFile) {
+		if f == "" || slices.Contains(files, f) {
+			continue
+		}
 		if _, err := os.Stat(f); err == nil {
 			files = append(files, f)
 		}
 	}
-	if len(files) == 0 {
-		return nil, errors.New("no known_hosts file found; connect once with plain `ssh` to record the host key")
-	}
-	db, err := knownhosts.NewDB(files...)
+	return files
+}
+
+// db loads the known host keys. Without any file, every host is unknown.
+func (d *Dialer) db() (*knownhosts.HostKeyDB, error) {
+	return knownhosts.NewDB(d.knownFiles()...)
+}
+
+func (d *Dialer) clientConfig(h inventory.Host, addr string, ag agent.ExtendedAgent) (*ssh.ClientConfig, error) {
+	db, err := d.db()
 	if err != nil {
 		return nil, err
 	}
@@ -257,9 +289,13 @@ func (d *Dialer) signers(h inventory.Host, ag agent.ExtendedAgent) func() ([]ssh
 func explainHostKeyError(err error, h inventory.Host) error {
 	switch {
 	case knownhosts.IsHostKeyChanged(err):
-		return fmt.Errorf("HOST KEY CHANGED for %s — possible man-in-the-middle, refusing to connect: %w", h.HostName, err)
+		return fmt.Errorf("HOST KEY CHANGED for %s — possible man-in-the-middle, refusing to connect. "+
+			"If the host was reinstalled, confirm its new fingerprint with whoever runs it, then remove the old key "+
+			"(cox desktop: Edit host → Test connection, or `cox ssh hosts forget_key %s`): %w", h.HostName, h.Name, err)
 	case knownhosts.IsHostUnknown(err):
-		return fmt.Errorf("host key for %s is not in known_hosts; connect once with `ssh %s` to verify and record it", h.HostName, h.Name)
+		return fmt.Errorf("host key for %s is not trusted yet: check its fingerprint and trust it in cox desktop "+
+			"(Edit host → Test connection), or with `cox ssh hosts scan_key %s` and `cox ssh hosts trust_key %s --fingerprint SHA256:…`",
+			h.HostName, h.Name, h.Name)
 	}
 	return err
 }

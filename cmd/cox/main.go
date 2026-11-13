@@ -166,9 +166,13 @@ func newEngine(coxHome, userHome string, pool func(*sshx.Dialer) *sshx.Pool) ser
 	hosts := inventory.NewStore(filepath.Join(coxHome, "hosts.json"))
 	artifacts := shaper.NewArtifacts(filepath.Join(coxHome, "artifacts"))
 	ssh := filepath.Join(userHome, ".ssh")
+	// ~/.ssh is only read. Keys the user trusts in Coxswain go to its own
+	// known_hosts, read after theirs.
+	trusted := filepath.Join(coxHome, "known_hosts")
 	dialer := &sshx.Dialer{
 		Hosts:       hosts,
-		KnownHosts:  []string{filepath.Join(ssh, "known_hosts"), filepath.Join(ssh, "known_hosts2")},
+		KnownHosts:  []string{filepath.Join(ssh, "known_hosts"), filepath.Join(ssh, "known_hosts2"), trusted},
+		TrustFile:   trusted,
 		DefaultKeys: []string{filepath.Join(ssh, "id_ed25519"), filepath.Join(ssh, "id_ecdsa"), filepath.Join(ssh, "id_rsa")},
 		AgentSocket: os.Getenv("SSH_AUTH_SOCK"),
 	}

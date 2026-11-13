@@ -131,7 +131,7 @@ func TestUnknownHostKeyIsExplained(t *testing.T) {
 	other := sshtest.Start(t) // its known_hosts does not contain srv's key
 	d := &Dialer{KnownHosts: []string{other.KnownHosts}}
 	_, err := d.Dial(context.Background(), inventory.Host{Name: "box", HostName: srv.Host, Port: srv.Port, IdentityFiles: []string{srv.KeyFile}})
-	if err == nil || !strings.Contains(err.Error(), "not in known_hosts") {
+	if err == nil || !strings.Contains(err.Error(), "not trusted yet") {
 		t.Fatalf("err = %v", err)
 	}
 }
