@@ -15,6 +15,8 @@ const EDIT_HOST = "@edit-host:";
 /** The add host and add cluster panes. */
 export const ADD_HOST = "@add-host";
 export const ADD_CLUSTER = "@add-cluster";
+/** The sync from ~/.ssh/config pane. */
+export const SYNC_HOSTS = "@sync-hosts";
 
 export interface Destination {
   id: string;
@@ -199,10 +201,4 @@ export function removeHostMessage(name: string, sessions: number, tunnels: numbe
   const first = `Remove ${name} from Coxswain? Its tags and note go with it.`;
   const open = [sessions && plural(sessions, "session"), tunnels && plural(tunnels, "tunnel")].filter(Boolean).join(" and ");
   return open ? `${first} ${open} on it stay open until you close them.` : first;
-}
-
-/** importText reports ssh.hosts.import's result. */
-export function importText(r: { path: string; added: number; updated: number }): string {
-  if (!r.added && !r.updated) return `Imported ${r.path}: no hosts in it.`;
-  return `Imported ${r.path}: ${plural(r.added, "host")} added, ${r.updated} updated.`;
 }

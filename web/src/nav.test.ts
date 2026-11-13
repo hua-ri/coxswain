@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   ACTIVITY, AGENTS, TRANSFERS, afterClose, clusterId, clusterOf, destinationFor, filesHostOf, filesId, footprint, footprintText,
   hostId, hostOf, lastAction, moveIndex, orderPlaces, placeOfWhere, revokeMessage, rowsAt, sessionCounts, visibleKinds, visit,
-  ADD_CLUSTER, ADD_HOST, editHostId, editHostOf, importText, removeHostMessage,
+  ADD_CLUSTER, ADD_HOST, editHostId, editHostOf, removeHostMessage, SYNC_HOSTS,
 } from "./nav";
 import type { Row } from "./activity";
 import { KINDS } from "./k8s";
@@ -137,7 +137,7 @@ describe("editor panes", () => {
     expect(editHostOf(editHostId("web-1"))).toBe("web-1");
     expect(editHostOf(hostId("web-1"))).toBe("");
     expect(hostOf(editHostId("web-1"))).toBe("");
-    expect([ADD_HOST, ADD_CLUSTER].every((id) => id.startsWith("@"))).toBe(true);
+    expect([ADD_HOST, ADD_CLUSTER, SYNC_HOSTS].every((id) => id.startsWith("@"))).toBe(true);
   });
 
   it("say what removing a host leaves open", () => {
@@ -147,8 +147,4 @@ describe("editor panes", () => {
     );
   });
 
-  it("summarise an import", () => {
-    expect(importText({ path: "/Users/me/.ssh/config", added: 2, updated: 1 })).toBe("Imported /Users/me/.ssh/config: 2 hosts added, 1 updated.");
-    expect(importText({ path: "~/.ssh/config", added: 0, updated: 0 })).toBe("Imported ~/.ssh/config: no hosts in it.");
-  });
 });

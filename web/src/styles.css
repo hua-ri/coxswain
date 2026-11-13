@@ -726,6 +726,10 @@ td input { font-family: var(--mono); font-size: var(--t-small); }
 .menu button.danger-text { color: var(--hazard-ink); }
 .menu button.danger-text:hover, .menu button.danger-text:focus-visible { background: var(--hazard); color: var(--on-signal); }
 .menu button:disabled { opacity: 1; color: var(--ink-3); background: none; cursor: default; }
+.menu-label { white-space: nowrap; }
+.menu button:has(.menu-detail) { flex-direction: column; align-items: flex-start; height: auto; padding: 4px var(--s2) 5px; gap: 1px; max-width: 300px; }
+.menu-detail { font-size: var(--t-small); line-height: 15px; color: var(--ink-3); white-space: normal; text-wrap: pretty; }
+.menu button:hover .menu-detail, .menu button:focus-visible .menu-detail { color: var(--on-signal); opacity: 0.85; }
 .menu-group { margin-top: var(--s1); padding-top: var(--s1); border-top: 1px solid var(--rule); }
 
 /* ---------- Editors: add/edit host, add cluster ---------- */
@@ -795,6 +799,23 @@ button.link.small-link { font-size: var(--t-small); }
 .check-actions { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; margin-top: 2px; }
 .check-actions .muted { font-size: var(--t-small); }
 
+
+/* Sync from ~/.ssh/config */
+.form-section > .caption .n { margin-left: 4px; color: var(--ink-4); font-weight: 600; }
+.sync-loading { padding: var(--s3) var(--s4); }
+.sync-list { list-style: none; margin: 0; padding: 0; max-width: 760px; }
+.sync-list > li { display: grid; grid-template-columns: 160px minmax(0, 1fr); column-gap: var(--s3); align-items: baseline; padding: 5px 0; border-top: 1px solid var(--rule-soft); }
+.sync-list > li:first-child { border-top: 0; }
+.sync-name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sync-changes { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.sync-changes li { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; min-width: 0; }
+.sync-field { color: var(--ink-3); font-size: var(--t-small); min-width: 92px; }
+.sync-changes .old { color: var(--ink-3); text-decoration: line-through; text-decoration-color: var(--ink-4); }
+.sync-changes .arrow { color: var(--ink-4); }
+.sync-conflict { display: flex; flex-direction: column; gap: 6px; }
+.sync-hint { margin: calc(-1 * var(--s2)) 0 var(--s2); }
+.sync-unchanged { margin-top: var(--s1); color: var(--ink-2); font-size: var(--t-small); max-width: 92ch; }
+button.link.disclose { padding-left: 0; }
 
 /* ---------- Kubernetes: kinds | list | detail ---------- */
 

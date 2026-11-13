@@ -164,6 +164,7 @@ export function PaneHeader({ title, icon, meta, children }: { title: ReactNode; 
 
 export interface MenuItem {
   label: string;
+  detail?: string; // a second line saying what it does
   onSelect(): void;
   danger?: boolean;
   disabled?: boolean;
@@ -207,7 +208,7 @@ export function Menu({ at, items, label, onClose }: { at: { x: number; y: number
   };
   // Keep the menu inside the window.
   const x = Math.min(at.x, window.innerWidth - 220);
-  const y = Math.min(at.y, window.innerHeight - 24 - items.length * 26);
+  const y = Math.min(at.y, window.innerHeight - 24 - items.reduce((n, it) => n + (it.detail ? 44 : 26), 0));
   return (
     <div className="menu" role="menu" aria-label={label} ref={box} style={{ left: x, top: y }} onKeyDown={onKey}>
       {items.map((it) => (
@@ -217,7 +218,8 @@ export function Menu({ at, items, label, onClose }: { at: { x: number; y: number
               close.current();
               it.onSelect();
             }}>
-            {it.label}
+            <span className="menu-label">{it.label}</span>
+            {it.detail && <span className="menu-detail">{it.detail}</span>}
           </button>
         </div>
       ))}

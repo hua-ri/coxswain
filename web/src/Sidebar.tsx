@@ -140,7 +140,8 @@ export function Sidebar(p: Props) {
   const hostsMenu = (e: ReactMouseEvent<HTMLButtonElement>) =>
     setMenu({ at: below(e), label: "Add hosts", items: [
       { label: "Add host…", onSelect: p.onAddHost },
-      { label: "Import ~/.ssh/config", onSelect: p.onImportHosts },
+      { label: "Sync from ~/.ssh/config…", onSelect: p.onImportHosts,
+        detail: "Adds hosts from your ssh config and refreshes their addresses. Never changes ~/.ssh/config, keeps Coxswain tags and notes." },
     ] });
   const contextMenu = (items: MenuItem[], label: string) => (e: ReactMouseEvent) => {
     e.preventDefault();
@@ -271,7 +272,7 @@ export function Sidebar(p: Props) {
               <p>No hosts yet.</p>
               <p className="src-empty-actions">
                 <button className="link" onClick={p.onAddHost}>Add a host…</button>
-                <button className="link" onClick={p.onImportHosts}>Import ~/.ssh/config</button>
+                <button className="link" onClick={p.onImportHosts}>Sync from ~/.ssh/config…</button>
               </p>
             </div>
           )}

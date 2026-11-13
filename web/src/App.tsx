@@ -9,10 +9,12 @@ import { isProdTags, prodWhere } from "./env";
 import { AgentsView } from "./AgentsView";
 import { HostView } from "./HostView";
 import { HostEditor } from "./HostEditor";
+import { SyncView } from "./SyncView";
+import { syncSummary, type ImportOutput } from "./sync";
 import { ClusterEditor } from "./ClusterEditor";
 import {
   ACTIVITY, ADD_CLUSTER, ADD_HOST, AGENTS, TRANSFERS, TUNNELS, afterClose, clusterOf, destinationFor, editHostId, editHostOf,
-  filesHostOf, filesId, footprint, hostId, hostOf, importText, placeOfWhere, removeHostMessage, revokeMessage, rowsAt, visit,
+  filesHostOf, filesId, footprint, hostId, hostOf, placeOfWhere, SYNC_HOSTS, removeHostMessage, revokeMessage, rowsAt, visit,
 } from "./nav";
 import { reloadsContexts, reloadsHosts } from "./sidetree";
 import { HazardBand, Message, PaneHeader, type MenuItem } from "./ui";
@@ -182,7 +184,7 @@ function Desktop({ cox }: { cox: Cox }) {
   const exists = useRef<(id: string) => boolean>(() => true);
   exists.current = (id: string) => {
     if ([ACTIVITY, TRANSFERS, TUNNELS, AGENTS].includes(id)) return true;
-    if (id === ADD_HOST || id === ADD_CLUSTER || editHostOf(id)) return false; // forms are not returned to
+    if (id === ADD_HOST || id === ADD_CLUSTER || id === SYNC_HOSTS || editHostOf(id)) return false; // forms are not returned to
     if (hostOf(id)) return hosts.some((h) => h.name === hostOf(id));
     if (filesHostOf(id)) return browsers.includes(filesHostOf(id));
     if (clusterOf(id)) return clusters.includes(clusterOf(id));
@@ -301,15 +303,10 @@ function Desktop({ cox }: { cox: Cox }) {
     await loadContexts().catch(report);
     openCluster(name);
   };
-  const importHosts = async () => {
-    try {
-      const out = await cox.invoke<{ path: string; added: number; updated: number }>("ssh.hosts.import");
-      if (out.status !== "ok" || !out.result) throw new Error([out.error, out.hint].filter(Boolean).join(" — "));
-      setNotice(importText(out.result));
-      await loadHosts();
-    } catch (e) {
-      report(e);
-    }
+  const synced = async (r: ImportOutput) => {
+    setNotice(syncSummary(r));
+    await loadHosts().catch(report);
+    leave(SYNC_HOSTS);
   };
   const removeHost = async (h: Host) => {
     setRemovingHost(null);
@@ -411,7 +408,7 @@ function Desktop({ cox }: { cox: Cox }) {
           onOpenTerminal={openTerminal}
           onCloseSession={closeSession}
           onAddHost={() => setActive(ADD_HOST)}
-          onImportHosts={() => void importHosts()}
+          onImportHosts={() => setActive(SYNC_HOSTS)}
           onAddCluster={() => setActive(ADD_CLUSTER)}
           hostMenu={hostMenu}
           clusterMenu={clusterMenu}
@@ -450,6 +447,7 @@ function Desktop({ cox }: { cox: Cox }) {
             <HostEditor key={editedHost.name} cox={cox} hosts={hosts} original={editedHost} onSaved={(n) => void hostSaved(n)}
               onCancel={() => setActive(hostId(editedHost.name))} onRemove={() => setRemovingHost(editedHost)} />
           )}
+          {active === SYNC_HOSTS && <SyncView cox={cox} onDone={(r) => void synced(r)} onCancel={() => leave(SYNC_HOSTS)} />}
           {active === ADD_CLUSTER && (
             <ClusterEditor cox={cox} contexts={contexts} kubeconfig={kubeconfigFiles} onSaved={(n) => void clusterSaved(n)}
               onCancel={() => leave(ADD_CLUSTER)} />
