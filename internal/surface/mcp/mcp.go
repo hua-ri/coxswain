@@ -14,7 +14,7 @@ import (
 )
 
 const instructions = `Coxswain (cox) gives you the user's ops tools: SSH hosts, remote commands, shared terminals, files,
-tunnels and Kubernetes clusters.
+tunnels, Kubernetes clusters, Argo CD and Argo Workflows.
 - Start with ssh_hosts_list to see hosts, their tags and notes. Respect host notes.
 - Use ssh_exec for one-off commands. For long-running work or work the user should watch, open a shared
   terminal (terminal_open, terminal_send, terminal_read); the user sees it and can type in it too.
@@ -28,8 +28,15 @@ tunnels and Kubernetes clusters.
   in a container. Secret values are never shown. Changes: k8s_apply (run it with dry_run first and show the
   diff), k8s_delete, k8s_scale, k8s_rollout. k8s_port_forward opens a tunnel to a pod or service (close it with
   tunnel_close). terminal_open with pod {context, namespace, pod, container} opens a shared shell in a pod.
-- Hosts and contexts tagged env=prod are production: confirm with the user before changing them.
-- You never handle credentials; never ask the user for passwords or keys.
+- Argo CD: argocd_instances lists the servers; argocd_apps, then argocd_diagnose for an unhealthy or out-of-sync app
+  (argocd_diff, argocd_tree, argocd_logs, argocd_events for detail). argocd_sync with dry_run first; prune and
+  rollback are destructive. Argo Workflows: argowf_list, argowf_diagnose for a failed run (before argowf_retry),
+  argowf_logs for a step, argowf_templates then argowf_submit to run one.
+- Argo logins: if a call says an instance needs login, run argocd_login_methods / argowf_login_methods and let the
+  user choose. Prefer method browser (the user finishes it in their browser) or ask the user to log in in Coxswain;
+  pass a password or token only if the user gives you one for that purpose. Credentials are never shown back.
+- Hosts, contexts and instances tagged env=prod are production: confirm with the user before changing them.
+- Never ask the user for SSH passwords or keys.
 - Large outputs are truncated; read more with artifact_read.`
 
 // ToolName maps an Action ID to an MCP tool name.

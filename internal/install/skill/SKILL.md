@@ -1,6 +1,6 @@
 ---
 name: cox
-description: Operate the user's servers through Coxswain (cox) — list SSH hosts, run commands on one or many of them, browse and transfer files, open tunnels, use shared terminals the user can watch, read large outputs. Use for any server inspection or ops task instead of raw ssh.
+description: Operate the user's servers through Coxswain (cox) — list SSH hosts, run commands on one or many of them, browse and transfer files, open tunnels, use shared terminals the user can watch, Kubernetes, Argo CD applications and Argo Workflows, read large outputs. Use for any server, cluster or deployment task instead of raw ssh, kubectl, argocd or argo.
 ---
 
 # Coxswain (cox)
@@ -53,6 +53,42 @@ Prefer the MCP tools when they are available:
 - Kubernetes clusters (`k8s_clusters_add` and friends) carry credentials: only the user adds or
   removes them, in cox desktop (Clusters → +) or with `cox k8s clusters add`. Never edit the
   user's kubeconfig yourself.
+
+### Argo CD and Argo Workflows
+
+Coxswain talks to Argo CD and Argo Workflows servers ("instances") through their official APIs.
+`argocd_instances` / `argowf_instances` list them with tags, notes and login state.
+
+| Tool | Use |
+|---|---|
+| `argocd_apps` | applications with sync and health (`only_issues=true` for the broken ones) |
+| `argocd_diagnose` | why an app is Degraded or OutOfSync: conditions, failed sync, unhealthy pods with events and log tails |
+| `argocd_app` / `argocd_tree` / `argocd_diff` | detail and history / live resources / Git vs cluster (Secret values redacted) |
+| `argocd_logs` / `argocd_events` | pod or workload logs (`previous=true` after a crash) / events |
+| `argocd_refresh` / `argocd_sync` / `argocd_rollback` / `argocd_terminate` | compare again / deploy / roll back to a history id / stop a sync |
+| `argowf_list` / `argowf_get` | workflows with phase and duration / one workflow's steps |
+| `argowf_diagnose` | why a workflow failed and whether a retry would help |
+| `argowf_logs` | a step's logs (node id, step name or pod name) |
+| `argowf_templates` / `argowf_submit` | templates with their parameters / run one |
+| `argowf_retry` / `argowf_resubmit` / `argowf_suspend` / `argowf_resume` / `argowf_stop` / `argowf_terminate` | control a run |
+
+- Diagnose before acting: `argocd_diagnose` before a sync or rollback, `argowf_diagnose` before a retry.
+- `argocd_sync`: run `dry_run=true` first and tell the user what it would change. `prune=true` deletes
+  resources; only use it when the user wants that. Rollback needs auto-sync off; ask the user to turn it off.
+- A deterministic failure (bad exit code, OOM) fails again on retry: fix the cause, or tell the user.
+- Instances can be added with `argo_add` (`kind` argocd or argowf, `name`, `url`; Workflows also a
+  `namespace`). Add or change them when the user asks.
+
+**Logging in.** When a call says an instance needs login, run `argocd_login_methods` /
+`argowf_login_methods` and offer the methods to the user; they choose.
+
+- `browser` (Argo CD with SSO): `argocd_login` opens the browser on the user's Mac and waits up to
+  5 minutes. Tell the user to finish the login there.
+- `password` / `token`: passing one through you puts it in your context. Prefer asking the user to log
+  in in Coxswain (desktop or `cox argocd login`), and use a password or token only when the user gives
+  you one for that purpose. Never ask for one otherwise, and never repeat it.
+- Coxswain never shows credentials back, not even to you; `*_instances` shows only who you are logged
+  in as and until when.
 
 ### `ssh_exec` or a terminal?
 
@@ -119,13 +155,16 @@ cox -o json terminal open <host>
 cox -o json terminal send <terminal-id> <command>
 cox -o json terminal read <terminal-id> --lines 50
 cox -o json artifact read <artifact-id> --grep ERROR
+cox -o json argocd apps --only-issues
+cox -o json argocd diagnose <app>
+cox -o json argowf diagnose <workflow>
 ```
 
 ## Rules
 
 1. Look before you act: list hosts, read the host note, inspect state with read-only commands first.
 2. A host note can forbid things ("no restarts during business hours"). Follow it; if it blocks the task, tell the user.
-3. Hosts tagged `env=prod` are production: confirm with the user before changing anything on them.
+3. Hosts, clusters and Argo instances tagged `env=prod` are production: confirm with the user before changing anything on them.
 4. If a tool says `client_not_authorized`, the user has not allowed you to use Coxswain. Tell them;
    do not try to reach the servers another way.
 5. Use `sudo -n`, never a password prompt. Do not start interactive programs or `tail -f` with
