@@ -13,6 +13,7 @@ export interface ContextInfo {
   note?: string;
   inherited_from?: string[];
   own_tags?: Record<string, string>; // present (if any) when inherited_from is
+  source?: "kubeconfig" | "coxswain"; // the user's kubeconfig (read-only) or added in Coxswain
 }
 
 export interface ContextsOutput {

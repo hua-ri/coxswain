@@ -88,3 +88,16 @@ export function toggleFolded(folded: Set<string>, key: string, storage: Pick<Sto
   }
   return next;
 }
+
+const HOST_CHANGES = ["ssh.hosts.add", "ssh.hosts.update", "ssh.hosts.remove", "ssh.hosts.import", "ssh.hosts.tag"];
+const CONTEXT_CHANGES = ["k8s.clusters.add", "k8s.clusters.remove", "k8s.contexts.tag"];
+
+/** reloadsHosts: a finished action changed the saved hosts (from any client), so the Hosts section reloads. */
+export function reloadsHosts(action: string | undefined): boolean {
+  return HOST_CHANGES.includes(action ?? "");
+}
+
+/** reloadsContexts: a finished action changed the cluster list or its tags. */
+export function reloadsContexts(action: string | undefined): boolean {
+  return CONTEXT_CHANGES.includes(action ?? "");
+}

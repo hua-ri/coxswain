@@ -8,11 +8,14 @@ import { Confirm } from "./Confirm";
 import { isProdTags, prodWhere } from "./env";
 import { AgentsView } from "./AgentsView";
 import { HostView } from "./HostView";
+import { HostEditor } from "./HostEditor";
+import { ClusterEditor } from "./ClusterEditor";
 import {
-  ACTIVITY, AGENTS, TRANSFERS, TUNNELS, afterClose, clusterOf, destinationFor, filesHostOf, filesId, footprint, hostOf,
-  placeOfWhere, revokeMessage, rowsAt, visit,
+  ACTIVITY, ADD_CLUSTER, ADD_HOST, AGENTS, TRANSFERS, TUNNELS, afterClose, clusterOf, destinationFor, editHostId, editHostOf,
+  filesHostOf, filesId, footprint, hostId, hostOf, importText, placeOfWhere, removeHostMessage, revokeMessage, rowsAt, visit,
 } from "./nav";
-import { HazardBand, PaneHeader } from "./ui";
+import { reloadsContexts, reloadsHosts } from "./sidetree";
+import { HazardBand, Message, PaneHeader, type MenuItem } from "./ui";
 import { FileBrowser } from "./FileBrowser";
 import { actionError, isProdContext, k8sTab, terminalRequest, type ContextInfo, type ContextsOutput } from "./k8s";
 import { K8sView, type PodRef } from "./K8sView";
@@ -56,6 +59,10 @@ function Desktop({ cox }: { cox: Cox }) {
   const [now, setNow] = useState(Date.now());
   const [contexts, setContexts] = useState<ContextInfo[]>([]);
   const [contextsError, setContextsError] = useState("");
+  const [kubeconfigFiles, setKubeconfigFiles] = useState<string[]>([]);
+  const [notice, setNotice] = useState("");
+  const [removingHost, setRemovingHost] = useState<Host | null>(null);
+  const [removingCluster, setRemovingCluster] = useState<ContextInfo | null>(null);
   const [clusters, setClusters] = useState<string[]>([]); // contexts opened in this window (their browsers stay mounted)
   const [kinds, setKinds] = useState<Record<string, string>>({}); // each cluster's listed kind
   const [revoking, setRevoking] = useState("");
@@ -92,6 +99,7 @@ function Desktop({ cox }: { cox: Cox }) {
     }
     setContextsError("");
     setContexts(out.result?.contexts ?? []);
+    setKubeconfigFiles(out.result?.kubeconfig ?? []);
   }, [cox]);
   const loadAll = useCallback(() => {
     loadContexts().catch(report);
@@ -142,10 +150,8 @@ function Desktop({ cox }: { cox: Cox }) {
           const id = ev.args?.id;
           if (typeof id === "string") dispatch({ type: "typing", id, until: Date.now() + TYPING_MS });
         }
-        if (ev.type === "action.finished" && ev.action?.startsWith("ssh.hosts.") && ev.action !== "ssh.hosts.list") {
-          loadHosts().catch(report);
-        }
-        if (ev.type === "action.finished" && ev.action === "k8s.contexts.tag") loadContexts().catch(report);
+        if (ev.type === "action.finished" && reloadsHosts(ev.action)) loadHosts().catch(report);
+        if (ev.type === "action.finished" && reloadsContexts(ev.action)) loadContexts().catch(report);
       })
       .then((s) => (cancelled ? s() : (stop = s)), report);
     return () => {
@@ -176,6 +182,7 @@ function Desktop({ cox }: { cox: Cox }) {
   const exists = useRef<(id: string) => boolean>(() => true);
   exists.current = (id: string) => {
     if ([ACTIVITY, TRANSFERS, TUNNELS, AGENTS].includes(id)) return true;
+    if (id === ADD_HOST || id === ADD_CLUSTER || editHostOf(id)) return false; // forms are not returned to
     if (hostOf(id)) return hosts.some((h) => h.name === hostOf(id));
     if (filesHostOf(id)) return browsers.includes(filesHostOf(id));
     if (clusterOf(id)) return clusters.includes(clusterOf(id));
@@ -286,6 +293,53 @@ function Desktop({ cox }: { cox: Cox }) {
       .catch(report);
   };
 
+  const hostSaved = async (name: string) => {
+    await loadHosts().catch(report);
+    setActive(hostId(name));
+  };
+  const clusterSaved = async (name: string) => {
+    await loadContexts().catch(report);
+    openCluster(name);
+  };
+  const importHosts = async () => {
+    try {
+      const out = await cox.invoke<{ path: string; added: number; updated: number }>("ssh.hosts.import");
+      if (out.status !== "ok" || !out.result) throw new Error([out.error, out.hint].filter(Boolean).join(" — "));
+      setNotice(importText(out.result));
+      await loadHosts();
+    } catch (e) {
+      report(e);
+    }
+  };
+  const removeHost = async (h: Host) => {
+    setRemovingHost(null);
+    const out = await cox.invoke("ssh.hosts.remove", { name: h.name }).catch((e) => ({ status: "error" as const, error: String(e) }));
+    if (out.status !== "ok") return report(new Error(out.error));
+    leave(hostId(h.name));
+    leave(editHostId(h.name));
+    await loadHosts().catch(report);
+  };
+  const removeCluster = async (c: ContextInfo) => {
+    setRemovingCluster(null);
+    const out = await cox.invoke("k8s.clusters.remove", { context: c.name }).catch((e) => ({ status: "error" as const, error: String(e) }));
+    if (out.status !== "ok") return report(new Error(out.error));
+    leave(k8sTab(c.name));
+    setClusters((list) => list.filter((x) => x !== c.name));
+    await loadContexts().catch(report);
+  };
+  const hostMenu = (h: Host): MenuItem[] => [
+    { label: "Open terminal", onSelect: () => openTerminal(h.name) },
+    { label: "Files", onSelect: () => openFiles(h.name) },
+    { label: "Edit…", onSelect: () => setActive(editHostId(h.name)), separatorBefore: true },
+    { label: "Remove…", onSelect: () => setRemovingHost(h), danger: true },
+  ];
+  const clusterMenu = (c: ContextInfo): MenuItem[] => [
+    { label: "Open", onSelect: () => openCluster(c.name) },
+    c.source === "coxswain"
+      ? { label: "Remove…", onSelect: () => setRemovingCluster(c), danger: true, separatorBefore: true }
+      : { label: "From your kubeconfig (read-only)", onSelect: () => {}, disabled: true, separatorBefore: true },
+  ];
+
   const agents = clients.filter((c) => !c.revoked).length;
   const hostProd = (h: string) => isProdTags(hosts.find((x) => x.name === h)?.tags);
   const ctxProd = (c: string) => {
@@ -317,6 +371,11 @@ function Desktop({ cox }: { cox: Cox }) {
     if (filesHostOf(id)) closeFiles(filesHostOf(id));
   };
   const selectedHost = hosts.find((h) => h.name === hostOf(active));
+  const editedHost = hosts.find((h) => h.name === editHostOf(active));
+  const openOn = (name: string) => ({
+    sessions: sessions.filter((x) => !x.closed && placeOfWhere(x.where).kind === "host" && x.where === name).length,
+    tunnels: tunnels.filter((t) => t.type !== "k8s" && t.host === name).length,
+  });
   const footprintOf = (name: string) => footprint(name, tabs, tunnels, transfers);
 
   return (
@@ -335,6 +394,7 @@ function Desktop({ cox }: { cox: Cox }) {
           </button>
         </div>
       )}
+      {notice && <Message kind="notice" onDismiss={() => setNotice("")}>{notice}</Message>}
       <div className="main">
         <Sidebar
           active={active}
@@ -350,6 +410,11 @@ function Desktop({ cox }: { cox: Cox }) {
           onKind={chooseKind}
           onOpenTerminal={openTerminal}
           onCloseSession={closeSession}
+          onAddHost={() => setActive(ADD_HOST)}
+          onImportHosts={() => void importHosts()}
+          onAddCluster={() => setActive(ADD_CLUSTER)}
+          hostMenu={hostMenu}
+          clusterMenu={clusterMenu}
         />
         <section className="content">
           <div className="pane" style={{ display: active === ACTIVITY ? "flex" : "none" }}>
@@ -375,7 +440,19 @@ function Desktop({ cox }: { cox: Cox }) {
               tunnels={tunnels.filter((t) => t.type !== "k8s" && t.host === selectedHost.name)}
               rows={rowsAt(rows, selectedHost.name, 12)}
               onTerminal={() => openTerminal(selectedHost.name)} onFiles={() => openFiles(selectedHost.name)}
-              onSelect={select} onTunnels={() => setActive(TUNNELS)} />
+              onSelect={select} onTunnels={() => setActive(TUNNELS)}
+              onEdit={() => setActive(editHostId(selectedHost.name))} onRemove={() => setRemovingHost(selectedHost)} />
+          )}
+          {active === ADD_HOST && (
+            <HostEditor cox={cox} hosts={hosts} onSaved={(n) => void hostSaved(n)} onCancel={() => leave(ADD_HOST)} />
+          )}
+          {editedHost && (
+            <HostEditor key={editedHost.name} cox={cox} hosts={hosts} original={editedHost} onSaved={(n) => void hostSaved(n)}
+              onCancel={() => setActive(hostId(editedHost.name))} onRemove={() => setRemovingHost(editedHost)} />
+          )}
+          {active === ADD_CLUSTER && (
+            <ClusterEditor cox={cox} contexts={contexts} kubeconfig={kubeconfigFiles} onSaved={(n) => void clusterSaved(n)}
+              onCancel={() => leave(ADD_CLUSTER)} />
           )}
           {browsers.map((h) => (
             <FileBrowser key={h} cox={cox} host={h} prod={hostProd(h)} note={hosts.find((x) => x.name === h)?.note} active={active === filesId(h)}
@@ -385,7 +462,8 @@ function Desktop({ cox }: { cox: Cox }) {
             const info = contexts.find((x) => x.name === c) ?? { name: c, cluster: "", namespace: "default" };
             return (
               <K8sView key={c} cox={cox} context={info} active={active === k8sTab(c)} kind={kinds[c] ?? "pods"}
-                onOpenTerminal={openPodTerminal} onForward={forward} />
+                onOpenTerminal={openPodTerminal} onForward={forward}
+                onRemove={info.source === "coxswain" ? () => setRemovingCluster(info) : undefined} />
             );
           })}
           {tabs.map((t) => (
@@ -429,6 +507,24 @@ function Desktop({ cox }: { cox: Cox }) {
             setRevoking("");
           }}
           onNo={() => setRevoking("")}
+        />
+      )}
+      {removingHost && (
+        <Confirm
+          message={removeHostMessage(removingHost.name, openOn(removingHost.name).sessions, openOn(removingHost.name).tunnels)}
+          confirm="Remove host"
+          band={band(isProdTags(removingHost.tags), removingHost.name)}
+          onYes={() => void removeHost(removingHost)}
+          onNo={() => setRemovingHost(null)}
+        />
+      )}
+      {removingCluster && (
+        <Confirm
+          message={`Remove ${removingCluster.name} from Coxswain? Its stored kubeconfig, tags and note are deleted. Your own kubeconfig is not touched.`}
+          confirm="Remove cluster"
+          band={band(isProdContext(removingCluster), removingCluster.name)}
+          onYes={() => void removeCluster(removingCluster)}
+          onNo={() => setRemovingCluster(null)}
         />
       )}
       {closingTunnel && (

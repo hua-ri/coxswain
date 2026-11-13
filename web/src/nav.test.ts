@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   ACTIVITY, AGENTS, TRANSFERS, afterClose, clusterId, clusterOf, destinationFor, filesHostOf, filesId, footprint, footprintText,
   hostId, hostOf, lastAction, moveIndex, orderPlaces, placeOfWhere, revokeMessage, rowsAt, sessionCounts, visibleKinds, visit,
+  ADD_CLUSTER, ADD_HOST, editHostId, editHostOf, importText, removeHostMessage,
 } from "./nav";
 import type { Row } from "./activity";
 import { KINDS } from "./k8s";
@@ -127,5 +128,27 @@ describe("visibleKinds", () => {
     expect(v).toContain("secrets");
     expect(v).not.toContain("configmaps");
     expect(visibleKinds(KINDS, true, "pods")).toHaveLength(KINDS.length);
+  });
+});
+
+describe("editor panes", () => {
+  it("have their own ids", () => {
+    expect(editHostId("web-1")).toBe("@edit-host:web-1");
+    expect(editHostOf(editHostId("web-1"))).toBe("web-1");
+    expect(editHostOf(hostId("web-1"))).toBe("");
+    expect(hostOf(editHostId("web-1"))).toBe("");
+    expect([ADD_HOST, ADD_CLUSTER].every((id) => id.startsWith("@"))).toBe(true);
+  });
+
+  it("say what removing a host leaves open", () => {
+    expect(removeHostMessage("web-1", 0, 0)).toBe("Remove web-1 from Coxswain? Its tags and note go with it.");
+    expect(removeHostMessage("web-1", 2, 1)).toBe(
+      "Remove web-1 from Coxswain? Its tags and note go with it. 2 sessions and 1 tunnel on it stay open until you close them.",
+    );
+  });
+
+  it("summarise an import", () => {
+    expect(importText({ path: "/Users/me/.ssh/config", added: 2, updated: 1 })).toBe("Imported /Users/me/.ssh/config: 2 hosts added, 1 updated.");
+    expect(importText({ path: "~/.ssh/config", added: 0, updated: 0 })).toBe("Imported ~/.ssh/config: no hosts in it.");
   });
 });

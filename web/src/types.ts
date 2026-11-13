@@ -6,8 +6,10 @@ export interface Host {
   port?: number;
   user?: string;
   proxy_jump?: string;
+  identity_files?: string[];
   tags?: Record<string, string>;
   note?: string;
+  source?: "ssh_config" | "manual";
 }
 
 export interface ClientInfo {

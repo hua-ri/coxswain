@@ -11,6 +11,10 @@ export const TUNNELS = "@tunnels";
 export const AGENTS = "@agents";
 const HOST = "@host:";
 const FILES = "@files:";
+const EDIT_HOST = "@edit-host:";
+/** The add host and add cluster panes. */
+export const ADD_HOST = "@add-host";
+export const ADD_CLUSTER = "@add-cluster";
 
 export interface Destination {
   id: string;
@@ -34,6 +38,8 @@ export const clusterId = k8sTab;
 export const hostOf = (id: string) => (id.startsWith(HOST) ? id.slice(HOST.length) : "");
 export const filesHostOf = (id: string) => (id.startsWith(FILES) ? id.slice(FILES.length) : "");
 export const clusterOf = contextFromTab;
+export const editHostId = (name: string) => EDIT_HOST + name;
+export const editHostOf = (id: string) => (id.startsWith(EDIT_HOST) ? id.slice(EDIT_HOST.length) : "");
 
 /** destinationFor is the destination a ⌘-digit selects, or "". */
 export function destinationFor(e: { key: string; metaKey: boolean; ctrlKey?: boolean; altKey?: boolean; shiftKey?: boolean }): string {
@@ -186,4 +192,17 @@ const COMMON_KINDS = ["pods", "deployments", "statefulsets", "daemonsets", "jobs
 export function visibleKinds<T extends { kind: string }>(all: T[], expanded: boolean, current: string): T[] {
   if (expanded) return all;
   return all.filter((k) => COMMON_KINDS.includes(k.kind) || k.kind === current);
+}
+
+/** removeHostMessage is the confirmation text for removing a host; what is open on it stays. */
+export function removeHostMessage(name: string, sessions: number, tunnels: number): string {
+  const first = `Remove ${name} from Coxswain? Its tags and note go with it.`;
+  const open = [sessions && plural(sessions, "session"), tunnels && plural(tunnels, "tunnel")].filter(Boolean).join(" and ");
+  return open ? `${first} ${open} on it stay open until you close them.` : first;
+}
+
+/** importText reports ssh.hosts.import's result. */
+export function importText(r: { path: string; added: number; updated: number }): string {
+  if (!r.added && !r.updated) return `Imported ${r.path}: no hosts in it.`;
+  return `Imported ${r.path}: ${plural(r.added, "host")} added, ${r.updated} updated.`;
 }

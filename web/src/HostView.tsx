@@ -17,6 +17,8 @@ interface Props {
   onFiles(): void;
   onSelect(id: string): void;
   onTunnels(): void;
+  onEdit(): void;
+  onRemove(): void;
 }
 
 function time(iso: string): string {
@@ -40,7 +42,7 @@ function outcome(r: Row): string {
 }
 
 /** HostView is a host's page: where it is, what is open there, and what happened there. */
-export function HostView({ host, prod, active, sessions, tunnels, rows, onTerminal, onFiles, onSelect, onTunnels }: Props) {
+export function HostView({ host, prod, active, sessions, tunnels, rows, onTerminal, onFiles, onSelect, onTunnels, onEdit, onRemove }: Props) {
   return (
     <div className="pane host-page" style={{ display: active ? "flex" : "none" }}>
       {prod && <HazardBand env="env=prod" where={host.name} note={host.note} />}
@@ -51,11 +53,16 @@ export function HostView({ host, prod, active, sessions, tunnels, rows, onTermin
         <button className="small" onClick={onFiles}>
           <Icon name="files" /> Files
         </button>
+        <span className="head-sep" aria-hidden="true" />
+        <button className="small ghost" onClick={onEdit}>Edit</button>
+        <button className="small ghost danger-text remove" onClick={onRemove}>Remove…</button>
       </PaneHeader>
       <div className="host-body">
         <dl className="facts">
           <dt>Address</dt>
           <dd className="mono">{address(host)}{!host.port || host.port === 22 ? ":22" : ""}</dd>
+          <dt>Keys</dt>
+          <dd className="mono">{host.identity_files?.length ? host.identity_files.join(", ") : <span className="muted">ssh-agent and default keys</span>}</dd>
           {host.proxy_jump && (
             <>
               <dt>Jump host</dt>

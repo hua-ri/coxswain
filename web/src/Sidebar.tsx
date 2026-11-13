@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { KINDS, type ContextInfo } from "./k8s";
 import { APPLY, DESTINATIONS, TRANSFERS, TUNNELS, AGENTS, clusterId, hostId, moveIndex, sessionCounts, visibleKinds, type Session } from "./nav";
 import { contextIsProd, envOfContext, envOfHost, hostTitle, loadFolded, sortedContexts, sortedHosts, toggleFolded } from "./sidetree";
 import { Icon } from "./icons";
 import { address, type Host } from "./types";
+import { Menu, type MenuItem } from "./ui";
 
 /** An open session as the sidebar shows it. */
 export interface SideSession extends Session {
@@ -26,7 +27,14 @@ interface Props {
   onKind(context: string, kind: string): void;
   onOpenTerminal(host: string): void;
   onCloseSession(id: string): void;
+  onAddHost(): void;
+  onImportHosts(): void;
+  onAddCluster(): void;
+  hostMenu(host: Host): MenuItem[]; // a host row's context menu
+  clusterMenu(context: ContextInfo): MenuItem[];
 }
+
+type OpenMenu = { at: { x: number; y: number }; items: MenuItem[]; label: string };
 
 const storage = typeof window !== "undefined" ? window.localStorage : undefined;
 
@@ -65,6 +73,7 @@ function Row(props: {
   className?: string;
   onSelect(): void;
   onDoubleClick?(): void;
+  onContextMenu?(e: ReactMouseEvent): void;
   onClose?(): void;
   closeLabel?: string;
   expanded?: boolean;
@@ -76,7 +85,7 @@ function Row(props: {
     <li className={cls}>
       <button className="row-btn" data-nav={props.id} tabIndex={sel ? 0 : -1} title={props.title}
         aria-current={sel ? "page" : undefined} aria-expanded={props.expanded}
-        onClick={props.onSelect} onDoubleClick={props.onDoubleClick}>
+        onClick={props.onSelect} onDoubleClick={props.onDoubleClick} onContextMenu={props.onContextMenu}>
         {props.icon && <Icon name={props.icon} />}
         <span className="row-label"><span className="row-text">{props.label}</span>{props.after}</span>
         {props.tail && <span className="row-tail">{props.tail}</span>}
@@ -90,17 +99,31 @@ function Row(props: {
   );
 }
 
-/** Section is a foldable block with a sentence-case header. */
-function Section(props: { id: string; title: string; count?: number; folded: Set<string>; onToggle(id: string): void; children: ReactNode }) {
+/** Section is a foldable block with a sentence-case header, and optionally a "+" that adds to it. */
+function Section(props: {
+  id: string;
+  title: string;
+  count?: number;
+  folded: Set<string>;
+  onToggle(id: string): void;
+  add?: { label: string; onClick(e: ReactMouseEvent<HTMLButtonElement>): void; menu?: boolean };
+  children: ReactNode;
+}) {
   const open = !props.folded.has(props.id);
   return (
     <section className="src-section" aria-label={props.title}>
-      <h3 className="src-head">
+      <h3 className={props.add ? "src-head with-add" : "src-head"}>
         <button className="src-toggle" data-nav={"@section:" + props.id} tabIndex={-1} aria-expanded={open} onClick={() => props.onToggle(props.id)}>
           <span>{props.title}</span>
           <Chevron open={open} />
           {props.count !== undefined && <span className="n">{props.count}</span>}
         </button>
+        {props.add && (
+          <button className="src-add" data-nav={"@add:" + props.id} tabIndex={-1} aria-label={props.add.label} title={props.add.label}
+            aria-haspopup={props.add.menu ? "menu" : undefined} onClick={props.add.onClick}>
+            <Icon name="plus" />
+          </button>
+        )}
       </h3>
       {open && props.children}
     </section>
@@ -109,6 +132,20 @@ function Section(props: { id: string; title: string; count?: number; folded: Set
 
 export function Sidebar(p: Props) {
   const [filter, setFilter] = useState("");
+  const [menu, setMenu] = useState<OpenMenu | null>(null);
+  const below = (e: ReactMouseEvent<HTMLElement>) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    return { x: r.left, y: r.bottom + 2 };
+  };
+  const hostsMenu = (e: ReactMouseEvent<HTMLButtonElement>) =>
+    setMenu({ at: below(e), label: "Add hosts", items: [
+      { label: "Add host…", onSelect: p.onAddHost },
+      { label: "Import ~/.ssh/config", onSelect: p.onImportHosts },
+    ] });
+  const contextMenu = (items: MenuItem[], label: string) => (e: ReactMouseEvent) => {
+    e.preventDefault();
+    setMenu({ at: { x: e.clientX, y: e.clientY }, items, label });
+  };
   const [folded, setFolded] = useState(() => loadFolded(storage));
   const toggle = (id: string) => setFolded((f) => toggleFolded(f, id, storage));
   const input = useRef<HTMLInputElement>(null);
@@ -227,8 +264,17 @@ export function Sidebar(p: Props) {
           </Section>
         )}
 
-        <Section id="hosts" title="Hosts" count={filtering ? hosts.length : p.hosts.length} folded={folded} onToggle={toggle}>
-          {p.hosts.length === 0 && <p className="src-empty">No hosts yet. Run cox init or cox ssh hosts import.</p>}
+        <Section id="hosts" title="Hosts" count={filtering ? hosts.length : p.hosts.length} folded={folded} onToggle={toggle}
+          add={{ label: "Add a host", onClick: hostsMenu, menu: true }}>
+          {p.hosts.length === 0 && (
+            <div className="src-empty">
+              <p>No hosts yet.</p>
+              <p className="src-empty-actions">
+                <button className="link" onClick={p.onAddHost}>Add a host…</button>
+                <button className="link" onClick={p.onImportHosts}>Import ~/.ssh/config</button>
+              </p>
+            </div>
+          )}
           {p.hosts.length > 0 && hosts.length === 0 && <p className="src-empty">No host matches “{filter.trim()}”.</p>}
           <ul className="src-list">
             {hosts.map((h) => {
@@ -236,15 +282,22 @@ export function Sidebar(p: Props) {
               return (
                 <Row key={h.name} id={hostId(h.name)} active={p.active} icon="host" title={hostTitle(h, address(h))}
                   label={h.name} tail={<><Count n={c?.n ?? 0} agent={c?.agent ?? false} /><EnvMark env={envOfHost(h)} /></>}
-                  onSelect={() => p.onSelect(hostId(h.name))} onDoubleClick={() => p.onOpenTerminal(h.name)} />
+                  onSelect={() => p.onSelect(hostId(h.name))} onDoubleClick={() => p.onOpenTerminal(h.name)}
+                  onContextMenu={contextMenu(p.hostMenu(h), h.name)} />
               );
             })}
           </ul>
         </Section>
 
-        <Section id="clusters" title="Clusters" count={filtering ? contexts.length : p.contexts.length} folded={folded} onToggle={toggle}>
+        <Section id="clusters" title="Clusters" count={filtering ? contexts.length : p.contexts.length} folded={folded} onToggle={toggle}
+          add={{ label: "Add a cluster", onClick: () => p.onAddCluster() }}>
           {p.contextsError && <p className="src-empty error-text" title={p.contextsError}>Cannot read the kubeconfig: {p.contextsError}</p>}
-          {!p.contextsError && p.contexts.length === 0 && <p className="src-empty">No Kubernetes contexts in your kubeconfig.</p>}
+          {!p.contextsError && p.contexts.length === 0 && (
+            <div className="src-empty">
+              <p>No Kubernetes contexts in your kubeconfig.</p>
+              <p className="src-empty-actions"><button className="link" onClick={p.onAddCluster}>Add a cluster…</button></p>
+            </div>
+          )}
           {p.contexts.length > 0 && contexts.length === 0 && <p className="src-empty">No cluster matches “{filter.trim()}”.</p>}
           <ul className="src-list">
             {contexts.map((c) => {
@@ -259,7 +312,8 @@ export function Sidebar(p: Props) {
                       after={c.current ? <span className="current" role="img" aria-label="kubectl's current context" /> : undefined}
                       label={c.name}
                       tail={<><Count n={n?.n ?? 0} agent={n?.agent ?? false} /><EnvMark env={contextIsProd(c) ? "prod" : envOfContext(c)} /></>}
-                      onSelect={() => (here ? toggle("kinds:" + c.name) : p.onSelect(clusterId(c.name)))} />
+                      onSelect={() => (here ? toggle("kinds:" + c.name) : p.onSelect(clusterId(c.name)))}
+                      onContextMenu={contextMenu(p.clusterMenu(c), c.name)} />
                   </ul>
                   {kindsOpen && <Kinds ctx={c.name} kind={p.kindOf(c.name)} more={folded.has("more:" + c.name)}
                     onMore={() => toggle("more:" + c.name)} onKind={(k) => p.onKind(c.name, k)} />}
@@ -269,6 +323,7 @@ export function Sidebar(p: Props) {
           </ul>
         </Section>
       </div>
+      {menu && <Menu at={menu.at} items={menu.items} label={menu.label} onClose={() => setMenu(null)} />}
     </aside>
   );
 }

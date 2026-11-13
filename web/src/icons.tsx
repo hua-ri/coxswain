@@ -11,6 +11,7 @@ const paths: Record<string, ReactNode> = {
   terminal: <><rect x="1.5" y="2.5" width="13" height="11" rx="1.5" /><path d="M4.5 6l2 2-2 2M8 10h3.5" /></>,
   files: <path d="M1.8 4.2c0-.6.5-1.1 1.1-1.1h3.2l1.4 1.5h5.6c.6 0 1.1.5 1.1 1.1v6.2c0 .6-.5 1.1-1.1 1.1H2.9c-.6 0-1.1-.5-1.1-1.1z" />,
   search: <><circle cx="7" cy="7" r="4.5" /><path d="m10.5 10.5 3 3" /></>,
+  plus: <path d="M8 3.5v9M3.5 8h9" />,
 };
 
 /** Icon is a 14px stroke icon from the sidebar's set. */

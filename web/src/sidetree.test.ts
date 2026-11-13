@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { contextMatches, envOfContext, envOfHost, hostMatches, hostTitle, loadFolded, sortedContexts, sortedHosts, toggleFolded } from "./sidetree";
+import { contextMatches, envOfContext, envOfHost, hostMatches, hostTitle, loadFolded, sortedContexts, sortedHosts, toggleFolded, reloadsContexts, reloadsHosts } from "./sidetree";
 import type { ContextInfo } from "./k8s";
 import type { Host } from "./types";
 
@@ -92,5 +92,16 @@ describe("folded sections", () => {
     expect(loadFolded({ getItem: () => "{not json" }).size).toBe(0);
     expect(loadFolded(undefined).size).toBe(0);
     expect(toggleFolded(new Set(), "x", { setItem: () => { throw new Error("full"); } })).toEqual(new Set(["x"]));
+  });
+});
+
+describe("refreshing the sidebar", () => {
+  it("reloads hosts after a change to them, whoever made it", () => {
+    for (const a of ["ssh.hosts.add", "ssh.hosts.update", "ssh.hosts.remove", "ssh.hosts.import", "ssh.hosts.tag"]) expect(reloadsHosts(a)).toBe(true);
+    for (const a of ["ssh.hosts.list", "ssh.hosts.scan_key", "ssh.hosts.test", "ssh.hosts.trust_key", "ssh.exec", undefined]) expect(reloadsHosts(a)).toBe(false);
+  });
+  it("reloads contexts after a cluster is added, removed or tagged", () => {
+    for (const a of ["k8s.clusters.add", "k8s.clusters.remove", "k8s.contexts.tag"]) expect(reloadsContexts(a)).toBe(true);
+    for (const a of ["k8s.clusters.test", "k8s.clusters.inspect", "k8s.get", undefined]) expect(reloadsContexts(a)).toBe(false);
   });
 });

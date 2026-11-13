@@ -1,7 +1,7 @@
 // Small shared pieces of the desktop UI: chips that carry the two signals
 // that matter most (who did it, and is it production), dialogs and inline
 // messages. Styles are in styles.css; decisions in .interface-design/system.md.
-import { useEffect, useId, useRef, type ReactNode } from "react";
+import { useEffect, useId, useRef, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { isProdTag } from "./env";
 
 /** Tag is a host or context tag; env=prod is the solid hazard chip. */
@@ -159,5 +159,96 @@ export function PaneHeader({ title, icon, meta, children }: { title: ReactNode; 
       <span className="spacer" />
       {children}
     </header>
+  );
+}
+
+export interface MenuItem {
+  label: string;
+  onSelect(): void;
+  danger?: boolean;
+  disabled?: boolean;
+  separatorBefore?: boolean;
+}
+
+/** Menu is a small popup menu at a point (a context menu, or under a button). ↑/↓ move, Return picks,
+ * Escape or a click elsewhere closes; focus goes back to where it was. */
+export function Menu({ at, items, label, onClose }: { at: { x: number; y: number }; items: MenuItem[]; label: string; onClose(): void }) {
+  const box = useRef<HTMLDivElement>(null);
+  const close = useRef(onClose);
+  close.current = onClose;
+  useEffect(() => {
+    const opener = document.activeElement as HTMLElement | null;
+    box.current?.querySelector<HTMLElement>("[role=menuitem]:not([disabled])")?.focus();
+    const away = (e: MouseEvent) => {
+      if (!box.current?.contains(e.target as Node)) close.current();
+    };
+    const key = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        close.current();
+      }
+    };
+    document.addEventListener("mousedown", away, true);
+    document.addEventListener("keydown", key, true);
+    return () => {
+      document.removeEventListener("mousedown", away, true);
+      document.removeEventListener("keydown", key, true);
+      if (opener?.isConnected) opener.focus();
+    };
+  }, []);
+  const onKey = (e: ReactKeyboardEvent) => {
+    const list = [...(box.current?.querySelectorAll<HTMLElement>("[role=menuitem]:not([disabled])") ?? [])];
+    const i = list.indexOf(document.activeElement as HTMLElement);
+    const j = e.key === "ArrowDown" ? Math.min(i + 1, list.length - 1) : e.key === "ArrowUp" ? Math.max(i - 1, 0) : -1;
+    if (j >= 0) {
+      e.preventDefault();
+      list[j].focus();
+    }
+  };
+  // Keep the menu inside the window.
+  const x = Math.min(at.x, window.innerWidth - 220);
+  const y = Math.min(at.y, window.innerHeight - 24 - items.length * 26);
+  return (
+    <div className="menu" role="menu" aria-label={label} ref={box} style={{ left: x, top: y }} onKeyDown={onKey}>
+      {items.map((it) => (
+        <div key={it.label} className={it.separatorBefore ? "menu-group" : undefined}>
+          <button role="menuitem" className={it.danger ? "danger-text" : undefined} disabled={it.disabled}
+            onClick={() => {
+              close.current();
+              it.onSelect();
+            }}>
+            {it.label}
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** Field is one labelled row of a form grid: label on the left, the control, then an error or a hint. */
+export function Field({ label, htmlFor, error, hint, children }: { label: string; htmlFor?: string; error?: string; hint?: ReactNode; children: ReactNode }) {
+  return (
+    <div className={error ? "field-row invalid" : "field-row"}>
+      <label className="field-label" htmlFor={htmlFor}>{label}</label>
+      <div className="field-control">
+        {children}
+        {error ? <div className="field-error" role="alert">{error}</div> : hint ? <div className="field-hint">{hint}</div> : null}
+      </div>
+    </div>
+  );
+}
+
+/** EnvPicker chooses a place's environment; production is the hazard. */
+export function EnvPicker({ value, onChange, envs }: { value: string; onChange(env: string): void; envs: string[] }) {
+  const options = ["", ...envs.filter((e) => e !== "prod"), ...(value && !envs.includes(value) ? [value] : []), "prod"];
+  return (
+    <div className="segmented env-picker" role="radiogroup" aria-label="Environment">
+      {options.map((e) => (
+        <button key={e || "none"} type="button" role="radio" aria-checked={value === e} aria-selected={value === e}
+          className={e === "prod" ? "prod-option" : undefined} onClick={() => onChange(e)}>
+          {e || "None"}
+        </button>
+      ))}
+    </div>
   );
 }

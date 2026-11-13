@@ -51,6 +51,7 @@ interface Props {
   onOpenTerminal(p: PodRef & { shell?: string }): Promise<void>;
   onForward(body: Record<string, unknown>): Promise<string>; // resolves to where it listens
   kind: string; // the kind listed, or APPLY for the apply panel; chosen in the sidebar
+  onRemove?(): void; // set for clusters added in Coxswain (the user's kubeconfig is read-only)
 }
 
 interface Selected {
@@ -104,7 +105,7 @@ function Events({ events }: { events: EventRow[] }) {
 }
 
 /** K8sView browses one context: lists, details, logs, diagnosis, changes. */
-export function K8sView({ cox, context, active, onOpenTerminal, onForward, kind: chosen }: Props) {
+export function K8sView({ cox, context, active, onOpenTerminal, onForward, kind: chosen, onRemove }: Props) {
   const ctx = context.name;
   const [namespace, setNamespace] = useState(context.namespace || "default");
   const [namespaces, setNamespaces] = useState<string[]>([]);
@@ -257,6 +258,15 @@ export function K8sView({ cox, context, active, onOpenTerminal, onForward, kind:
           return <Tag key={b.text} k={k} v={v.join("=")} inherited={b.inherited} from={context.inherited_from?.join(", ")} />;
         })}
         {context.note && !badge && <span className="pane-note" title={context.note}>{context.note}</span>}
+        <span className="spacer" />
+        {onRemove ? (
+          <>
+            <span className="pane-meta">Added in Coxswain</span>
+            <button className="small ghost danger-text remove" onClick={onRemove}>Remove…</button>
+          </>
+        ) : (
+          context.source === "kubeconfig" && <span className="pane-meta" title="Coxswain only reads your kubeconfig; change this context with kubectl">From your kubeconfig (read-only)</span>
+        )}
       </header>
       <div className="k8s-body">
       <div className="k8s-main">
