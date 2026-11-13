@@ -24,6 +24,14 @@ export function ArgoWFView({ cox, instance, active, onLogin, onRemove }: {
   onRemove(): void;
 }) {
   const [namespace, setNamespace] = useState(instance.namespace ?? "argo");
+  const [nsText, setNsText] = useState(namespace);
+  const applyNs = () => {
+    const ns = nsText.trim();
+    if (ns && ns !== namespace) {
+      setSelected("");
+      setNamespace(ns);
+    }
+  };
   const invoke: Invoke = useCallback(
     async <T,>(id: string, args: Record<string, unknown>): Promise<T> => {
       const out = await cox.invoke<T>(id, { instance: instance.name, namespace, ...args });
@@ -83,7 +91,8 @@ export function ArgoWFView({ cox, instance, active, onLogin, onRemove }: {
                 <button role="tab" aria-selected={tab === "templates"} onClick={() => setTab("templates")}>Templates</button>
               </div>
               <label className="field">Namespace
-                <input className="mono ns-input" value={namespace} onChange={(e) => setNamespace(e.target.value)} onBlur={() => setSelected("")} />
+                <input className="mono ns-input" value={nsText} onChange={(e) => setNsText(e.target.value)} onBlur={applyNs}
+                  onKeyDown={(e) => e.key === "Enter" && applyNs()} />
               </label>
               {tab === "workflows" && (
                 <label className="field">Phase

@@ -264,7 +264,7 @@ function AppOverview({ d }: { d: AppDetail }) {
         <tr><th>source</th><td className="mono">{d.source}</td></tr>
         <tr><th>destination</th><td className="mono">{d.destination}</td></tr>
         <tr><th>sync policy</th><td>{d.auto_sync ? `automatic${d.self_heal ? ", self-heal" : ""}${d.auto_prune ? ", prune" : ""}` : "manual"}</td></tr>
-        <tr><th>resources</th><td className="mono">{Object.entries(d.resources).map(([k, n]) => `${n} ${k}`).join(" · ")}</td></tr>
+        <tr><th>resources</th><td className="mono">{Object.entries(d.resources).map(([k, n]) => `${n} ${k.replace(/\/$/, "").replace("/", " · ")}`).join(", ")}</td></tr>
       </tbody></table>
       {(d.conditions ?? []).length > 0 && (
         <>
