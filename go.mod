@@ -3,6 +3,7 @@ module github.com/hua-ri/coxswain
 go 1.26.0
 
 require (
+	github.com/coreos/go-oidc/v3 v3.14.1
 	github.com/kevinburke/ssh_config v1.6.0
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/pkg/sftp v1.13.12
@@ -10,6 +11,7 @@ require (
 	github.com/spf13/cobra v1.10.2
 	github.com/webview/webview_go v0.0.0-20240831120633-6173450d4dd6
 	golang.org/x/crypto v0.58.0
+	golang.org/x/oauth2 v0.35.0
 	golang.org/x/sys v0.49.0
 	k8s.io/api v0.34.13
 	k8s.io/apimachinery v0.34.13
@@ -22,6 +24,7 @@ require (
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/emicklei/go-restful/v3 v3.12.2 // indirect
 	github.com/fxamacker/cbor/v2 v2.9.0 // indirect
+	github.com/go-jose/go-jose/v4 v4.0.5 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-openapi/jsonpointer v0.21.0 // indirect
 	github.com/go-openapi/jsonreference v0.20.2 // indirect
@@ -50,7 +53,6 @@ require (
 	go.yaml.in/yaml/v2 v2.4.2 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/net v0.60.0 // indirect
-	golang.org/x/oauth2 v0.35.0 // indirect
 	golang.org/x/sync v0.24.0 // indirect
 	golang.org/x/term v0.47.0 // indirect
 	golang.org/x/text v0.43.0 // indirect
