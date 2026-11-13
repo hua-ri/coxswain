@@ -18,7 +18,7 @@ curl -fsSL https://raw.githubusercontent.com/hua-ri/coxswain/main/install.sh | s
 ## Quick start
 
 ```bash
-cox init      # import ~/.ssh/config, connect Claude Code / Codex / Kimi
+cox init      # sync hosts from ~/.ssh/config, connect Claude Code / Codex / Kimi
 cox server    # run Coxswain in a terminal; leave it open (Ctrl-C stops it)
 ```
 
@@ -37,7 +37,7 @@ tools. `cox server` prints one line for every action, whether you or an agent ra
 
 | Capability | Tools (MCP) / commands | Notes |
 |---|---|---|
-| Hosts | `ssh_hosts_list`, `ssh_hosts_add`, `ssh_hosts_update`, `ssh_hosts_remove`, `ssh_hosts_tag`, `ssh_hosts_import` | imported from `~/.ssh/config` or added by hand; tags and notes are shown to agents |
+| Hosts | `ssh_hosts_list`, `ssh_hosts_add`, `ssh_hosts_update`, `ssh_hosts_remove`, `ssh_hosts_tag`, `ssh_hosts_import` | synced from `~/.ssh/config` or added by hand; tags and notes are shown to agents |
 | Host keys | `ssh_hosts_scan_key`, `ssh_hosts_test`; `trust_key` and `forget_key` for you only | trusted keys go to `~/.coxswain/known_hosts`; `~/.ssh/known_hosts` is only read |
 | Clusters | `k8s_contexts`; `k8s_clusters_add`, `k8s_clusters_remove`, `_inspect`, `_test` for you only | your kubeconfig is only read; clusters you add are kept in `~/.coxswain/kubeconfigs/` |
 | Commands | `ssh_exec` | one command, output and exit code |
@@ -62,6 +62,15 @@ cox ssh hosts scan_key web-3                             # its key fingerprint: 
 cox ssh hosts trust_key web-3 --fingerprint SHA256:…     # then trust it (you only)
 cox k8s clusters add --path ~/Downloads/prod-sg.yaml --context eks-prod-sg
 ```
+
+### Syncing from ~/.ssh/config
+
+*Sync from ~/.ssh/config…* (or `cox ssh hosts import`) adds the hosts in your ssh config and
+refreshes the address, port, user, keys and jump host of the ones it imported before. It never
+changes `~/.ssh/config`, and keeps Coxswain's tags and notes. It shows a preview first
+(`cox ssh hosts import --dry-run`): new hosts, what will change (field: old → new), and the hosts
+you edited in Coxswain (or added by hand) since, which stay as they are unless you tick
+*Overwrite* (`--overwrite NAME`).
 
 ### Host keys
 
@@ -103,7 +112,7 @@ cox desktop   # needs a running cox server
 `cox desktop` again to come back. It shows:
 
 - **Hosts**, with their tags (`env=prod` in red) and notes. Add one with the + on the Hosts header
-  (or import `~/.ssh/config` from the same menu); edit or remove one from its page or by
+  (or *Sync from ~/.ssh/config…* from the same menu); edit or remove one from its page or by
   right-clicking it. Removing a host leaves its open terminals and tunnels until you close them.
   Click *Terminal* to open a terminal on
   one, *Files* to browse its files: open folders, download (to `~/.coxswain/downloads/<host>/`),

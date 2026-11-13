@@ -39,6 +39,9 @@ Prefer the MCP tools when they are available:
 
 ### Adding and changing hosts
 
+- `ssh_hosts_import` syncs hosts from `~/.ssh/config` (it never changes that file). Run it with
+  `dry_run` first and show the user what it would change; hosts the user edited in Coxswain are
+  kept unless listed in `overwrite`, which only the user should decide.
 - Add, change or remove hosts only when the user asks. Every change is recorded with your name;
   changing `env` (or `ai`) tags or the note is rated destructive, because they tell agents how
   careful to be. Never drop `env=prod` from a host unless the user says so.
