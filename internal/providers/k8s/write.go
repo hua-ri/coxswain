@@ -15,6 +15,7 @@ import (
 	"github.com/hua-ri/coxswain/internal/action"
 	kube "github.com/hua-ri/coxswain/internal/k8s"
 	"github.com/hua-ri/coxswain/internal/shaper"
+	"github.com/hua-ri/coxswain/internal/textdiff"
 	appsv1 "k8s.io/api/apps/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -213,7 +214,7 @@ func objectDiff(id string, res kube.Resource, live, after *unstructured.Unstruct
 	if err != nil {
 		return "", err
 	}
-	return diffLines(id+" (live)", id+" (after apply)", a, b), nil
+	return textdiff.Lines(id+" (live)", id+" (after apply)", a, b), nil
 }
 
 func (p *Provider) apply() *action.Action {

@@ -1,4 +1,5 @@
-package k8s
+// Package textdiff renders unified diffs of text.
+package textdiff
 
 import (
 	"fmt"
@@ -16,9 +17,9 @@ type diffOp struct {
 	line string
 }
 
-// diffLines returns a unified diff of a and b (split into lines), or ""
+// Lines returns a unified diff of a and b (split into lines), or ""
 // if they are equal.
-func diffLines(oldName, newName, a, b string) string {
+func Lines(oldName, newName, a, b string) string {
 	if a == b {
 		return ""
 	}

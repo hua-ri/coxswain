@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/hua-ri/coxswain/internal/textdiff"
 	"strings"
 	"testing"
 	"time"
@@ -195,12 +196,12 @@ func TestRedactManifest(t *testing.T) {
 func TestDiffLines(t *testing.T) {
 	a := "a\nb\nc\nd\ne\nf\ng\nh\ni\n"
 	b := "a\nb\nc\nd\nE\nf\ng\nh\ni\nj\n"
-	got := diffLines("old", "new", a, b)
+	got := textdiff.Lines("old", "new", a, b)
 	want := "--- old\n+++ new\n@@ -2,8 +2,9 @@\n b\n c\n d\n-e\n+E\n f\n g\n h\n i\n+j\n"
 	if got != want {
 		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
 	}
-	if diffLines("old", "new", a, a) != "" {
+	if textdiff.Lines("old", "new", a, a) != "" {
 		t.Fatal("no change, but a diff")
 	}
 }
