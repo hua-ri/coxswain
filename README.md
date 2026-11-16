@@ -46,6 +46,9 @@ tools. `cox server` prints one line for every action, whether you or an agent ra
 | Transfers | `file_upload`, `file_download` | with progress, cancel, resume and SHA-256; downloads go to `~/.coxswain/downloads/<host>/` |
 | Tunnels | `tunnel_open`, `tunnel_list`, `tunnel_close` | local (`-L`), remote (`-R`, opened by you only) and SOCKS5 (`-D`), on 127.0.0.1; reconnect by themselves |
 | Terminals | `terminal_open`, `terminal_send`, `terminal_read`, `terminal_close` | shared with you in `cox desktop` |
+| Argo CD | `argocd_apps`, `argocd_app`, `argocd_tree`, `argocd_diff`, `argocd_events`, `argocd_logs`, `argocd_diagnose`, `argocd_refresh`, `argocd_sync`, `argocd_rollback`, `argocd_terminate` | several instances, through argocd-server's REST API; Secret values redacted |
+| Argo Workflows | `argowf_list`, `argowf_get`, `argowf_logs`, `argowf_diagnose`, `argowf_templates`, `argowf_submit`, `argowf_suspend`/`_resume`/`_stop`/`_terminate`/`_retry`/`_resubmit`, `argowf_delete`, `argowf_cron` | several instances, through argo-server's REST API |
+| Argo instances and logins | `argo_add`, `argo_update`, `argo_remove`, `argo_export`, `argo_import`; `argocd_login_methods`, `argocd_login`, `argowf_login_methods`, `argowf_login`, `*_logout` | logins are kept in the macOS keychain and never shown back |
 | Large outputs | `artifact_read` | the full copy of anything that was shortened |
 
 Every tool is also a command, e.g.:
@@ -93,6 +96,30 @@ name your kubeconfig already has is refused; give the copy another name. *Test* 
 for its version without saving anything. Only clusters added this way can be removed in Coxswain;
 the others show as read-only. Adding and removing clusters is for you only, and the audit log
 records a kubeconfig as its size, SHA-256 and context names, never its contents.
+
+### Argo CD and Argo Workflows
+
+Add an instance by its URL (*Argo CD → +* or *Workflows → +* in `cox desktop`, or
+`cox argo add argocd prod https://argocd.example.com`). Coxswain asks the server how one can log in
+and lets you (or an agent) choose:
+
+- **Argo CD** works like `argocd login`: *Browser* (shown when the instance has SSO) opens your
+  browser for your company's single sign-on, with the same client and callback
+  (`localhost:8085`) as `argocd login --sso`, so any instance the argocd CLI can log in to works,
+  and the session renews itself. *Username and password* exchanges a local account's password for
+  a session token (the password is not kept). *Token* takes an API token.
+- **Argo Workflows** has no accounts of its own. In client auth mode it takes a Kubernetes token
+  (`kubectl create token <service account> -n <namespace>`; prefer a service account with only the
+  rights it needs), in sso mode the token from the Argo UI's user info page; in server mode none.
+
+Settings go to `~/.coxswain/argo.json`; logins only to your login keychain (service `coxswain`).
+Agents may add instances and log in, but no action ever returns a password or token, the audit log
+records them as `<redacted N chars>`, and the CLI reads them only from stdin
+(`cox argocd login prod --method password --username admin --password-stdin`). `cox argo export`
+writes the instances without credentials, for colleagues to `cox argo import`.
+
+`scripts/kind-argo.sh up` installs Argo CD (with a mock SSO) and Argo Workflows in a kind
+cluster named `cox-test` to try this out.
 
 Transfers, tunnels and batch runs live in `cox server`, each with its owner (you or an agent).
 `cox desktop` shows them and can stop any of them; agents can close only their own tunnels.
