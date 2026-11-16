@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -207,9 +208,15 @@ func newEngine(coxHome, userHome string, pool func(*sshx.Dialer) *sshx.Pool) ser
 	(&tunnelprov.Provider{Hosts: hosts, Tunnels: tunnels}).Register(reg)
 	(&k8sprov.Provider{Clusters: clusters, Hosts: hosts, Artifacts: artifacts, Tunnels: tunnels}).Register(reg)
 	// Argo instances' settings are in argo.json; their credentials only in
-	// the login keychain.
+	// the login keychain, under a service of their own for a COX_HOME other
+	// than ~/.coxswain (tests and dev builds never see the real logins).
+	service := "coxswain"
+	if coxHome != filepath.Join(userHome, ".coxswain") {
+		sum := sha256.Sum256([]byte(coxHome))
+		service = "coxswain-" + hex.EncodeToString(sum[:4])
+	}
 	sessions := &argo.Sessions{Store: argo.NewStore(filepath.Join(coxHome, "argo.json")),
-		Secrets: &secrets.Keychain{Service: "coxswain"}}
+		Secrets: &secrets.Keychain{Service: service}}
 	(&argoprov.Provider{Sessions: sessions, Artifacts: artifacts}).Register(reg)
 	return services{Engine: &engine.Engine{Registry: reg, Events: events}, Terminals: terms, Transfers: transfers, Tunnels: tunnels,
 		Clusters: clusters}
