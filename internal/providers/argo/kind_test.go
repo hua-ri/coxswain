@@ -21,6 +21,9 @@ import (
 	"github.com/hua-ri/coxswain/internal/action"
 	"github.com/hua-ri/coxswain/internal/argo"
 	"github.com/hua-ri/coxswain/internal/engine"
+	"github.com/hua-ri/coxswain/internal/inventory"
+	kube "github.com/hua-ri/coxswain/internal/k8s"
+	k8sprov "github.com/hua-ri/coxswain/internal/providers/k8s"
 	"github.com/hua-ri/coxswain/internal/eventlog"
 	"github.com/hua-ri/coxswain/internal/secrets"
 	"github.com/hua-ri/coxswain/internal/shaper"
@@ -156,4 +159,39 @@ func TestKindArgoCDBrowserLogin(t *testing.T) {
 		t.Fatalf("browser login: %s", out)
 	}
 	run(t, e, agent, "argocd.apps", map[string]any{})
+}
+
+// TestKindWorkflowDiagnoseFollowsIntoTheCluster wires the real Kubernetes
+// provider (the cox-test kubeconfig only) and checks a failed step is
+// followed to its pod or node.
+func TestKindWorkflowDiagnoseFollowsIntoTheCluster(t *testing.T) {
+	tok := os.Getenv("COX_ARGOWF_TOKEN")
+	if tok == "" {
+		t.Skip("COX_ARGOWF_TOKEN not set")
+	}
+	home, _ := os.UserHomeDir()
+	kc := kube.NewKubeconfig([]string{filepath.Join(home, ".coxswain-test", "kind", "kubeconfig")})
+	dir := t.TempDir()
+	clusters := &kube.Clusters{Kubeconfig: kc, Meta: kube.NewMetaStore(filepath.Join(dir, "clusters.json"))}
+	k8sp := &k8sprov.Provider{Clusters: clusters, Hosts: inventory.NewStore(filepath.Join(dir, "hosts.json")),
+		Artifacts: shaper.NewArtifacts(filepath.Join(dir, "k8s-artifacts"))}
+	s := &argo.Sessions{Store: argo.NewStore(filepath.Join(dir, "argo.json")), Secrets: &secrets.Memory{}}
+	reg := action.NewRegistry()
+	(&Provider{Sessions: s, Artifacts: shaper.NewArtifacts(filepath.Join(dir, "artifacts")), K8s: k8sp}).Register(reg)
+	e := &engine.Engine{Registry: reg, Events: eventlog.Open(filepath.Join(dir, "events"))}
+	run(t, e, human, "argo.add", map[string]any{"kind": "argowf", "name": "kind", "url": "http://localhost:2746", "namespace": "ci", "k8s_context": "kind-cox-test"})
+	run(t, e, human, "argowf.login", map[string]any{"method": "token", "token": tok})
+	list := run(t, e, agent, "argowf.list", map[string]any{"phase": "Failed"})
+	var out WFListOutput
+	json.Unmarshal([]byte(list), &out)
+	for _, w := range out.Workflows {
+		if strings.HasPrefix(w.Name, "build-") {
+			d := run(t, e, agent, "argowf.diagnose", map[string]any{"name": w.Name})
+			if !strings.Contains(d, "kind-cox-test") && !strings.Contains(d, "cox-test-control-plane") {
+				t.Fatalf("not followed into the cluster: %s", d)
+			}
+			return
+		}
+	}
+	t.Fatalf("no failed build: %s", list)
 }
