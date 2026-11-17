@@ -199,7 +199,7 @@ func TestAPI(t *testing.T) {
 	if e, _ := reply["error"].(string); reply["ok"] != false || !strings.Contains(e, "not an API path") {
 		t.Fatalf("%v", reply)
 	}
-	if names := b.Bindings(); len(names) != 7 || names["coxApi"] == nil || names["coxSubscribe"] == nil {
+	if names := b.Bindings(); len(names) != 8 || names["coxOpenURL"] == nil || names["coxApi"] == nil || names["coxSubscribe"] == nil {
 		t.Fatalf("%v", names)
 	}
 }
