@@ -21,10 +21,10 @@ import (
 	"github.com/hua-ri/coxswain/internal/action"
 	"github.com/hua-ri/coxswain/internal/argo"
 	"github.com/hua-ri/coxswain/internal/engine"
+	"github.com/hua-ri/coxswain/internal/eventlog"
 	"github.com/hua-ri/coxswain/internal/inventory"
 	kube "github.com/hua-ri/coxswain/internal/k8s"
 	k8sprov "github.com/hua-ri/coxswain/internal/providers/k8s"
-	"github.com/hua-ri/coxswain/internal/eventlog"
 	"github.com/hua-ri/coxswain/internal/secrets"
 	"github.com/hua-ri/coxswain/internal/shaper"
 )
