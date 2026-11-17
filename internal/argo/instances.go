@@ -26,15 +26,18 @@ const (
 // Instance is one Argo CD or Argo Workflows server. It never holds
 // credentials; those are in the keychain (see Accounts).
 type Instance struct {
-	Kind               Kind              `json:"kind"`
-	Name               string            `json:"name"`
-	URL                string            `json:"url"`
-	Namespace          string            `json:"namespace,omitempty"` // Workflows: the default namespace
-	CAFile             string            `json:"ca_file,omitempty"`
-	InsecureSkipVerify bool              `json:"insecure_skip_verify,omitempty"`
-	SSOPort            int               `json:"sso_port,omitempty"` // Argo CD browser login callback port
-	Tags               map[string]string `json:"tags,omitempty"`
-	Note               string            `json:"note,omitempty"`
+	Kind               Kind   `json:"kind"`
+	Name               string `json:"name"`
+	URL                string `json:"url"`
+	Namespace          string `json:"namespace,omitempty"` // Workflows: the default namespace
+	CAFile             string `json:"ca_file,omitempty"`
+	InsecureSkipVerify bool   `json:"insecure_skip_verify,omitempty"`
+	SSOPort            int    `json:"sso_port,omitempty"` // Argo CD browser login callback port
+	// K8sContext is the Coxswain cluster the instance runs in: Argo CD's
+	// in-cluster destination, and where Argo Workflows' pods run. Optional.
+	K8sContext string            `json:"k8s_context,omitempty"`
+	Tags       map[string]string `json:"tags,omitempty"`
+	Note       string            `json:"note,omitempty"`
 }
 
 // ID is how actions and targets name it: argocd:prod.
@@ -70,6 +73,7 @@ func (i *Instance) Normalize() error {
 		return errors.New("sso_port is an Argo CD instance's local port for browser login, 1024–65535")
 	}
 	i.Note = strings.TrimSpace(i.Note)
+	i.K8sContext = strings.TrimSpace(i.K8sContext)
 	if len(i.Tags) == 0 {
 		i.Tags = nil
 	}

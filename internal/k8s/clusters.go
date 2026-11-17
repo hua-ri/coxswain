@@ -167,6 +167,9 @@ func (c *Clusters) source(cfg *clientcmdapi.Config, name string) string {
 }
 
 // serverKey normalises a cluster server URL for comparison.
+// SameServer reports whether two API server URLs name the same server.
+func SameServer(a, b string) bool { return serverKey(a) == serverKey(b) }
+
 func serverKey(server string) string {
 	u, err := url.Parse(strings.TrimSpace(server))
 	if err != nil || u.Host == "" {

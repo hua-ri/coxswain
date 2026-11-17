@@ -18,7 +18,7 @@ const buildWF = `{
    "build-x7":{"id":"build-x7","name":"build-x7","displayName":"build-x7","type":"Steps","phase":"Failed","children":["build-x7-1"]},
    "build-x7-1":{"id":"build-x7-1","name":"build-x7[0]","displayName":"[0]","type":"StepGroup","phase":"Failed","children":["build-x7-2","build-x7-3"]},
    "build-x7-2":{"id":"build-x7-2","name":"build-x7[0].compile","displayName":"compile","type":"Pod","templateName":"compile","phase":"Failed",
-     "message":"OOMKilled (exit code 137)","outputs":{"exitCode":"137"},"startedAt":"2026-11-13T09:00:05Z","finishedAt":"2026-11-13T09:02:00Z"},
+     "message":"OOMKilled (exit code 137)","outputs":{"exitCode":"137"},"hostNodeName":"node-9","startedAt":"2026-11-13T09:00:05Z","finishedAt":"2026-11-13T09:02:00Z"},
    "build-x7-3":{"id":"build-x7-3","name":"build-x7[0].lint","displayName":"lint","type":"Pod","templateName":"lint","phase":"Succeeded","outputs":{"exitCode":"0"}}
   }}}`
 

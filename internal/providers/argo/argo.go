@@ -13,13 +13,23 @@ import (
 
 	"github.com/hua-ri/coxswain/internal/action"
 	"github.com/hua-ri/coxswain/internal/argo"
+	k8sprov "github.com/hua-ri/coxswain/internal/providers/k8s"
 	"github.com/hua-ri/coxswain/internal/shaper"
 )
 
 type Provider struct {
 	Sessions  *argo.Sessions
 	Artifacts *shaper.Artifacts
+	K8s       K8s              // to follow an Argo problem into its cluster and to the node's SSH host; may be nil
 	Now       func() time.Time // tests
+}
+
+// K8s is what Argo diagnoses use of the Kubernetes provider.
+type K8s interface {
+	Diagnose(ctx context.Context, kctx, namespace, kind, name string) (k8sprov.DiagnoseOutput, error)
+	NodeHost(ctx context.Context, kctx, node string) (k8sprov.NodeHostOutput, error)
+	ContextsForServer(server string) []string
+	HasContext(name string) bool
 }
 
 func (p *Provider) Register(r *action.Registry) {
@@ -158,6 +168,7 @@ type instanceFields struct {
 	CAFile             *string   `json:"ca_file"`
 	InsecureSkipVerify *bool     `json:"insecure_skip_verify"`
 	SSOPort            *int      `json:"sso_port"`
+	K8sContext         *string   `json:"k8s_context"`
 	Tags               *[]string `json:"tags"`
 	Note               *string   `json:"note"`
 }
@@ -171,6 +182,7 @@ func instanceProperties(update bool) map[string]any {
 		"ca_file":              str("a PEM file of CA certificates to trust for this server"),
 		"insecure_skip_verify": map[string]any{"type": "boolean", "description": "do not check the server's TLS certificate (unsafe)"},
 		"sso_port":             map[string]any{"type": "integer", "minimum": 1024, "maximum": 65535, "description": "Argo CD: local port for the browser login callback, default 8085 (as argocd --sso-port)"},
+		"k8s_context":          str("the Coxswain cluster (k8s_contexts) this instance runs in; lets its diagnoses look at pods, nodes and their SSH hosts"),
 		"tags":                 tagsProperty,
 		"note":                 str("shown to agents with every result on this instance"),
 	}
@@ -179,6 +191,14 @@ func instanceProperties(update bool) map[string]any {
 		props["tags"] = map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "replace all tags, key=value"}
 	}
 	return props
+}
+
+func (p *Provider) apply(f instanceFields, i argo.Instance) (argo.Instance, error) {
+	i, err := f.apply(i)
+	if err == nil && i.K8sContext != "" && p.K8s != nil && !p.K8s.HasContext(i.K8sContext) {
+		err = fmt.Errorf("k8s_context %q is not a cluster in Coxswain (see k8s_contexts)", i.K8sContext)
+	}
+	return i, err
 }
 
 func (f instanceFields) apply(i argo.Instance) (argo.Instance, error) {
@@ -196,6 +216,9 @@ func (f instanceFields) apply(i argo.Instance) (argo.Instance, error) {
 	}
 	if f.SSOPort != nil {
 		i.SSOPort = *f.SSOPort
+	}
+	if f.K8sContext != nil {
+		i.K8sContext = *f.K8sContext
 	}
 	if f.Tags != nil {
 		tags, err := parseTags(*f.Tags)
@@ -221,7 +244,7 @@ func (p *Provider) add() *action.Action {
 		if err := decode(raw, schema, &in); err != nil {
 			return argo.Instance{}, err
 		}
-		i, err := in.apply(argo.Instance{Kind: in.Kind, Name: in.Name})
+		i, err := p.apply(in, argo.Instance{Kind: in.Kind, Name: in.Name})
 		if err != nil {
 			return i, err
 		}
@@ -270,7 +293,7 @@ func (p *Provider) update() *action.Action {
 		if old, err = p.Sessions.Store.Get(in.Kind, in.Name); err != nil {
 			return old, n, err
 		}
-		n, err = in.apply(old)
+		n, err = p.apply(in, old)
 		if in.NewName != nil {
 			n.Name = *in.NewName
 		}

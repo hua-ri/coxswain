@@ -48,11 +48,20 @@ func setup(t *testing.T) *fixture {
 	}))
 	t.Cleanup(f.server.Close)
 	f.s = &argo.Sessions{Store: argo.NewStore(filepath.Join(dir, "argo.json")), Secrets: &secrets.Memory{}}
-	reg := action.NewRegistry()
-	(&Provider{Sessions: f.s, Artifacts: shaper.NewArtifacts(filepath.Join(dir, "artifacts")),
-		Now: func() time.Time { return time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC) }}).Register(reg)
-	f.e = &engine.Engine{Registry: reg, Events: eventlog.Open(filepath.Join(dir, "events"))}
+	f.withK8s(nil)
 	return f
+}
+
+// withK8s (re)builds the engine with a Kubernetes provider stand-in.
+func (f *fixture) withK8s(k K8s) {
+	reg := action.NewRegistry()
+	p := &Provider{Sessions: f.s, Artifacts: shaper.NewArtifacts(filepath.Join(f.dir, "artifacts")),
+		Now: func() time.Time { return time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC) }}
+	if k != nil {
+		p.K8s = k
+	}
+	p.Register(reg)
+	f.e = &engine.Engine{Registry: reg, Events: eventlog.Open(filepath.Join(f.dir, "events"))}
 }
 
 func args(v any) json.RawMessage {

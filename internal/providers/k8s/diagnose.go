@@ -152,35 +152,63 @@ func (p *Provider) diagnose() *action.Action {
 			if err := action.Decode(raw, &in); err != nil {
 				return nil, err
 			}
-			kind, ok := diagnoseKinds[strings.ToLower(in.Kind)]
-			if !ok {
-				return nil, fmt.Errorf("kind must be pod, deployment, statefulset, daemonset or job")
-			}
-			if in.Name == "" {
-				return nil, fmt.Errorf("name is required")
-			}
-			in.Kind, in.AllNamespaces = "", false
-			r, err := p.resolve(in)
-			if err != nil {
-				return nil, err
-			}
-			d := &diagnosis{out: DiagnoseOutput{Context: in.Context, Kind: kind, Namespace: r.ns, Name: in.Name},
-				steps: map[string]bool{}, nodes: map[string]bool{}}
-			if err := p.diagnoseTarget(ctx, r, d, kind, in.Name); err != nil {
-				return nil, err
-			}
-			if len(d.out.Findings) == 0 {
-				d.find(info, "No problems found", fmt.Sprintf("%s %s looks healthy", kind, in.Name))
-			}
-			sort.SliceStable(d.out.Findings, func(i, j int) bool {
-				return severityRank(d.out.Findings[i].Severity) < severityRank(d.out.Findings[j].Severity)
-			})
-			if d.out.NextSteps == nil {
-				d.out.NextSteps = []string{}
-			}
-			return d.out, nil
+			return p.Diagnose(ctx, in.Context, in.Namespace, in.Kind, in.Name)
 		},
 	}
+}
+
+// Diagnose runs k8s.diagnose's checks on a pod or workload. Argo
+// diagnoses call it for the pods of an application or workflow.
+func (p *Provider) Diagnose(ctx context.Context, kctx, namespace, kind, name string) (DiagnoseOutput, error) {
+	in := scope{Context: kctx, Namespace: namespace, Name: name}
+	k, ok := diagnoseKinds[strings.ToLower(kind)]
+	if !ok {
+		return DiagnoseOutput{}, fmt.Errorf("kind must be pod, deployment, statefulset, daemonset or job")
+	}
+	if in.Name == "" {
+		return DiagnoseOutput{}, fmt.Errorf("name is required")
+	}
+	r, err := p.resolve(in)
+	if err != nil {
+		return DiagnoseOutput{}, err
+	}
+	d := &diagnosis{out: DiagnoseOutput{Context: in.Context, Kind: k, Namespace: r.ns, Name: in.Name},
+		steps: map[string]bool{}, nodes: map[string]bool{}}
+	if err := p.diagnoseTarget(ctx, r, d, k, in.Name); err != nil {
+		return DiagnoseOutput{}, err
+	}
+	if len(d.out.Findings) == 0 {
+		d.find(info, "No problems found", fmt.Sprintf("%s %s looks healthy", k, in.Name))
+	}
+	sort.SliceStable(d.out.Findings, func(i, j int) bool {
+		return severityRank(d.out.Findings[i].Severity) < severityRank(d.out.Findings[j].Severity)
+	})
+	if d.out.NextSteps == nil {
+		d.out.NextSteps = []string{}
+	}
+	return d.out, nil
+}
+
+// ContextsForServer lists the contexts whose cluster is at server (an Argo
+// CD destination), with the same normalisation as tag inheritance.
+func (p *Provider) ContextsForServer(server string) []string {
+	_, list, err := p.Clusters.Contexts()
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, c := range list {
+		if c.Server != "" && kube.SameServer(c.Server, server) {
+			out = append(out, c.Name)
+		}
+	}
+	return out
+}
+
+// HasContext reports whether name is a context Coxswain knows.
+func (p *Provider) HasContext(name string) bool {
+	_, err := p.Clusters.Context(name)
+	return err == nil
 }
 
 func severityRank(s string) int {
@@ -786,44 +814,49 @@ func (p *Provider) nodeHost() *action.Action {
 			if err := action.Decode(raw, &in); err != nil {
 				return nil, err
 			}
-			if in.Node == "" {
-				return nil, fmt.Errorf("node is required")
-			}
-			r, err := p.resolve(scope{Context: in.Context})
-			if err != nil {
-				return nil, err
-			}
-			node, err := r.client.Typed.CoreV1().Nodes().Get(ctx, in.Node, metav1.GetOptions{})
-			if err != nil {
-				return nil, kube.Explain(err)
-			}
-			out := NodeHostOutput{Context: in.Context, Node: in.Node, Addresses: []string{}}
-			var values []string
-			for _, a := range node.Status.Addresses {
-				out.Addresses = append(out.Addresses, string(a.Type)+"="+a.Address)
-				values = append(values, a.Address)
-			}
-			m, err := p.nodeHosts(in.Context, node)
-			if err != nil {
-				return nil, err
-			}
-			out.Host, out.MatchedBy, out.Candidates = m.Host, m.MatchedBy, m.Candidates
-			if out.Candidates == nil {
-				out.Candidates = []HostCandidate{}
-			}
-			switch {
-			case len(m.Candidates) == 0:
-				out.Note = fmt.Sprintf("no saved SSH host has HostName %s or the tag k8s-node=%s/%s; add one to ~/.ssh/config and "+
-					"import it (ssh_hosts_import), or ask the user how to reach the node", strings.Join(append(values, in.Node), ", "), in.Context, in.Node)
-			case m.Host == "":
-				out.Note = fmt.Sprintf("several saved SSH hosts match (%s); do not guess: ask the user which one is the node "+
-					"and to tag it (cox ssh hosts tag <host> --set k8s-node=%s/%s)", candidateNames(m.Candidates), in.Context, in.Node)
-			default:
-				if h, err := p.Hosts.Get(m.Host); err == nil {
-					out.HostNote, out.HostTags = h.Note, h.Tags
-				}
-			}
-			return out, nil
+			return p.NodeHost(ctx, in.Context, in.Node)
 		},
 	}
+}
+
+// NodeHost finds a node's saved SSH host (k8s.node_host).
+func (p *Provider) NodeHost(ctx context.Context, kctx, nodeName string) (NodeHostOutput, error) {
+	if nodeName == "" {
+		return NodeHostOutput{}, fmt.Errorf("node is required")
+	}
+	r, err := p.resolve(scope{Context: kctx})
+	if err != nil {
+		return NodeHostOutput{}, err
+	}
+	node, err := r.client.Typed.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	if err != nil {
+		return NodeHostOutput{}, kube.Explain(err)
+	}
+	out := NodeHostOutput{Context: kctx, Node: nodeName, Addresses: []string{}}
+	var values []string
+	for _, a := range node.Status.Addresses {
+		out.Addresses = append(out.Addresses, string(a.Type)+"="+a.Address)
+		values = append(values, a.Address)
+	}
+	m, err := p.nodeHosts(kctx, node)
+	if err != nil {
+		return NodeHostOutput{}, err
+	}
+	out.Host, out.MatchedBy, out.Candidates = m.Host, m.MatchedBy, m.Candidates
+	if out.Candidates == nil {
+		out.Candidates = []HostCandidate{}
+	}
+	switch {
+	case len(m.Candidates) == 0:
+		out.Note = fmt.Sprintf("no saved SSH host has HostName %s or the tag k8s-node=%s/%s; add one to ~/.ssh/config and "+
+			"import it (ssh_hosts_import), or ask the user how to reach the node", strings.Join(append(values, nodeName), ", "), kctx, nodeName)
+	case m.Host == "":
+		out.Note = fmt.Sprintf("several saved SSH hosts match (%s); do not guess: ask the user which one is the node "+
+			"and to tag it (cox ssh hosts tag <host> --set k8s-node=%s/%s)", candidateNames(m.Candidates), kctx, nodeName)
+	default:
+		if h, err := p.Hosts.Get(m.Host); err == nil {
+			out.HostNote, out.HostTags = h.Note, h.Tags
+		}
+	}
+	return out, nil
 }

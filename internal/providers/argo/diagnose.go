@@ -118,38 +118,23 @@ func (p *Provider) diagnoseApp(ctx context.Context, i argo.Instance, in cdInput,
 				d.add(sevOf(n.Health), fmt.Sprintf("%s/%s is %s", n.Kind, n.Name, n.Health), n.Message)
 			}
 		}
+		kctx, why := p.appCluster(i, a)
 		for k, pod := range pods {
 			if k == 3 {
 				d.add("info", fmt.Sprintf("%d more unhealthy Pods", len(pods)-3), "")
 				break
 			}
+			if kctx != "" && p.followPod(ctx, &d, kctx, pod.Namespace, pod.Name) {
+				continue
+			}
 			d.add(sevOf(pod.Health), fmt.Sprintf("Pod %s is %s", pod.Name, pod.Health), strings.TrimSpace(pod.Message+" "+pod.Info))
-			ev, _ := p.events(ctx, i, cdInput{App: in.App, AppNS: in.AppNS, Name: pod.Name, Namespace: pod.Namespace})
-			var warn []string
-			for _, e := range ev {
-				if e.Type == "Warning" && len(warn) < 5 {
-					warn = append(warn, e.Reason+": "+e.Message)
-				}
-			}
-			ev2 := map[string]any{"events": warn}
-			podIn := cdInput{App: in.App, AppNS: in.AppNS, Pod: pod.Name, Namespace: pod.Namespace}
-			logs, err := p.podLogs(ctx, i, podIn, 50)
-			if strings.Contains(pod.Info, "Restart") || strings.Contains(pod.Message, "CrashLoop") || strings.Contains(pod.Info, "CrashLoop") {
-				podIn.Previous = true
-				if prev, perr := p.podLogs(ctx, i, podIn, 50); perr == nil && strings.TrimSpace(prev) != "" {
-					logs, err = prev, nil
-					ev2["logs_of"] = "previous container"
-				}
-			}
-			if err == nil && strings.TrimSpace(logs) != "" {
-				clipped, _ := shaper.Clip(logs, podLogLimit)
-				ev2["logs_tail"] = clipped
-			}
-			d.Evidence["pod/"+pod.Name] = ev2
+			d.Evidence["pod/"+pod.Name] = p.podEvidence(ctx, i, in, pod)
+		}
+		if len(pods) > 0 && kctx == "" && why != "" {
+			d.NextSteps = append(d.NextSteps, why)
 		}
 		if len(pods) > 0 {
-			d.NextSteps = append(d.NextSteps, "argocd_logs (with previous=true for a crashed container) and argocd_events for more; "+
-				"if the cluster is in Coxswain too, k8s_diagnose on the Pod")
+			d.NextSteps = append(d.NextSteps, "argocd_logs (with previous=true for a crashed container) and argocd_events for more")
 		}
 	}
 	if len(d.Findings) == 0 {
@@ -162,6 +147,81 @@ func (p *Provider) diagnoseApp(ctx context.Context, i argo.Instance, in cdInput,
 		d.Evidence["last_deployment"] = det.History[0]
 	}
 	return d
+}
+
+// podEvidence is what Argo CD itself tells about a pod: its warning events
+// and the tail of its (previous, after a crash) logs.
+func (p *Provider) podEvidence(ctx context.Context, i argo.Instance, in cdInput, pod TreeNode) map[string]any {
+	ev, _ := p.events(ctx, i, cdInput{App: in.App, AppNS: in.AppNS, Name: pod.Name, Namespace: pod.Namespace})
+	var warn []string
+	for _, e := range ev {
+		if e.Type == "Warning" && len(warn) < 5 {
+			warn = append(warn, e.Reason+": "+e.Message)
+		}
+	}
+	out := map[string]any{"events": warn}
+	podIn := cdInput{App: in.App, AppNS: in.AppNS, Pod: pod.Name, Namespace: pod.Namespace}
+	logs, err := p.podLogs(ctx, i, podIn, 50)
+	if strings.Contains(pod.Info, "Restart") || strings.Contains(pod.Message, "CrashLoop") || strings.Contains(pod.Info, "CrashLoop") {
+		podIn.Previous = true
+		if prev, perr := p.podLogs(ctx, i, podIn, 50); perr == nil && strings.TrimSpace(prev) != "" {
+			logs, err = prev, nil
+			out["logs_of"] = "previous container"
+		}
+	}
+	if err == nil && strings.TrimSpace(logs) != "" {
+		clipped, _ := shaper.Clip(logs, podLogLimit)
+		out["logs_tail"] = clipped
+	}
+	return out
+}
+
+// inCluster is Argo CD's destination for the cluster it runs in.
+const inCluster = "https://kubernetes.default.svc"
+
+// appCluster is the Coxswain context of an app's destination, or "" and
+// what the user can do about it.
+func (p *Provider) appCluster(i argo.Instance, a argo.Application) (string, string) {
+	if p.K8s == nil {
+		return "", ""
+	}
+	dest := a.Spec.Destination
+	if dest.Server == "" || dest.Server == inCluster || dest.Name == "in-cluster" {
+		if i.K8sContext != "" {
+			return i.K8sContext, ""
+		}
+		return "", fmt.Sprintf("the app runs in the cluster of Argo CD itself; if that cluster is in Coxswain, have the user set it "+
+			"(argo_update kind=argocd name=%s k8s_context=<context>) and diagnose again for node and SSH host details", i.Name)
+	}
+	list := p.K8s.ContextsForServer(dest.Server)
+	switch len(list) {
+	case 1:
+		return list[0], ""
+	case 0:
+		return "", "the destination cluster " + dest.Server + " is not in Coxswain; adding it (Clusters → +) lets diagnoses follow pods to their nodes and SSH hosts"
+	}
+	return "", fmt.Sprintf("several Coxswain contexts reach %s (%s); diagnose a pod with k8s_diagnose on the right one", dest.Server, strings.Join(list, ", "))
+}
+
+// followPod adds k8s.diagnose's findings for a pod (with its node and that
+// node's SSH host). It reports false if the pod could not be diagnosed there.
+func (p *Provider) followPod(ctx context.Context, d *Diagnosis, kctx, ns, pod string) bool {
+	k, err := p.K8s.Diagnose(ctx, kctx, ns, "pod", pod)
+	if err != nil {
+		d.add("info", "Could not diagnose pod "+pod+" in "+kctx, err.Error())
+		return false
+	}
+	for _, f := range k.Findings {
+		d.add(f.Severity, "Pod "+pod+": "+f.Title, f.Detail)
+	}
+	d.Evidence["k8s/"+kctx+"/"+ns+"/"+pod] = k.Evidence
+	for _, n := range k.Evidence.Nodes {
+		if n.SSHHost != "" {
+			d.add("info", fmt.Sprintf("Node %s is SSH host %s", n.Name, n.SSHHost), "inspect it with ssh_exec (dmesg, df -h, journalctl -u kubelet) if the node is suspect")
+		}
+	}
+	d.NextSteps = append(d.NextSteps, k.NextSteps...)
+	return true
 }
 
 func sevOf(health string) string {
@@ -285,6 +345,25 @@ func (p *Provider) diagnoseWF(ctx context.Context, i argo.Instance, w argo.Workf
 		}
 	}
 	d.Evidence["first_failed_step"] = ev
+	if p.K8s != nil && i.K8sContext != "" {
+		followed := first.Pod != "" && p.followPod(ctx, &d, i.K8sContext, w.Metadata.Namespace, first.Pod)
+		// The pod is often gone already; the node it ran on is in the workflow.
+		if wn, err := p.node(w, first.ID); !followed && err == nil && wn.HostNodeName != "" {
+			if h, err := p.K8s.NodeHost(ctx, i.K8sContext, wn.HostNodeName); err == nil {
+				ev["node"] = wn.HostNodeName
+				if h.Host != "" {
+					ev["ssh_host"] = h.Host
+					d.add("info", fmt.Sprintf("The step ran on node %s, SSH host %s", wn.HostNodeName, h.Host),
+						"inspect it with ssh_exec (dmesg, df -h, journalctl -u kubelet) if the node is suspect")
+				} else if h.Note != "" {
+					ev["ssh_host_note"] = h.Note
+				}
+			}
+		}
+	} else if p.K8s != nil {
+		d.NextSteps = append(d.NextSteps, fmt.Sprintf("if the cluster this Argo Workflows runs in is in Coxswain, have the user set it "+
+			"(argo_update kind=argowf name=%s k8s_context=<context>): diagnoses then cover the pods, nodes and their SSH hosts", i.Name))
+	}
 	if allTransient {
 		d.NextSteps = append(d.NextSteps, "the failures look transient: argowf_retry is likely to help")
 	} else {
