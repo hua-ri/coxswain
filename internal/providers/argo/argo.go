@@ -181,7 +181,7 @@ func instanceProperties(update bool) map[string]any {
 		"namespace":            str("Argo Workflows: the namespace used when none is given"),
 		"ca_file":              str("a PEM file of CA certificates to trust for this server"),
 		"insecure_skip_verify": map[string]any{"type": "boolean", "description": "do not check the server's TLS certificate (unsafe)"},
-		"sso_port":             map[string]any{"type": "integer", "minimum": 1024, "maximum": 65535, "description": "Argo CD: local port for the browser login callback, default 8085 (as argocd --sso-port)"},
+		"sso_port":             map[string]any{"type": "integer", "minimum": 0, "maximum": 65535, "description": "Argo CD: local port for the browser login callback, 1024–65535; 0 or unset: 8085 (as argocd --sso-port)"},
 		"k8s_context":          str("the Coxswain cluster (k8s_contexts) this instance runs in; lets its diagnoses look at pods, nodes and their SSH hosts"),
 		"tags":                 tagsProperty,
 		"note":                 str("shown to agents with every result on this instance"),

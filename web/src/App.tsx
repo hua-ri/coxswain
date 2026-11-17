@@ -12,7 +12,7 @@ import { HostEditor } from "./HostEditor";
 import { SyncView } from "./SyncView";
 import { syncSummary, type ImportOutput } from "./sync";
 import { ClusterEditor } from "./ClusterEditor";
-import { ADD_ARGO, argoId, argoLoginId, argoLoginOf, argoOf, instanceIsProd, reloadsArgo, type ArgoInstance, type ArgoKind } from "./argo";
+import { ADD_ARGO, argoEditId, argoEditOf, argoId, argoLoginId, argoLoginOf, argoOf, instanceIsProd, reloadsArgo, type ArgoInstance, type ArgoKind } from "./argo";
 import { ArgoEditor, ArgoLogin } from "./ArgoEditor";
 import { ArgoCDView } from "./ArgoCDView";
 import { ArgoWFView } from "./ArgoWFView";
@@ -203,7 +203,7 @@ function Desktop({ cox }: { cox: Cox }) {
   const exists = useRef<(id: string) => boolean>(() => true);
   exists.current = (id: string) => {
     if ([ACTIVITY, TRANSFERS, TUNNELS, AGENTS].includes(id)) return true;
-    if (id === ADD_HOST || id === ADD_CLUSTER || id === SYNC_HOSTS || id === ADD_ARGO || editHostOf(id) || argoLoginOf(id)) return false; // forms are not returned to
+    if (id === ADD_HOST || id === ADD_CLUSTER || id === SYNC_HOSTS || id === ADD_ARGO || editHostOf(id) || argoLoginOf(id) || argoEditOf(id)) return false; // forms are not returned to
     const a = argoOf(id);
     if (a) return instances.some((i) => i.kind === a.kind && i.name === a.name);
     if (hostOf(id)) return hosts.some((h) => h.name === hostOf(id));
@@ -369,6 +369,7 @@ function Desktop({ cox }: { cox: Cox }) {
   const argoMenu = (i: ArgoInstance): MenuItem[] => [
     { label: "Open", onSelect: () => openArgo(argoId(i.kind, i.name)) },
     { label: i.login.logged_in ? "Login…" : "Log in…", onSelect: () => setActive(argoLoginId(i.kind, i.name)) },
+    { label: "Edit…", onSelect: () => setActive(argoEditId(i.kind, i.name)) },
     { label: "Remove…", onSelect: () => setRemovingArgo(i), danger: true, separatorBefore: true },
   ];
   const hostMenu = (h: Host): MenuItem[] => [
@@ -503,8 +504,17 @@ function Desktop({ cox }: { cox: Cox }) {
               onCancel={() => leave(ADD_CLUSTER)} />
           )}
           {active === ADD_ARGO && (
-            <ArgoEditor key={addArgoKind} cox={cox} instances={instances} kind={addArgoKind} onSaved={(k, n) => void argoSaved(k, n)} onCancel={() => leave(ADD_ARGO)} />
+            <ArgoEditor key={addArgoKind} cox={cox} instances={instances} contexts={contexts.map((c) => c.name)} kind={addArgoKind}
+              onSaved={(k, n) => void argoSaved(k, n)} onCancel={() => leave(ADD_ARGO)} />
           )}
+          {(() => {
+            const e = argoEditOf(active);
+            const inst = e && instances.find((i) => i.kind === e.kind && i.name === e.name);
+            return inst ? (
+              <ArgoEditor key={active} cox={cox} instances={instances} contexts={contexts.map((c) => c.name)} kind={inst.kind} original={inst}
+                onSaved={(k, n) => void loadArgo().then(() => openArgo(argoId(k, n))).catch(report)} onCancel={() => openArgo(argoId(inst.kind, inst.name))} />
+            ) : null;
+          })()}
           {(() => {
             const l = argoLoginOf(active);
             const inst = l && instances.find((i) => i.kind === l.kind && i.name === l.name);
@@ -517,7 +527,7 @@ function Desktop({ cox }: { cox: Cox }) {
             const a = argoOf(id)!;
             const inst = instances.find((i) => i.kind === a.kind && i.name === a.name);
             if (!inst) return null;
-            const props = { cox, instance: inst, active: active === id, onLogin: () => setActive(argoLoginId(inst.kind, inst.name)), onRemove: () => setRemovingArgo(inst) };
+            const props = { cox, instance: inst, active: active === id, onLogin: () => setActive(argoLoginId(inst.kind, inst.name)), onEdit: () => setActive(argoEditId(inst.kind, inst.name)), onRemove: () => setRemovingArgo(inst) };
             return inst.kind === "argocd" ? <ArgoCDView key={id} {...props} /> : <ArgoWFView key={id} {...props} />;
           })}
           {browsers.map((h) => (

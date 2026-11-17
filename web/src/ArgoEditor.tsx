@@ -1,5 +1,5 @@
 import { useEffect, useId, useState, type FormEvent } from "react";
-import { addArgoArgs, argoErrors, blankArgo, guessName, loginText, type ArgoForm, type ArgoInstance, type ArgoKind, type Methods } from "./argo";
+import { addArgoArgs, argoErrors, blankArgo, formFromInstance, guessName, loginText, updateArgoArgs, type ArgoForm, type ArgoInstance, type ArgoKind, type Methods } from "./argo";
 import type { Cox, Outcome } from "./cox";
 import { ENVS } from "./hostform";
 import { Icon } from "./icons";
@@ -11,22 +11,24 @@ function message(out: { error?: string; hint?: string }): string {
 
 const KIND_LABEL: Record<ArgoKind, string> = { argocd: "Argo CD", argowf: "Argo Workflows" };
 
-/** ArgoEditor adds an Argo CD or Argo Workflows instance by its URL. Saving it opens the login pane. */
-export function ArgoEditor({ cox, instances, kind, onSaved, onCancel }: {
+/** ArgoEditor adds an Argo CD or Argo Workflows instance by its URL (saving it opens the login pane), or edits one. */
+export function ArgoEditor({ cox, instances, contexts, kind, original, onSaved, onCancel }: {
   cox: Cox;
   instances: ArgoInstance[];
+  contexts: string[]; // Coxswain's clusters, for "runs in"
   kind: ArgoKind;
+  original?: ArgoInstance;
   onSaved(kind: ArgoKind, name: string): void;
   onCancel(): void;
 }) {
-  const [f, setF] = useState<ArgoForm>(() => blankArgo(kind));
-  const [named, setNamed] = useState(false); // the user typed a name: stop guessing
+  const [f, setF] = useState<ArgoForm>(() => (original ? formFromInstance(original) : blankArgo(kind)));
+  const [named, setNamed] = useState(!!original); // the user typed a name: stop guessing
   const [tried, setTried] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const id = useId();
   const set = (patch: Partial<ArgoForm>) => setF((x) => ({ ...x, ...patch }));
-  const errors = argoErrors(f, instances);
+  const errors = argoErrors(f, instances, original?.name);
   const shown = (k: keyof typeof errors) => (tried ? errors[k] : undefined);
   const prod = f.env === "prod";
 
@@ -37,7 +39,7 @@ export function ArgoEditor({ cox, instances, kind, onSaved, onCancel }: {
     setSaving(true);
     setError("");
     try {
-      const out = await cox.invoke<ArgoInstance>("argo.add", addArgoArgs(f));
+      const out = await cox.invoke<ArgoInstance>(original ? "argo.update" : "argo.add", original ? updateArgoArgs(f, original) : addArgoArgs(f));
       if (out.status !== "ok") throw new Error(message(out));
       onSaved(f.kind, f.name.trim());
     } catch (err) {
@@ -50,8 +52,8 @@ export function ArgoEditor({ cox, instances, kind, onSaved, onCancel }: {
   return (
     <div className="pane editor" style={{ display: "flex" }}>
       {prod && <HazardBand env="env=prod" where={f.name.trim() || "new instance"} note={f.note.trim() || undefined} />}
-      <PaneHeader icon={<Icon name={f.kind} />} title={`Add ${KIND_LABEL[f.kind]}`} />
-      <form className="editor-form" onSubmit={save} noValidate aria-label={`Add ${KIND_LABEL[f.kind]}`}>
+      <PaneHeader icon={<Icon name={f.kind} />} title={original ? `Edit ${original.name}` : `Add ${KIND_LABEL[f.kind]}`} />
+      <form className="editor-form" onSubmit={save} noValidate aria-label={original ? `Edit ${original.name}` : `Add ${KIND_LABEL[f.kind]}`}>
         <div className="editor-body">
           {error && <Message kind="error" onDismiss={() => setError("")}>{error}</Message>}
           <p className="editor-intro">
@@ -60,14 +62,14 @@ export function ArgoEditor({ cox, instances, kind, onSaved, onCancel }: {
           </p>
           <section className="form-section" aria-labelledby={id + "srv"}>
             <h2 className="caption" id={id + "srv"}>Server</h2>
-            <Field label="Kind">
+            {!original && <Field label="Kind">
               <div className="segmented source-picker" role="radiogroup" aria-label="Kind">
                 {(["argocd", "argowf"] as ArgoKind[]).map((k) => (
                   <button key={k} type="button" role="radio" aria-checked={f.kind === k} aria-selected={f.kind === k}
                     onClick={() => set({ kind: k, namespace: k === "argowf" ? f.namespace || "argo" : "" })}>{KIND_LABEL[k]}</button>
                 ))}
               </div>
-            </Field>
+            </Field>}
             <Field label="URL" htmlFor={id + "url"} error={shown("url")} hint="As you open it in the browser.">
               <input id={id + "url"} className="mono" value={f.url} spellCheck={false} autoComplete="off" autoFocus
                 placeholder={f.kind === "argocd" ? "https://argocd.example.com" : "https://argo.example.com"}
@@ -100,6 +102,18 @@ export function ArgoEditor({ cox, instances, kind, onSaved, onCancel }: {
             )}
           </section>
 
+          <section className="form-section" aria-labelledby={id + "k8s"}>
+            <h2 className="caption" id={id + "k8s"}>Cluster</h2>
+            <Field label="Runs in" htmlFor={id + "ctx"} hint={f.kind === "argocd"
+              ? "The cluster Argo CD itself runs in (its in-cluster destination). Diagnoses then follow unhealthy pods there, to their nodes and SSH hosts. Other destinations are matched by their server address."
+              : "The cluster the workflows’ pods run in. Diagnoses then follow a failed step’s pod to its node and SSH host."}>
+              <select id={id + "ctx"} value={f.k8sContext} onChange={(e) => set({ k8sContext: e.target.value })}>
+                <option value="">Not in Coxswain</option>
+                {contexts.map((c) => <option key={c} value={c}>{c}</option>)}
+              </select>
+            </Field>
+          </section>
+
           <section className="form-section" aria-labelledby={id + "labels"}>
             <h2 className="caption" id={id + "labels"}>What agents are told</h2>
             <Field label="Environment" hint={prod ? "Production: agents are told to check with you before changing anything here." : undefined}>
@@ -116,7 +130,7 @@ export function ArgoEditor({ cox, instances, kind, onSaved, onCancel }: {
         <footer className="editor-foot">
           <span className="spacer" />
           <button type="button" onClick={onCancel}>Cancel</button>
-          <button type="submit" className="primary" disabled={saving}>{saving ? "Adding…" : "Add and log in…"}</button>
+          <button type="submit" className="primary" disabled={saving}>{saving ? "Saving…" : original ? "Save" : "Add and log in…"}</button>
         </footer>
       </form>
     </div>

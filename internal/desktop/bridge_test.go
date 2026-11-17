@@ -383,3 +383,20 @@ func TestPickFile(t *testing.T) {
 		t.Fatalf("no-picker reply = %v", p)
 	}
 }
+
+func TestOpenURL(t *testing.T) {
+	b := &Bridge{}
+	var opened []string
+	b.OpenURL = func(u string) error { opened = append(opened, u); return nil }
+	if err := b.Open("https://argocd.example.com/applications/argocd/web"); err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{"file:///etc/passwd", "javascript:alert(1)", "https://user:pw@x.example.com", "/relative", "x-apple.systempreferences:"} {
+		if err := b.Open(bad); err == nil {
+			t.Errorf("opened %q", bad)
+		}
+	}
+	if len(opened) != 1 {
+		t.Fatalf("opened %v", opened)
+	}
+}

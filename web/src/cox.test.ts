@@ -39,6 +39,9 @@ function fakeBindings(
       calls.push(["resize", ...args]);
     },
     coxStatus: async () => ({ connected: true, addr: "127.0.0.1:1", version: "v", pid: 1 }),
+    coxOpenURL: async (url) => {
+      calls.push(["open", url]);
+    },
     coxPickFile: async (purpose) => {
       calls.push(["pick", purpose]);
       const id = "c" + ++call;

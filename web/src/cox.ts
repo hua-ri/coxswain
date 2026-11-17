@@ -46,6 +46,8 @@ export interface Bindings {
   coxStatus(): Promise<Status>;
   /** coxPickFile opens a native file dialog for a purpose (its wording and start folder); the chosen absolute path ("" if cancelled) comes on REPLY_CHANNEL. */
   coxPickFile(purpose: PickPurpose): Promise<string>;
+  /** coxOpenURL opens an http(s) page in the user's browser. */
+  coxOpenURL(url: string): Promise<void>;
 }
 
 /** What a file is picked for: a file to upload, an SSH private key, a kubeconfig. */
@@ -166,6 +168,7 @@ export function createCox(b: Bindings, target: { __cox?: unknown }) {
     /** pickFile asks for a local file: its absolute path, or "" if cancelled. */
     pickFile: (purpose: PickPurpose = "upload") => reply(b.coxPickFile(purpose)) as Promise<string>,
     status: () => b.coxStatus(),
+    openURL: (url: string) => b.coxOpenURL(url),
     input: (termID: string, text: string) => b.coxInput(termID, toBase64(text)),
     resize: (termID: string, cols: number, rows: number) => b.coxResize(termID, cols, rows),
   };

@@ -27,6 +27,7 @@ export interface ArgoInstance {
   ca_file?: string;
   insecure_skip_verify?: boolean;
   sso_port?: number;
+  k8s_context?: string;
   tags?: Record<string, string>;
   note?: string;
   login: LoginStatus;
@@ -57,6 +58,12 @@ export const ADD_ARGO = "@add-argo";
 
 export const argoId = (kind: ArgoKind, name: string) => (kind === "argocd" ? CD : WF) + name;
 export const argoLoginId = (kind: ArgoKind, name: string) => `${LOGIN}${kind}:${name}`;
+const EDIT = "@argo-edit:";
+export const argoEditId = (kind: ArgoKind, name: string) => `${EDIT}${kind}:${name}`;
+
+export function argoEditOf(id: string): { kind: ArgoKind; name: string } | null {
+  return id.startsWith(EDIT) ? argoLoginOf(LOGIN + id.slice(EDIT.length)) : null;
+}
 
 /** argoOf parses an instance id, or returns null. */
 export function argoOf(id: string): { kind: ArgoKind; name: string } | null {
@@ -140,25 +147,51 @@ export interface ArgoForm {
   insecure: boolean;
   caFile: string;
   ssoPort: string;
+  k8sContext: string;
   env: string;
   tags: string;
   note: string;
 }
 
 export function blankArgo(kind: ArgoKind = "argocd"): ArgoForm {
-  return { kind, name: "", url: "", namespace: kind === "argowf" ? "argo" : "", insecure: false, caFile: "", ssoPort: "", env: "", tags: "", note: "" };
+  return { kind, name: "", url: "", namespace: kind === "argowf" ? "argo" : "", insecure: false, caFile: "", ssoPort: "", k8sContext: "", env: "", tags: "", note: "" };
 }
 
 const NAME = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,63}$/;
 
+/** formFromInstance fills the form to edit a saved instance. */
+export function formFromInstance(i: ArgoInstance): ArgoForm {
+  const tags = { ...(i.tags ?? {}) };
+  const env = tags.env ?? "";
+  delete tags.env;
+  return {
+    kind: i.kind, name: i.name, url: i.url, namespace: i.namespace ?? "", insecure: !!i.insecure_skip_verify, caFile: i.ca_file ?? "",
+    ssoPort: i.sso_port ? String(i.sso_port) : "", k8sContext: i.k8s_context ?? "", env,
+    tags: Object.entries(tags).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => `${k}=${v}`).join(", "), note: i.note ?? "",
+  };
+}
+
+/** updateArgoArgs are argo.update's arguments: every field, so clearing one clears it. */
+export function updateArgoArgs(f: ArgoForm, original: ArgoInstance): Record<string, unknown> {
+  const a = addArgoArgs(f);
+  a.name = original.name;
+  if (f.name.trim() !== original.name) a.new_name = f.name.trim();
+  a.note = f.note.trim();
+  a.k8s_context = f.k8sContext;
+  a.ca_file = f.caFile.trim();
+  a.insecure_skip_verify = f.insecure;
+  if (f.kind === "argocd") a.sso_port = f.ssoPort.trim() ? Number(f.ssoPort) : 0;
+  return a;
+}
+
 export type ArgoErrors = Partial<Record<"name" | "url" | "namespace" | "ssoPort" | "tags", string>>;
 
-export function argoErrors(f: ArgoForm, list: ArgoInstance[]): ArgoErrors {
+export function argoErrors(f: ArgoForm, list: ArgoInstance[], editing?: string): ArgoErrors {
   const e: ArgoErrors = {};
   const name = f.name.trim();
   if (!name) e.name = "Name is required";
   else if (!NAME.test(name)) e.name = "Letters, digits, “.”, “_” and “-”";
-  else if (list.some((i) => i.kind === f.kind && i.name === name)) e.name = `${name} already exists`;
+  else if (name !== editing && list.some((i) => i.kind === f.kind && i.name === name)) e.name = `${name} already exists`;
   const url = f.url.trim();
   if (!url) e.url = "URL is required";
   else if (!/^(https?:\/\/)?[^\s/?#@]+(:\d+)?(\/[^\s?#]*)?$/.test(url)) e.url = "Give http(s)://host[:port][/path]";
@@ -185,6 +218,7 @@ export function addArgoArgs(f: ArgoForm): Record<string, unknown> {
   if (f.insecure) a.insecure_skip_verify = true;
   if (f.caFile.trim()) a.ca_file = f.caFile.trim();
   if (f.kind === "argocd" && f.ssoPort.trim()) a.sso_port = Number(f.ssoPort);
+  if (f.k8sContext) a.k8s_context = f.k8sContext;
   const tags = f.env ? [`env=${f.env}`] : [];
   a.tags = tags.concat(Object.entries(parseTagText(f.tags).tags).map(([k, v]) => `${k}=${v}`));
   if (f.note.trim()) a.note = f.note.trim();
@@ -226,26 +260,10 @@ export interface AppDetail extends AppSummary {
   unhealthy_or_out_of_sync?: { kind: string; namespace?: string; name: string; sync?: string; health?: string; message?: string; requires_pruning?: boolean }[];
 }
 
-export interface TreeNode {
-  kind: string;
-  namespace?: string;
-  name: string;
-  parent?: string;
-  health?: string;
-  message?: string;
-  info?: string;
-}
-
 export interface Shaped {
   text: string;
   truncated?: boolean;
   artifact_id?: string;
-}
-
-export interface DiffOutput {
-  app: string;
-  diffs: { object: string; change: string; diff: Shaped }[];
-  in_sync: number;
 }
 
 export interface Finding {
@@ -298,21 +316,6 @@ export function phaseClass(p: string): string {
 /** appIssue: the app needs attention (not Synced and Healthy, or has a condition). */
 export const appIssue = (a: AppSummary) => a.sync !== "Synced" || a.health !== "Healthy" || !!a.problem;
 
-/** syncArgs are argocd.sync's arguments. */
-export function syncArgs(app: string, o: { prune: boolean; dryRun: boolean; resources: string[]; revision: string }): Record<string, unknown> {
-  const a: Record<string, unknown> = { app };
-  if (o.prune) a.prune = true;
-  if (o.dryRun) a.dry_run = true;
-  if (o.resources.length) a.resources = o.resources;
-  if (o.revision.trim()) a.revision = o.revision.trim();
-  return a;
-}
-
-/** resourceRef is how argocd.sync names a resource: Kind:namespace/name. */
-export function resourceRef(r: { kind: string; namespace?: string; name: string }): string {
-  return `${r.kind}:${r.namespace ? r.namespace + "/" : ""}${r.name}`;
-}
-
 // ---- Argo Workflows ----
 
 export interface WFSummary {
@@ -355,45 +358,6 @@ export interface WFDetail extends WFSummary {
   nodes_omitted?: number;
 }
 
-export interface Parameter {
-  name: string;
-  value?: string;
-  default?: string;
-  enum?: string[];
-  description?: string;
-}
-
-export interface TemplateView {
-  kind: "WorkflowTemplate" | "ClusterWorkflowTemplate" | "CronWorkflow";
-  name: string;
-  entrypoint?: string;
-  description?: string;
-  parameters?: Parameter[];
-  schedule?: string;
-  suspended?: boolean;
-  last_run?: string;
-  active?: number;
-}
-
-/** paramDefaults: the value each parameter starts with in the submit form. */
-export function paramDefaults(ps: Parameter[] | undefined): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const p of ps ?? []) out[p.name] = p.value ?? p.default ?? (p.enum?.[0] ?? "");
-  return out;
-}
-
-/** missingParams: parameters without a value or default that are still empty. */
-export function missingParams(ps: Parameter[] | undefined, values: Record<string, string>): string[] {
-  return (ps ?? []).filter((p) => p.value === undefined && p.default === undefined && !(values[p.name] ?? "").trim()).map((p) => p.name);
-}
-
-/** wfOpsFor: the operations a workflow in this phase allows. */
-export function wfOpsFor(w: WFSummary): ("suspend" | "resume" | "stop" | "terminate" | "retry" | "resubmit")[] {
-  if (w.phase === "Running" || w.phase === "Pending") return w.suspended ? ["resume", "stop", "terminate"] : ["suspend", "stop", "terminate"];
-  if (w.phase === "Failed" || w.phase === "Error") return ["retry", "resubmit"];
-  return ["resubmit"];
-}
-
 /** activityDetail summarises an argo action's arguments for the Activity list. */
 export function argoDetail(action: string, args: Record<string, unknown>): string | undefined {
   const s = (k: string) => (typeof args[k] === "string" ? (args[k] as string) : "");
@@ -413,4 +377,18 @@ export function argoDetail(action: string, args: Record<string, unknown>): strin
   if (/^argo(cd|wf)\.login$/.test(action) && s("method")) return `login with ${s("method")}${s("username") ? " as " + s("username") : ""}`;
   if (action.startsWith("argo.") && s("name")) return `${s("kind") || ""} ${s("name")}`.trim();
   return undefined;
+}
+
+// ---- links into the Argo UIs ----
+
+const seg = encodeURIComponent;
+
+/** appURL is an application's page in the Argo CD UI. */
+export function appURL(i: { url: string }, app: { name: string; namespace?: string }): string {
+  return app.namespace ? `${i.url}/applications/${seg(app.namespace)}/${seg(app.name)}` : `${i.url}/applications/${seg(app.name)}`;
+}
+
+/** workflowURL is a workflow's page in the Argo Workflows UI; without a name, the namespace's list. */
+export function workflowURL(i: { url: string }, namespace: string, name?: string): string {
+  return `${i.url}/workflows/${seg(namespace)}${name ? "/" + seg(name) : ""}`;
 }

@@ -900,3 +900,4 @@ table.steps td { vertical-align: top; }
 .secret-input { -webkit-text-security: disc; }
 .k8s-table td.name .chip { margin-left: 6px; }
 input.port { width: 90px; }
+.hint-line { margin-top: var(--s3); font-size: var(--t-small); }

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  addArgoArgs, argoDetail, argoErrors, argoId, argoLoginId, argoLoginOf, argoOf, blankArgo, guessName, loginNeed, loginText,
-  missingParams, paramDefaults, reloadsArgo, resourceRef, sortedInstances, syncArgs, wfOpsFor, type ArgoInstance,
+  addArgoArgs, argoDetail, argoEditId, argoEditOf, argoErrors, argoId, argoLoginId, argoLoginOf, argoOf, blankArgo, formFromInstance, guessName,
+  loginNeed, loginText, reloadsArgo, sortedInstances, updateArgoArgs, type ArgoInstance,
 } from "./argo";
 
 const inst = (p: Partial<ArgoInstance>): ArgoInstance => ({ kind: "argocd", name: "x", url: "https://x", login: { logged_in: true }, ...p });
@@ -68,25 +68,15 @@ describe("add form", () => {
   });
 });
 
-describe("argo cd", () => {
-  it("builds sync arguments", () => {
-    expect(syncArgs("web", { prune: false, dryRun: true, resources: [], revision: "" })).toEqual({ app: "web", dry_run: true });
-    expect(resourceRef({ kind: "ConfigMap", namespace: "shop", name: "c" })).toBe("ConfigMap:shop/c");
-    expect(resourceRef({ kind: "Namespace", name: "shop" })).toBe("Namespace:shop");
-  });
-});
-
-describe("workflows", () => {
-  it("offers what a phase allows", () => {
-    expect(wfOpsFor({ name: "a", phase: "Running" })).toEqual(["suspend", "stop", "terminate"]);
-    expect(wfOpsFor({ name: "a", phase: "Running", suspended: true })).toEqual(["resume", "stop", "terminate"]);
-    expect(wfOpsFor({ name: "a", phase: "Failed" })).toEqual(["retry", "resubmit"]);
-    expect(wfOpsFor({ name: "a", phase: "Succeeded" })).toEqual(["resubmit"]);
-  });
-  it("fills and checks parameters", () => {
-    const ps = [{ name: "branch" }, { name: "env", value: "dev", enum: ["dev", "prod"] }, { name: "x", enum: ["a", "b"] }];
-    expect(paramDefaults(ps)).toEqual({ branch: "", env: "dev", x: "a" });
-    expect(missingParams(ps, paramDefaults(ps))).toEqual(["branch"]);
+describe("edit form", () => {
+  it("round-trips an instance and clears what was emptied", () => {
+    const i = inst({ name: "cd", tags: { env: "prod", team: "core" }, note: "careful", k8s_context: "prod-hk", sso_port: 8090 });
+    const f = formFromInstance(i);
+    expect(f).toMatchObject({ env: "prod", tags: "team=core", k8sContext: "prod-hk", ssoPort: "8090" });
+    expect(argoErrors(f, [i], "cd")).toEqual({});
+    const a = updateArgoArgs({ ...f, name: "cd2", note: "", k8sContext: "", ssoPort: "" }, i);
+    expect(a).toMatchObject({ name: "cd", new_name: "cd2", note: "", k8s_context: "", sso_port: 0, tags: ["env=prod", "team=core"] });
+    expect(argoEditOf(argoEditId("argowf", "ci"))).toEqual({ kind: "argowf", name: "ci" });
   });
 });
 
@@ -99,5 +89,15 @@ describe("activity", () => {
     expect(reloadsArgo("argo.add")).toBe(true);
     expect(reloadsArgo("argocd.login")).toBe(true);
     expect(reloadsArgo("argocd.sync")).toBe(false);
+  });
+});
+
+describe("links", () => {
+  it("point into the Argo UIs", async () => {
+    const { appURL, workflowURL } = await import("./argo");
+    expect(appURL({ url: "https://cd.example.com" }, { name: "web", namespace: "argocd" })).toBe("https://cd.example.com/applications/argocd/web");
+    expect(appURL({ url: "https://cd.example.com/argo" }, { name: "a b" })).toBe("https://cd.example.com/argo/applications/a%20b");
+    expect(workflowURL({ url: "http://localhost:2746" }, "ci", "build-1")).toBe("http://localhost:2746/workflows/ci/build-1");
+    expect(workflowURL({ url: "http://localhost:2746" }, "ci")).toBe("http://localhost:2746/workflows/ci");
   });
 });

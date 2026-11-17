@@ -12,6 +12,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
+	"os/exec"
 	"slices"
 	"strconv"
 	"strings"
@@ -75,6 +77,8 @@ type Bridge struct {
 	// cancelled. It runs on the UI thread. nil: this platform has no file
 	// picker.
 	Pick func(purpose string) string
+	// OpenURL opens a web page in the user's browser (open(1) by default).
+	OpenURL func(url string) error
 
 	home string
 	win  Window
@@ -139,7 +143,22 @@ func (b *Bridge) Bindings() map[string]any {
 		"coxResize":      b.Resize,
 		"coxStatus":      b.Status,
 		"coxPickFile":    b.PickFileAsync,
+		"coxOpenURL":     b.Open,
 	}
+}
+
+// Open opens an http(s) page (an Argo UI) in the user's browser. It is the
+// page's coxOpenURL.
+func (b *Bridge) Open(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil {
+		return fmt.Errorf("not a web address: %q", raw)
+	}
+	open := b.OpenURL
+	if open == nil {
+		open = func(s string) error { return exec.Command("/usr/bin/open", s).Run() }
+	}
+	return open(u.String())
 }
 
 // Status reports the connection.
